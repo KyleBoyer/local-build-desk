@@ -195,6 +195,11 @@ function UpdateControl({
       <span className="update-pill">
         <LoaderCircle size={13} className="spin" />
         UPDATING TO {update.version} · {update.percent ?? 0}%
+        <progress
+          aria-label="Downloading app update"
+          max={100}
+          value={update.percent ?? 0}
+        />
       </span>
     );
   const checking = update.state === "checking";

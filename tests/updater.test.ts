@@ -1,4 +1,4 @@
-import { it, expect, vi, beforeEach } from "vitest";
+import { it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 const autoUpdater = Object.assign(new EventEmitter(), {
   checkForUpdates: vi.fn(),
@@ -11,6 +11,7 @@ beforeEach(() => {
   autoUpdater.removeAllListeners();
   vi.clearAllMocks();
 });
+afterEach(() => vi.useRealTimers());
 it("stays disabled outside signed release builds", async () => {
   const updater = new Updater(vi.fn(), () => false, false);
   expect(updater.status()).toEqual({
@@ -57,4 +58,33 @@ it("turns a failed check into a reportable status", async () => {
     state: "error",
     error: "offline",
   });
+});
+it("handles a background transfer failure after the check has completed", async () => {
+  let rejectDownload!: (error: Error) => void;
+  const downloadPromise = new Promise<string[]>((_, reject) => {
+    rejectDownload = reject;
+  });
+  autoUpdater.checkForUpdates.mockResolvedValue({ downloadPromise });
+  const updater = new Updater(vi.fn(), () => false, true);
+  await updater.check();
+  rejectDownload(new Error("Connection lost during download"));
+  await Promise.resolve();
+  expect(updater.status()).toMatchObject({
+    state: "error",
+    error: "Connection lost during download",
+  });
+});
+it("stops the startup check as well as periodic checks during shutdown", async () => {
+  vi.useFakeTimers();
+  autoUpdater.checkForUpdates.mockResolvedValue(null);
+  const updater = new Updater(vi.fn(), () => false, true);
+  updater.start();
+  updater.start();
+  await vi.advanceTimersByTimeAsync(15000);
+  expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+  updater.stop();
+  updater.start();
+  updater.stop();
+  await vi.advanceTimersByTimeAsync(5 * 60 * 60 * 1000);
+  expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
 });

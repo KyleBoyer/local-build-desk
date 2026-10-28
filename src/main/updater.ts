@@ -11,6 +11,7 @@ const initialDelay = 15 * 1000;
 export class Updater {
   private current: UpdateStatus;
   private timer?: NodeJS.Timeout;
+  private initialTimer?: NodeJS.Timeout;
   private checking?: Promise<UpdateStatus>;
   constructor(
     private readonly emit: (status: UpdateStatus) => void,
@@ -56,13 +57,17 @@ export class Updater {
     return this.current;
   }
   start() {
-    if (this.current.state === "disabled") return;
-    setTimeout(() => void this.check(), initialDelay).unref();
+    if (this.current.state === "disabled" || this.timer) return;
+    this.initialTimer = setTimeout(() => void this.check(), initialDelay);
+    this.initialTimer.unref();
     this.timer = setInterval(() => void this.check(), checkInterval);
     this.timer.unref();
   }
   stop() {
+    if (this.initialTimer) clearTimeout(this.initialTimer);
     if (this.timer) clearInterval(this.timer);
+    this.initialTimer = undefined;
+    this.timer = undefined;
   }
   // Resolves once the check settles; a found update keeps downloading in the
   // background and reports progress through emitted status changes.
@@ -76,7 +81,15 @@ export class Updater {
       return Promise.resolve(this.current);
     this.checking ??= autoUpdater
       .checkForUpdates()
-      .then(() => this.current)
+      .then((result) => {
+        // A successful check can start a download that fails later. The
+        // updater emits an error but also rejects this separate promise.
+        // Observe it without making the check wait for the entire transfer.
+        void result?.downloadPromise?.catch((error) => {
+          this.set({ state: "error", error: messageOf(error) });
+        });
+        return this.current;
+      })
       .catch((error) => {
         this.set({ state: "error", error: messageOf(error) });
         return this.current;
