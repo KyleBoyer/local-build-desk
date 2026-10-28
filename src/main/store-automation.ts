@@ -356,10 +356,22 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
           ].filter((a) => /\/app\/\d+/.test(a.pathname))
         : [];
     const appUrl = [...new Set(appLinks.map((a) => a.href))];
-    const internal = links.filter((el) =>
-      /^Internal testing$/i.test(label(el)),
-    );
-    const internalUrl = internal.length === 1 ? internal[0].href : undefined;
+    // Play's Test and release page links the track from a generic "Get started"
+    // card button, so recognize the internal track by its path as well.
+    const internal = [
+      ...new Set(
+        links
+          .filter(
+            (el) =>
+              /^Internal testing$/i.test(label(el)) ||
+              /\/app\/\d+\/(?:tracks\/internal-testing|testing\/internal)(?:\/|$)/.test(
+                el.pathname,
+              ),
+          )
+          .map((el) => el.href),
+      ),
+    ];
+    const internalUrl = internal.length === 1 ? internal[0] : undefined;
     if (!appId)
       return {
         phase: "google-list",

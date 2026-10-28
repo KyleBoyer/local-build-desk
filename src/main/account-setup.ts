@@ -2403,9 +2403,9 @@ export class AccountSetupManager {
           new URL(state.internalUrl).pathname,
         );
       if (!onInternal) {
-        if (probe.internalUrl) {
-          await this.storeAction(account, "open-internal");
-        } else await this.storeAction(account, "open-testing");
+        if (state.internalUrl)
+          await account.view.webContents.loadURL(state.internalUrl);
+        else await this.storeAction(account, "open-testing");
         return;
       }
       if (probe.phase === "uploading") {

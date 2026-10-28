@@ -173,3 +173,20 @@ it("leaves Apple's User Access choice to the person and explains a disabled Crea
   (radios[1] as HTMLInputElement).checked = true;
   expect(probe(dom).missing).toEqual([]);
 });
+it("finds Play's internal testing track from a generic Get started card link", () => {
+  const dom = page(
+    '<h1>Test and release</h1><a href="/console/developers/1/app/2/test-and-release">Test and release</a><div><h3>Open testing</h3><a aria-label="Get started with Open testing" href="/console/developers/1/app/2/tracks/open-testing">Get started</a></div><div><h3>Internal testing</h3><a aria-label="Get started with Internal testing" href="/console/developers/1/app/2/tracks/internal-testing?releaseType=defaultReleases">Get started</a></div>',
+    "https://play.google.com/console/developers/1/app/2/test-and-release",
+  );
+  expect(
+    probe(dom, {
+      ...target,
+      provider: "google",
+      mode: "bootstrap",
+      appId: "2",
+      developerId: "1",
+    }).internalUrl,
+  ).toBe(
+    "https://play.google.com/console/developers/1/app/2/tracks/internal-testing?releaseType=defaultReleases",
+  );
+});
