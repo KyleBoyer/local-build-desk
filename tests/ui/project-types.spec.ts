@@ -136,11 +136,14 @@ test("selects a native app inside a repository, edits profiles, exports portable
     await expect(
       page.getByLabel("Node executable", { exact: true }),
     ).not.toBeVisible();
+    // Doctor probes xcrun/simctl, which can take several seconds on a cold CI runner.
     await expect
-      .poll(async () =>
-        (await page.evaluate((id) => window.desk.doctor(id), project.id)).map(
-          (c) => c.name,
-        ),
+      .poll(
+        async () =>
+          (await page.evaluate((id) => window.desk.doctor(id), project.id)).map(
+            (c) => c.name,
+          ),
+        { timeout: 30000 },
       )
       .not.toContain("Node.js");
     expect(errors).toEqual([]);
