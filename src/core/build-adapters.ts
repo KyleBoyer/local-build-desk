@@ -555,7 +555,7 @@ export async function buildNonExpo(ctx: BuildContext) {
       fetch,
       ctx.signal,
       ctx.googleGuard,
-    ).versions(job.bundleId);
+    ).existingVersions(job.bundleId);
     if (versions.length) store.seed(key, Math.max(...versions));
   }
   const configured =

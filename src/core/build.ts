@@ -403,7 +403,7 @@ export async function buildLocal(ctx: BuildContext) {
         fetch,
         ctx.signal,
         ctx.googleGuard,
-      ).versions(identity);
+      ).existingVersions(identity);
       if (versions.length) store.seed(key, Math.max(...versions));
     }
   }

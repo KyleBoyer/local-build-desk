@@ -396,6 +396,20 @@ export class GoogleAPI {
   async versions(packageName: string) {
     return this.withEdit(() => this.versionsInEdit(packageName));
   }
+  /** Version codes for a build's floor; a package Play has never seen has none. */
+  async existingVersions(packageName: string) {
+    try {
+      return await this.versions(packageName);
+    } catch (error) {
+      if (
+        /Google Play 404\b.*Package not found/i.test(
+          String((error as Error)?.message),
+        )
+      )
+        return [];
+      throw error;
+    }
+  }
   private async versionsInEdit(packageName: string) {
     const edit = await this.edit(packageName);
     const path = `/applications/${packageName}/edits/${edit.id}`;

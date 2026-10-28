@@ -441,3 +441,22 @@ it("attaches release notes to the new release in rollout and draft modes", async
     ]);
   }
 });
+it("treats a package Play has never seen as having no version codes, but keeps other failures", async () => {
+  const missing = async (url: any) =>
+    String(url).includes("oauth2")
+      ? json({ access_token: "token", expires_in: 3600 })
+      : json({ error: { message: "Package not found: com.app." } }, 404);
+  expect(
+    await new GoogleAPI(google, missing as any).existingVersions("com.app"),
+  ).toEqual([]);
+  const denied = async (url: any) =>
+    String(url).includes("oauth2")
+      ? json({ access_token: "token", expires_in: 3600 })
+      : json(
+          { error: { message: "The caller does not have permission" } },
+          403,
+        );
+  await expect(
+    new GoogleAPI(google, denied as any).existingVersions("com.app"),
+  ).rejects.toThrow(/403/);
+});
