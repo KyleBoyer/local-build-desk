@@ -5,13 +5,14 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 test("an ambiguous creation is never repeated, including after restart", async () => {
   await build({
-    entryPoints: ["tests/harness/account.ts"],
+    entryPoints: ["tests/harness/account-entry.ts"],
     outfile: "out/tests/account-harness.cjs",
     bundle: true,
     platform: "node",
     format: "cjs",
     target: "node24",
     external: ["electron"],
+    packages: "external",
   });
   const root = await mkdtemp(join(tmpdir(), "desk-account-ambiguous-"));
   const env = Object.fromEntries(
@@ -68,13 +69,14 @@ test("an ambiguous creation is never repeated, including after restart", async (
 });
 test("app-owned setup replays login redirect, live Add control, searchable roles, key download, Team ID, and automatic verification", async ({}, testInfo) => {
   await build({
-    entryPoints: ["tests/harness/account.ts"],
+    entryPoints: ["tests/harness/account-entry.ts"],
     outfile: "out/tests/account-harness.cjs",
     bundle: true,
     platform: "node",
     format: "cjs",
     target: "node24",
     external: ["electron"],
+    packages: "external",
   });
   const root = await mkdtemp(join(tmpdir(), "desk-account-replay-"));
   const env = Object.fromEntries(

@@ -1,3 +1,4 @@
+import { ProjectBuildSettings } from "./ProjectBuildSettings";
 import { useLogFollow } from "./useLogFollow";
 import { WorkProgress } from "./WorkProgress";
 import {
@@ -391,6 +392,12 @@ export function App() {
     platform: Platform;
     autoSubmit: boolean;
   }>();
+  const [importChoice, setImportChoice] = useState<{
+    path: string;
+    applications: import("../../core/project-discovery").ProjectApplication[];
+    selected: string;
+  }>();
+  const [workingLabel, setWorkingLabel] = useState("");
   const [reuseSearching, setReuseSearching] = useState(false);
   const [state, setState] = useState(initial),
     [page, setPage] = useState<Page>("project"),
@@ -409,6 +416,20 @@ export function App() {
     [selectedJob, setSelectedJob] = useState<string>();
   const project =
     state.projects.find((p) => p.id === projectId) ?? state.projects[0];
+  useEffect(() => {
+    const available = project?.platforms ?? ["ios", "android"];
+    if (platform !== "all" && !available.includes(platform))
+      setPlatform(available[0] ?? "ios");
+    if (platform === "all" && available.length === 1) setPlatform(available[0]);
+  }, [project?.id, project?.platforms?.join(",")]);
+  useEffect(() => {
+    if (project && !project.profiles.includes(profile))
+      setProfile(
+        project.profiles.includes("production")
+          ? "production"
+          : (project.profiles[0] ?? "production"),
+      );
+  }, [project?.id, project?.profiles.join(",")]);
   const checkRequest = useRef(0);
   const checkProject = useRef<string | undefined>(project?.id);
   checkProject.current = project?.id;
@@ -466,7 +487,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [project?.id, profile, platform, project?.settings.envCredentialId]);
+  }, [project?.id, profile, platform, JSON.stringify(project?.settings)]);
   useEffect(() => {
     refreshChecks(project?.id).catch((e) => notify(e.message, true));
     return () => {
@@ -492,12 +513,25 @@ export function App() {
       notify(e.message, true);
     } finally {
       setBusy(false);
+      setWorkingLabel("");
     }
   };
   const importProject = () =>
     action(async () => {
       const paths = await api.choose({ kind: "directory" });
       if (!paths[0]) return;
+      const applications = await api.projectApplications(paths[0]);
+      if (applications.length > 1) {
+        setImportChoice({
+          path: paths[0],
+          applications,
+          selected: applications[0].directory,
+        });
+        return;
+      }
+      setWorkingLabel(
+        "Inspecting the project and resolving dependencies. This can take a few minutes…",
+      );
       const p = await api.importProject(paths[0]);
       setProjectId(p.id);
       setProfile(
@@ -770,9 +804,8 @@ export function App() {
                       back to your desk.
                     </h2>
                     <p>
-                      Import an Expo project to bring its profiles, app
-                      configuration, and native plugins into a local release
-                      workflow.
+                      Import an Expo, Capacitor, or native iOS project to build,
+                      sign, and release from this Mac.
                     </p>
                     <Button
                       primary
@@ -780,12 +813,10 @@ export function App() {
                       disabled={busy}
                     >
                       <FolderOpen size={17} />
-                      Import an Expo project
+                      Import a project
                       <ArrowRight size={16} />
                     </Button>
-                    <small>
-                      Works with app.json, app.config.ts, and eas.json
-                    </small>
+                    <small>Expo · Capacitor · SwiftUI / UIKit</small>
                   </div>
                 </div>
               ) : (
@@ -804,8 +835,18 @@ export function App() {
                       <strong className="mono">{project.version ?? "—"}</strong>
                     </div>
                     <div>
-                      <small>EXPO</small>
-                      <strong className="mono">{project.sdk ?? "—"}</strong>
+                      <small>
+                        {project.type === "capacitor"
+                          ? "CAPACITOR"
+                          : project.type === "native-ios"
+                            ? "PROJECT"
+                            : "EXPO"}
+                      </small>
+                      <strong className="mono">
+                        {project.type === "native-ios"
+                          ? "Native iOS"
+                          : (project.sdk ?? "—")}
+                      </strong>
                     </div>
                     <button
                       className="path-link"
@@ -833,24 +874,33 @@ export function App() {
                       <div>
                         <label className="control-label">PLATFORM</label>
                         <div className="platform-toggle">
-                          {(["ios", "android", "all"] as const).map((p) => (
-                            <button
-                              key={p}
-                              onClick={() => setPlatform(p)}
-                              className={platform === p ? "selected" : ""}
-                            >
-                              {p === "all" ? (
-                                <Layers3 size={16} />
-                              ) : (
-                                <PlatformIcon platform={p} />
-                              )}{" "}
-                              {p === "ios"
-                                ? "iOS"
-                                : p === "android"
-                                  ? "Android"
-                                  : "Both"}
-                            </button>
-                          ))}
+                          {(["ios", "android", "all"] as const)
+                            .filter((p) =>
+                              p === "all"
+                                ? (project.platforms ?? ["ios", "android"])
+                                    .length > 1
+                                : (
+                                    project.platforms ?? ["ios", "android"]
+                                  ).includes(p),
+                            )
+                            .map((p) => (
+                              <button
+                                key={p}
+                                onClick={() => setPlatform(p)}
+                                className={platform === p ? "selected" : ""}
+                              >
+                                {p === "all" ? (
+                                  <Layers3 size={16} />
+                                ) : (
+                                  <PlatformIcon platform={p} />
+                                )}{" "}
+                                {p === "ios"
+                                  ? "iOS"
+                                  : p === "android"
+                                    ? "Android"
+                                    : "Both"}
+                              </button>
+                            ))}
                         </div>
                       </div>
                       <Field label="BUILD PROFILE">
@@ -973,7 +1023,11 @@ export function App() {
                     <section className="config-panel">
                       <div className="section-heading">
                         <h2>Profile details</h2>
-                        <span className="mono subtle">eas.json</span>
+                        <span className="mono subtle">
+                          {(project.type ?? "expo") === "expo"
+                            ? "eas.json"
+                            : "Local profiles"}
+                        </span>
                       </div>
                       <dl>
                         <div>
@@ -1005,11 +1059,18 @@ export function App() {
                       </dl>
                       <p className="config-note">
                         <FileCode2 size={14} />
-                        Your Expo plugins and app identity travel with the
-                        build.
+                        {(project.type ?? "expo") === "expo"
+                          ? "Your Expo plugins and app identity travel with the build."
+                          : "Native targets, plugins, and signing identities are preserved in isolated builds."}
                       </p>
                     </section>
                   </div>
+                  <ProjectBuildSettings
+                    key={project.id}
+                    project={project}
+                    inspection={inspection?.inspection}
+                    onSave={() => void refresh()}
+                  />
                   {!!inspection && (
                     <Compatibility
                       issues={[
@@ -1092,7 +1153,7 @@ export function App() {
             ) : (
               <Empty
                 icon={<Zap size={25} />}
-                heading="Start with your Expo project"
+                heading="Start with your app project"
                 action={
                   <Button primary onClick={() => void importProject()}>
                     Choose project
@@ -1441,7 +1502,9 @@ export function App() {
       {busy && (
         <div className="busy-indicator" role="status">
           <LoaderCircle className="spin" size={15} />
-          {reuseSearching ? "Checking local build compatibility…" : "Working…"}
+          {reuseSearching
+            ? "Checking local build compatibility…"
+            : workingLabel || "Working…"}
         </div>
       )}
       {toast && (
@@ -1483,6 +1546,60 @@ export function App() {
             action={action}
             close={() => setModal(undefined)}
           />
+        </Modal>
+      )}
+      {importChoice && (
+        <Modal
+          title="Choose an app in this repository"
+          close={() => setImportChoice(undefined)}
+        >
+          <p className="muted">
+            The full repository stays available to local packages. Choose the
+            app to build.
+          </p>
+          <label>
+            App directory
+            <select
+              aria-label="App directory"
+              value={importChoice.selected}
+              onChange={(e) =>
+                setImportChoice({ ...importChoice, selected: e.target.value })
+              }
+            >
+              {importChoice.applications.map((a) => (
+                <option key={a.directory} value={a.directory}>
+                  {a.directory} · {a.type}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="row-actions">
+            <Button
+              primary
+              disabled={busy}
+              onClick={() =>
+                void action(async () => {
+                  const selected = importChoice.applications.find(
+                    (a) => a.directory === importChoice.selected,
+                  )!;
+                  const p = await api.importProject(importChoice.path, {
+                    appDirectory: selected.directory,
+                    projectType: selected.type,
+                  });
+                  setImportChoice(undefined);
+                  setProjectId(p.id);
+                  setProfile(
+                    p.profiles.includes("production")
+                      ? "production"
+                      : p.profiles[0],
+                  );
+                  setPage("setup");
+                })
+              }
+            >
+              Import selected app
+            </Button>
+          </div>
         </Modal>
       )}
       {reuseChoice && (
@@ -2318,24 +2435,30 @@ function ToolchainSettings({
                 kind: "directory",
               },
             ] as const
-          ).map((f) => (
-            <Field label={f.label} key={f.key}>
-              <div className="input-with-button">
-                <input
-                  value={s[f.key] ?? ""}
-                  onChange={(e) => setS({ ...s, [f.key]: e.target.value })}
-                  placeholder="System default"
-                />
-                <button
-                  type="button"
-                  aria-label={`Choose ${f.label}`}
-                  onClick={() => void pick(f.key, f.kind)}
-                >
-                  <FolderOpen size={15} />
-                </button>
-              </div>
-            </Field>
-          ))}
+          )
+            .filter(
+              (f) =>
+                project.type !== "native-ios" ||
+                !["nodePath", "javaHome", "androidSdk"].includes(f.key),
+            )
+            .map((f) => (
+              <Field label={f.label} key={f.key}>
+                <div className="input-with-button">
+                  <input
+                    value={s[f.key] ?? ""}
+                    onChange={(e) => setS({ ...s, [f.key]: e.target.value })}
+                    placeholder="System default"
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Choose ${f.label}`}
+                    onClick={() => void pick(f.key, f.kind)}
+                  >
+                    <FolderOpen size={15} />
+                  </button>
+                </div>
+              </Field>
+            ))}
           <Field
             label="Xcode workspace"
             hint="Path relative to the ios folder."
@@ -2353,25 +2476,29 @@ function ToolchainSettings({
               placeholder="Auto-detect"
             />
           </Field>
-          <Field label="Native project mode">
-            <select
-              value={s.nativeMode ?? "auto"}
-              onChange={(e) =>
-                setS({
-                  ...s,
-                  nativeMode: e.target.value as ProjectSettings["nativeMode"],
-                })
-              }
-            >
-              <option value="auto">Auto-detect tracked native projects</option>
-              <option value="generated">
-                Generate native projects with Expo
-              </option>
-              <option value="maintained">
-                Preserve existing native projects
-              </option>
-            </select>
-          </Field>
+          {(project.type ?? "expo") === "expo" && (
+            <Field label="Native project mode">
+              <select
+                value={s.nativeMode ?? "auto"}
+                onChange={(e) =>
+                  setS({
+                    ...s,
+                    nativeMode: e.target.value as ProjectSettings["nativeMode"],
+                  })
+                }
+              >
+                <option value="auto">
+                  Auto-detect tracked native projects
+                </option>
+                <option value="generated">
+                  Generate native projects with Expo
+                </option>
+                <option value="maintained">
+                  Preserve existing native projects
+                </option>
+              </select>
+            </Field>
+          )}
         </div>
         <div className="form-footer">
           <Button primary type="submit">

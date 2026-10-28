@@ -38,6 +38,9 @@ export function compareBuilds(
       note: "No earlier successful build for this app and platform yet.",
     };
   const facts = (item: Job) => ({
+    "Project type":
+      item.facts?.projectType ?? item.projectSnapshot?.type ?? "expo",
+    "Native target": item.facts?.nativeTarget,
     "App identity": item.bundleId,
     "App version": item.version,
     "Build number": item.buildNumber,
@@ -48,6 +51,7 @@ export function compareBuilds(
     Simulator: item.facts?.simulator,
     "Signing identity": item.facts?.signing,
     Entitlements: item.facts?.entitlements,
+    "Target entitlements": item.facts?.targetEntitlements,
     Destination: item.facts?.destination ?? item.submission?.destination,
     Xcode: item.toolchain?.xcodeVersion,
     "iOS SDK": item.toolchain?.iosSdk,

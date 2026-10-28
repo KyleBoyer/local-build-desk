@@ -205,7 +205,13 @@ export async function installAndLaunch(
     progress("Launching app");
     const launch = await execute(
       "xcrun",
-      ["simctl", "launch", id, artifact.bundleId],
+      [
+        "simctl",
+        "launch",
+        "--terminate-running-process",
+        id,
+        artifact.bundleId,
+      ],
       options,
     );
     // simctl reports success even when the app crashes during startup.

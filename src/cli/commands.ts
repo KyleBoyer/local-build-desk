@@ -1,3 +1,7 @@
+import { detectProjectType, appRoot } from "../core/project-adapters";
+import { xcodeContainers, xcodegenSpecs } from "../core/xcode-project";
+import { hasFile } from "../core/config";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { resolveInvocation } from "./invocation";
 import {
@@ -11,7 +15,7 @@ import { inspectProject, resolveProfile } from "../core/config";
 import { resolve } from "node:path";
 import { Engine } from "../core/engine";
 import { invariant, messageOf } from "../core/errors";
-import type { Job, Platform, Project } from "../core/types";
+import type { Job, Platform, Project, ToolName } from "../core/types";
 import { privateDirectory } from "../core/vault";
 import { decodeProfile } from "../core/signing";
 import { AppleAPI } from "../core/stores";
@@ -101,7 +105,7 @@ export const help = `Local Build Desk — compile and upload from this Mac
     [--xcode-archive PATH] [--accept-xcode-license]
   ios-submit versions --project PATH [--platform ios|android|all] [--handoff-eas | --resume-local]
   ios-submit connect-google --project PATH --key SERVICE_ACCOUNT_JSON
-  ios-submit install-tool --project PATH --tool android|ios-platform|node|cocoapods|gcloud [--accept-android-license]
+  ios-submit install-tool --project PATH --tool android|ios-platform|node|cocoapods|xcodegen|gcloud [--accept-android-license]
   ios-submit build --project PATH --platform ios|android|all --profile production [--auto-submit] [--clean]
     [--build-directory PATH] stores snapshots and native caches on another disk
   ios-submit submit --artifact ARTIFACT_ID [--wait] [--timeout 1800]
@@ -110,6 +114,9 @@ export const help = `Local Build Desk — compile and upload from this Mac
   ios-submit cancel --job JOB_ID
   ios-submit reconcile --job JOB_ID
   ios-submit migrate --project PATH [--credentials FILE] [--env FILE] [--ios-last-used N] [--android-last-used N]
+
+Project selection: --project-type expo|capacitor|native-ios (omit for auto-detection), --app-directory PATH,
+--ios-target PATH --scheme NAME --configuration NAME, --web-build-script SCRIPT.
 
 CI: --settings-from PROJECT_ID --source CHECKOUT uses a saved settings template without importing the checkout.
 --config FILE (default SOURCE/ios-submit.json), --set field=value, and IOS_SUBMIT_* env override stored settings.
@@ -155,6 +162,13 @@ export async function runCLI(
         "play-auto-rollout": { type: "string" },
         "release-notes": { type: "string" },
         "asc-app-id": { type: "string" },
+        "project-type": { type: "string" },
+        "app-directory": { type: "string" },
+        "ios-target": { type: "string" },
+        configuration: { type: "string" },
+        "web-build-script": { type: "string" },
+        "ios-dependency-manager": { type: "string" },
+        "android-module": { type: "string" },
         workspace: { type: "string" },
         scheme: { type: "string" },
         "native-mode": { type: "string" },
@@ -286,7 +300,7 @@ export async function runCLI(
       invariant(
         project,
         "PROJECT_REQUIRED",
-        "Pass --project with an Expo folder or imported project ID.",
+        "Pass --project with an Expo, Capacitor, or native iOS folder or imported project ID.",
       );
       return project.id;
     };
@@ -301,15 +315,20 @@ export async function runCLI(
     }
     if (command === "install-tool") {
       invariant(
-        ["android", "ios-platform", "node", "cocoapods", "gcloud"].includes(
-          v.tool ?? "",
-        ),
+        [
+          "android",
+          "ios-platform",
+          "node",
+          "cocoapods",
+          "xcodegen",
+          "gcloud",
+        ].includes(v.tool ?? ""),
         "TOOL",
-        "Choose android, ios-platform, node, cocoapods, or gcloud.",
+        "Choose android, ios-platform, node, cocoapods, xcodegen, or gcloud.",
       );
       await engine.installTool(
         projectId(),
-        v.tool as "android" | "ios-platform" | "node" | "cocoapods" | "gcloud",
+        v.tool as ToolName,
         v["accept-android-license"] === true,
       );
       output({ installed: v.tool, checks: await engine.doctor(projectId()) });
@@ -457,10 +476,44 @@ export async function runCLI(
         "PLATFORM",
         "Use --platform ios, android, or all.",
       );
+      const kind = project
+        ? await detectProjectType(project.path, project.settings).catch(
+            () => project?.type ?? project?.settings.projectType,
+          )
+        : undefined;
+      const pods =
+        project?.usesCocoaPods ??
+        (kind === undefined ||
+          kind === "expo" ||
+          (project &&
+            (
+              await Promise.all(
+                (
+                  await xcodeContainers(appRoot(project.path, project.settings))
+                ).map((c) =>
+                  hasFile(
+                    join(
+                      appRoot(project.path, project.settings),
+                      c.path,
+                      "..",
+                      "Podfile",
+                    ),
+                  ),
+                ),
+              )
+            ).some(Boolean)));
       const checks = await doctor(
         project?.settings ?? {},
-        platform as Platform | "all",
+        (kind === "native-ios" && !v.platform ? "ios" : platform) as
+          Platform | "all",
         invocation?.context.noKeychain,
+        kind,
+        !!pods,
+        project?.usesXcodeGen ??
+          (!!project &&
+            kind !== "expo" &&
+            (await xcodegenSpecs(appRoot(project.path, project.settings)))
+              .length > 0),
       );
       output(checks);
       return checks.some((c) => c.status === "error") ? 1 : 0;
@@ -490,10 +543,18 @@ export async function runCLI(
         v.profile ?? "production",
         platform as Platform,
       );
-      inspection = await inspectProject(project!.path, project!.settings, {
-        ...env,
-        ...profile.env,
-      });
+      inspection = await inspectProject(
+        project!.path,
+        {
+          ...project!.settings,
+          configuration: profile.configuration,
+          scheme: project!.settings.scheme ?? profile.scheme,
+        },
+        {
+          ...env,
+          ...profile.env,
+        },
+      );
       const result = { inspection, profile };
       Object.assign(project!, {
         name: inspection.name,

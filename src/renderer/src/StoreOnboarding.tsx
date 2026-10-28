@@ -22,6 +22,24 @@ export function StoreOnboarding({
   busy: boolean;
   operation: (name: string, fn: () => Promise<unknown>) => Promise<void>;
 }) {
+  const [targets, setTargets] = useState<
+      import("../../core/types").IOSTarget[]
+    >([]),
+    [targetBundleId, setTargetBundleId] = useState(project.bundleId ?? "");
+  useEffect(() => {
+    let active = true;
+    setTargetBundleId(project.bundleId ?? "");
+    if (platform === "ios")
+      void api
+        .inspect(project.id)
+        .then((r) => {
+          if (active) setTargets(r.inspection.iosTarget?.targets ?? []);
+        })
+        .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [project.id, platform, project.bundleId]);
   const [name, setName] = useState(project.name),
     [language, setLanguage] = useState("en-US"),
     [sku, setSku] = useState(project.bundleId ?? ""),
@@ -89,6 +107,10 @@ export function StoreOnboarding({
     pricing,
     newApp,
     artifactId: mode === "bootstrap" ? artifactId : undefined,
+    targetBundleId:
+      mode === "capabilities" && targets.length > 1
+        ? targetBundleId
+        : undefined,
   });
   const open = (mode: StoreSetupRequest["mode"]) =>
     operation("store-" + mode, () =>
@@ -157,6 +179,22 @@ export function StoreOnboarding({
       >
         Set up store app record <ArrowRight size={13} />
       </button>
+      {platform === "ios" && targets.length > 1 && (
+        <label className="field">
+          <span>Capability assignment target</span>
+          <select
+            aria-label="Capability assignment target"
+            value={targetBundleId}
+            onChange={(e) => setTargetBundleId(e.target.value)}
+          >
+            {targets.map((t) => (
+              <option key={t.bundleId} value={t.bundleId}>
+                {t.name} · {t.bundleId}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {platform === "ios" ? (
         <button
           className="button"

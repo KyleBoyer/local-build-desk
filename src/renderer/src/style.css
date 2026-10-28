@@ -2932,3 +2932,29 @@ footer span:first-child {
 .artifact-row:has(.device-install) {
   flex-wrap: wrap;
 }
+
+.adapter-settings {
+  margin-top: 22px;
+}
+.adapter-settings .row-actions {
+  margin-top: 18px;
+}
+.profile-json {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  width: 100%;
+}
+.target-list {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+}
+.target-list > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}

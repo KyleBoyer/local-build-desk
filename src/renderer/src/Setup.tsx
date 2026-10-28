@@ -137,14 +137,31 @@ export function Setup({
           "iOS SDK",
           "iOS platform",
           "CocoaPods",
+          "XcodeGen",
           "Git",
           "Build storage",
         ]
       : ["Node.js", "Java", "Android SDK", "Git", "Build storage"];
+  const relevantRequired = required
+    .filter((name) => project.type !== "native-ios" || name !== "Node.js")
+    .filter(
+      (name) =>
+        project.type !== "capacitor" ||
+        name !== "CocoaPods" ||
+        project.usesCocoaPods,
+    );
+  const actualRequired = relevantRequired
+    .filter(
+      (name) =>
+        name !== "CocoaPods" ||
+        project.usesCocoaPods ||
+        (project.type ?? "expo") === "expo",
+    )
+    .filter((name) => name !== "XcodeGen" || project.usesXcodeGen);
   const toolErrors = checks.filter(
-    (c) => required.includes(c.name) && c.status === "error",
+    (c) => actualRequired.includes(c.name) && c.status === "error",
   );
-  const toolsReady = required.every((name) =>
+  const toolsReady = actualRequired.every((name) =>
     checks.some(
       (c) =>
         c.name === name &&
@@ -183,6 +200,9 @@ export function Setup({
             iOS / TestFlight
           </button>
           <button
+            hidden={
+              !(project.platforms ?? ["ios", "android"]).includes("android")
+            }
             className={platform === "android" ? "selected" : ""}
             onClick={() => setPlatform("android")}
           >
@@ -225,7 +245,7 @@ export function Setup({
               </p>
               <div className="setup-checks">
                 {checks
-                  .filter((c) => required.includes(c.name))
+                  .filter((c) => actualRequired.includes(c.name))
                   .map((c) => (
                     <span
                       key={c.name}
@@ -287,6 +307,24 @@ export function Setup({
                   Install CocoaPods
                 </button>
               )}
+              {toolErrors.some((c) => c.name === "XcodeGen") && (
+                <button
+                  className="button"
+                  disabled={!!working}
+                  onClick={() =>
+                    void operation("xcodegen", () =>
+                      api.installTool(project.id, "xcodegen", false),
+                    )
+                  }
+                >
+                  {working === "xcodegen" ? (
+                    <LoaderCircle className="spin" size={14} />
+                  ) : (
+                    <DownloadIcon />
+                  )}
+                  Install XcodeGen
+                </button>
+              )}
               {platform === "ios" &&
                 checks.some(
                   (c) => c.name === "iOS platform" && c.status !== "ok",
@@ -325,9 +363,9 @@ export function Setup({
                   checks.find((c) => c.name === "Java")?.status !== "ok") && (
                   <div className="sdk-install">
                     <p>
-                      Install the Android SDK tools and JDK 17 through Homebrew.
-                      Additional project-specific SDK/NDK packages are detected
-                      during your first build.
+                      Install the Android SDK tools and the project-compatible
+                      JDK through Homebrew. Additional project-specific SDK/NDK
+                      packages are detected during your first build.
                     </p>
                     <button
                       className="text-button"

@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAPI, DeskEvent } from "../core/types";
 const names = [
+  "exportBuildSettings",
+  "importBuildSettings",
   "readRelease",
   "relinkArtifact",
   "installTargets",
@@ -24,6 +26,7 @@ const names = [
   "approveXcodeLicense",
   "state",
   "choose",
+  "projectApplications",
   "importProject",
   "inspect",
   "saveSettings",

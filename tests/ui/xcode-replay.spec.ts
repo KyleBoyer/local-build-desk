@@ -7,13 +7,14 @@ import { tmpdir } from "node:os";
 for (const scenario of ["xcode-success", "xcode-failure"]) {
   test(`${scenario}: download, explicit license approval, components, and retained recovery`, async () => {
     await build({
-      entryPoints: ["tests/harness/account.ts"],
+      entryPoints: ["tests/harness/account-entry.ts"],
       outfile: "out/tests/xcode-harness.cjs",
       bundle: true,
       platform: "node",
       format: "cjs",
       target: "node24",
       external: ["electron"],
+      packages: "external",
     });
     const root = await mkdtemp(join(tmpdir(), "desk-xcode-replay-"));
     const env = Object.fromEntries(

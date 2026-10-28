@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { randomUUID } from "node:crypto";
 import { invariant } from "./errors";
 import type { Project, Job, Artifact, CredentialSummary } from "./types";
@@ -10,7 +10,7 @@ export class Store {
     mkdirSync(root, { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(join(root, "desk.sqlite"));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,path TEXT UNIQUE NOT NULL,data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY,path TEXT NOT NULL,app_directory TEXT NOT NULL DEFAULT '.',data TEXT NOT NULL,UNIQUE(path,app_directory));
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS credentials(id TEXT PRIMARY KEY,summary TEXT NOT NULL,encrypted BLOB NOT NULL);
@@ -18,6 +18,41 @@ export class Store {
       CREATE TABLE IF NOT EXISTS version_claims(identity TEXT NOT NULL,number INTEGER NOT NULL,owner TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(identity,number),UNIQUE(identity,owner));
       CREATE TABLE IF NOT EXISTS counter_authority(identity TEXT PRIMARY KEY,authority TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
+    if (
+      !(
+        this.db.prepare("PRAGMA table_info(projects)").all() as {
+          name: string;
+        }[]
+      ).some((c) => c.name === "app_directory")
+    ) {
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        const rows = this.db
+          .prepare("SELECT id,path,data FROM projects")
+          .all() as { id: string; path: string; data: string }[];
+        this.db.exec(
+          "CREATE TABLE projects_by_app(id TEXT PRIMARY KEY,path TEXT NOT NULL,app_directory TEXT NOT NULL DEFAULT '.',data TEXT NOT NULL,UNIQUE(path,app_directory))",
+        );
+        const insert = this.db.prepare(
+          "INSERT INTO projects_by_app(id,path,app_directory,data) VALUES(?,?,?,?)",
+        );
+        for (const row of rows) {
+          const project = JSON.parse(row.data) as Project;
+          insert.run(
+            row.id,
+            row.path,
+            appDirectoryKey(project.settings.appDirectory),
+            row.data,
+          );
+        }
+        this.db.exec(
+          "DROP TABLE projects; ALTER TABLE projects_by_app RENAME TO projects; COMMIT",
+        );
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
     for (const summary of this.credentialSummaries().filter(
       (item) => item.kind === "apple" && item.detail.includes(" · "),
     )) {
@@ -42,9 +77,14 @@ export class Store {
   putProject(project: Project) {
     this.db
       .prepare(
-        "INSERT INTO projects(id,path,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path,data=excluded.data",
+        "INSERT INTO projects(id,path,app_directory,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET path=excluded.path,app_directory=excluded.app_directory,data=excluded.data",
       )
-      .run(project.id, project.path, JSON.stringify(project));
+      .run(
+        project.id,
+        project.path,
+        appDirectoryKey(project.settings.appDirectory),
+        JSON.stringify(project),
+      );
   }
   putJob(job: Job) {
     this.db
@@ -338,3 +378,7 @@ export class Store {
 }
 export const id = () => randomUUID();
 export const now = () => new Date().toISOString();
+
+export function appDirectoryKey(value?: string) {
+  return normalize(value || ".").replace(/\/+$/, "") || ".";
+}

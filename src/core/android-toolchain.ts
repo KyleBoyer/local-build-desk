@@ -35,15 +35,60 @@ export function androidPackages(
 export async function projectAndroidPackages(
   root: string,
   ndkOverride?: string,
+  androidRoot = join(root, "android"),
 ) {
   const catalog = await readFile(
     join(root, "node_modules/react-native/gradle/libs.versions.toml"),
     "utf8",
   ).catch(() => "");
   const properties = await readFile(
-    join(root, "android/gradle.properties"),
+    join(androidRoot, "gradle.properties"),
     "utf8",
   ).catch(() => "");
+  const variables = await readFile(
+    join(androidRoot, "variables.gradle"),
+    "utf8",
+  ).catch(() => "");
+  const application = (
+    await Promise.all(
+      [
+        "build.gradle",
+        "build.gradle.kts",
+        "app/build.gradle",
+        "app/build.gradle.kts",
+      ].map((p) => readFile(join(androidRoot, p), "utf8").catch(() => "")),
+    )
+  ).join("\n");
+  const versionCatalog = await readFile(
+    join(androidRoot, "gradle/libs.versions.toml"),
+    "utf8",
+  ).catch(() => "");
+  const native =
+    variables + "\n" + application + "\n" + properties + "\n" + versionCatalog;
+  const number = (name: string) =>
+    native.match(
+      new RegExp(`\\b${name}\\s*(?:=|\\s)\\s*["']?(\\d+(?:\\.\\d+)*)`),
+    )?.[1];
+  const compile = number("compileSdkVersion") ?? number("compileSdk");
+  if (compile)
+    return [
+      "platform-tools",
+      `platforms;android-${compile}`,
+      `build-tools;${number("buildToolsVersion") ?? compile + ".0.0"}`,
+      ...(ndkOverride ||
+      (/externalNativeBuild|cmake|ndkBuild/.test(native) &&
+        number("ndkVersion"))
+        ? [`ndk;${ndkOverride ?? number("ndkVersion")}`]
+        : []),
+    ];
+  const pkg = await readFile(join(root, "package.json"), "utf8")
+    .then(JSON.parse)
+    .catch(() => ({}));
+  if (
+    pkg.dependencies?.["@capacitor/core"] ||
+    pkg.devDependencies?.["@capacitor/core"]
+  )
+    return ["platform-tools"];
   return androidPackages(catalog, properties, ndkOverride);
 }
 export async function ensureAndroidPackages(
@@ -52,8 +97,12 @@ export async function ensureAndroidPackages(
   accepted: boolean,
   options: CommandOptions,
   ndkOverride?: string,
+  androidRoot?: string,
+  requestedPackages?: string[],
 ) {
-  const packages = await projectAndroidPackages(root, ndkOverride);
+  const packages =
+    requestedPackages ??
+    (await projectAndroidPackages(root, ndkOverride, androidRoot));
   const missing: string[] = [];
   for (const pkg of packages)
     if (
@@ -128,4 +177,55 @@ export function resolveAndroidPackagePaths(
       `Google's SDK catalog does not provide ${pkg}. Check the project's requested SDK/NDK version; no alternative version was installed.`,
     );
   });
+}
+
+export async function requiredAndroidJava(root: string) {
+  const pkg = await readFile(join(root, "package.json"), "utf8")
+    .then(JSON.parse)
+    .catch(() => ({}));
+  const cap =
+    pkg.dependencies?.["@capacitor/core"] ??
+    pkg.devDependencies?.["@capacitor/core"];
+  const native = await Promise.all(
+    [
+      "android/app/build.gradle",
+      "android/app/build.gradle.kts",
+      "android/build.gradle",
+      "android/build.gradle.kts",
+      "node_modules/@capacitor/android/capacitor/build.gradle",
+    ].map((p) => readFile(join(root, p), "utf8").catch(() => "")),
+  );
+  const versions = [
+    ...native
+      .join("\n")
+      .matchAll(
+        /(?:JavaVersion\.VERSION_|JavaLanguageVersion\.of\(|jvmTarget\s*=\s*["'])(\d+)/g,
+      ),
+  ].map((m) => Number(m[1]));
+  return versions.length
+    ? Math.max(17, ...versions)
+    : cap && Number(String(cap).match(/\d+/)?.[0]) >= 8
+      ? 21
+      : 17;
+}
+
+export function androidModelPackages(model: {
+  compileSdk: string | number;
+  buildTools: string;
+  ndk?: string;
+}) {
+  const sdk = String(model.compileSdk).replace(/^android-/, "");
+  invariant(
+    /^\d+$/.test(sdk) &&
+      /^\d+(?:\.\d+){1,2}$/.test(model.buildTools) &&
+      (!model.ndk || /^\d+(?:\.\d+){1,2}$/.test(model.ndk)),
+    "ANDROID_MODEL",
+    "Gradle did not report valid compile SDK/build tools requirements. Check the selected application module and variant.",
+  );
+  return [
+    "platform-tools",
+    `platforms;android-${sdk}`,
+    `build-tools;${model.buildTools}`,
+    ...(model.ndk ? [`ndk;${model.ndk}`] : []),
+  ];
 }

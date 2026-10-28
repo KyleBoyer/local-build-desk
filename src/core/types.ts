@@ -1,4 +1,40 @@
 export type Platform = "ios" | "android";
+export type ProjectType = "expo" | "capacitor" | "native-ios";
+export interface LocalBuildProfile {
+  extends?: string;
+  configuration?: string;
+  distribution?: "store" | "internal";
+  simulator?: boolean;
+  debug?: boolean;
+  autoIncrement?: boolean;
+  env?: Record<string, string>;
+  scheme?: string;
+  androidVariant?: string;
+  buildType?: "apk" | "app-bundle";
+}
+export interface XcodeContainer {
+  path: string;
+  kind: "project" | "workspace";
+}
+export interface IOSTarget {
+  name: string;
+  project: string;
+  configuration: string;
+  bundleId: string;
+  version: string;
+  buildNumber: string;
+  productType: "application" | "extension";
+  entitlements: Record<string, any>;
+  entitlementsFile?: string;
+  infoPlist?: string;
+  deploymentTarget?: string;
+}
+export interface IOSBuildTarget {
+  container: XcodeContainer;
+  scheme: string;
+  configuration: string;
+  targets: IOSTarget[];
+}
 export type Severity = "error" | "warning" | "info";
 export interface Issue {
   severity: Severity;
@@ -7,6 +43,7 @@ export interface Issue {
   field?: string;
 }
 export interface Profile {
+  debugBuild?: boolean;
   name: string;
   distribution: "store" | "internal";
   developmentClient: boolean;
@@ -22,6 +59,14 @@ export interface Profile {
   issues: Issue[];
 }
 export interface ProjectSettings {
+  projectType?: ProjectType;
+  appDirectory?: string;
+  iosTarget?: string;
+  configuration?: string;
+  webBuildScript?: string;
+  iosDependencyManager?: "SPM" | "CocoaPods";
+  androidModule?: string;
+  localProfiles?: Record<string, LocalBuildProfile>;
   nodePath?: string;
   javaHome?: string;
   androidSdk?: string;
@@ -51,7 +96,13 @@ export interface ProjectSettings {
   testFlightGroupId?: string;
   testFlightGroupName?: string;
 }
+export type ToolName =
+  "node" | "cocoapods" | "xcodegen" | "android" | "gcloud" | "ios-platform";
 export interface Project {
+  usesCocoaPods?: boolean;
+  usesXcodeGen?: boolean;
+  type?: ProjectType;
+  platforms?: Platform[];
   id: string;
   path: string;
   name: string;
@@ -64,6 +115,23 @@ export interface Project {
   settings: ProjectSettings;
 }
 export interface Inspection {
+  usesCocoaPods?: boolean;
+  usesXcodeGen?: boolean;
+  type?: ProjectType;
+  platforms?: Platform[];
+  appDirectory?: string;
+  containers?: XcodeContainer[];
+  schemes?: string[];
+  iosTarget?: IOSBuildTarget;
+  capacitor?: {
+    version: string;
+    webDir: string;
+    webBuildScript: string;
+    iosPath: string;
+    androidPath: string;
+    dependencyManager: "SPM" | "CocoaPods";
+    plugins: string[];
+  };
   name: string;
   version: string;
   bundleId?: string;
@@ -285,6 +353,8 @@ export interface DesktopAPI {
     artifactId: string,
     upload: boolean,
   ): Promise<Job>;
+  exportBuildSettings(projectId: string): Promise<boolean>;
+  importBuildSettings(projectId: string): Promise<void>;
   exportBackup(password: string): Promise<string | undefined>;
   previewBackup(password: string): Promise<BackupPreview | undefined>;
   restoreBackup(
@@ -316,7 +386,10 @@ export interface DesktopAPI {
     kind: "directory" | "file" | "files";
     extensions?: string[];
   }): Promise<string[]>;
-  importProject(path: string): Promise<Project>;
+  projectApplications(
+    path: string,
+  ): Promise<import("./project-discovery").ProjectApplication[]>;
+  importProject(path: string, settings?: ProjectSettings): Promise<Project>;
   inspect(
     projectId: string,
     profile?: string,
@@ -376,7 +449,7 @@ export interface DesktopAPI {
   setupLogs(projectId: string): Promise<LogEntry[]>;
   installTool(
     projectId: string,
-    tool: "node" | "cocoapods" | "android" | "gcloud" | "ios-platform",
+    tool: ToolName,
     acceptAndroidLicense: boolean,
   ): Promise<void>;
   googleLogin(projectId: string): Promise<void>;
@@ -438,6 +511,9 @@ export interface DesktopAPI {
 }
 
 export interface BuildFacts {
+  projectType?: ProjectType;
+  nativeTarget?: string;
+  targetEntitlements?: Record<string, Record<string, unknown>>;
   toolVersions?: Record<string, string>;
   sourceCommit?: string;
   sourceHash?: string;
@@ -542,6 +618,7 @@ export interface GoogleSetupState {
   requestNewPlayApp?: boolean;
 }
 export interface StoreSetupRequest {
+  targetBundleId?: string;
   provider: AccountProvider;
   mode: "record" | "capabilities" | "bootstrap";
   appName: string;

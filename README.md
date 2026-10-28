@@ -1,10 +1,10 @@
 # Local Build Desk
 
-An Electron / React / TypeScript app that builds Expo apps on your Mac and uploads directly to App Store Connect and Google Play. The desktop and `ios-submit` CLI share one queue, credential vault, and SQLite database. Routine operations do not use EAS Build or EAS Submit.
+An Electron / React / TypeScript app that builds Expo, Capacitor, and native iOS apps on your Mac and uploads directly to App Store Connect and Google Play. The desktop and `ios-submit` CLI share one queue, credential vault, and SQLite database. Routine operations do not use EAS Build or EAS Submit.
 
 ## Run
 
-Requires macOS, Git, and Node.js 24 or newer (`.nvmrc` selects Node 24). Install native build tools for your Expo project's requirements through Guided setup or Toolchain. You do not need the original developer's machine, app project, Codex installation, accounts, signing identities, or file paths.
+Requires macOS, Git, and Node.js 24 or newer (`.nvmrc` selects Node 24). Install native build tools for your project's requirements through Guided setup or Toolchain. You do not need the original developer's machine, app project, Codex installation, accounts, signing identities, or file paths.
 
 ```sh
 npm ci
@@ -21,6 +21,69 @@ npm run package
 ```
 
 `npm run package` produces an unsigned local app. Signed and notarized distributable packages use the dedicated GitHub release workflow described below.
+
+## Supported project types
+
+Import an **Expo**, **Capacitor**, or **native iOS** repository. If it contains several apps, choose one in the app picker; the repository root stays available to local packages. Multiple apps can share that root and retain separate settings/signing references. Existing Expo imports and EAS profiles keep their behavior.
+
+| Project    | Preparation                                                              | Native outputs                              |
+| ---------- | ------------------------------------------------------------------------ | ------------------------------------------- |
+| Expo       | Installed Expo config, EAS profiles, optional prebuild                   | iOS simulator app / IPA; Android APK / AAB  |
+| Capacitor  | Locked dependencies → web build → Capacitor add/sync inside the snapshot | iOS simulator app / IPA; Android APK / AAB  |
+| Native iOS | Xcode project/workspace, optional Swift packages or CocoaPods            | iOS simulator app / IPA, archives and dSYMs |
+
+Capacitor 8 is the validated baseline. The project’s own CLI, plugins, native paths, and dependency manager are preserved. The default web script is `build`; select another package script in **Project → Project build settings**. `webDir/index.html` must be produced freshly. Existing native directories are maintained; missing platforms are generated only in the build copy, and only when their platform dependency is declared. Newly generated Capacitor 8 iOS projects default to Swift Package Manager. Unsupported plugin warnings stop packaging rather than silently dropping a plugin. Production profiles cannot use `server.url` to load a development server.
+
+Native SwiftUI/UIKit projects can use `.xcodeproj` or `.xcworkspace`, generated Info.plists, `.xcconfig` variables, local Swift packages, widgets, and share extensions. Choose the app container and scheme when detection is ambiguous. Xcode resolves effective identities/versions and each embedded target’s entitlements. Signing setup prepares matching profiles per app/extension; capability assignment has a target selector. Frameworks and tests do not get provisioning profiles. Native desktop builds require Xcode and their actual native dependencies; Node/npm, Expo, Java, and CocoaPods are not prerequisites for a pure Swift/SPM app.
+
+Swift package resolution honors existing `Package.resolved` pins. Android SDK/build-tools requirements come from native Gradle configuration and the selected variant’s resolved model, with no React Native fallback for Capacitor. Guided setup selects a project-compatible JDK; missing SDK packages install after license acceptance. Toolchain selection stays per project.
+
+Non-Expo apps have editable **Local build profiles**:
+
+- `development`: Debug iOS simulator app / Android debug APK.
+- `preview`: ad-hoc iOS IPA / signed Android APK. Ad-hoc signing requires registered devices.
+- `production`: App Store IPA / signed Play AAB.
+
+Profiles support inheritance, configuration, distribution, simulator/debug selection, environment values, scheme, Android variant/build type, and automatic build-number increments. Existing native settings determine the app identity and marketing version. A newly generated Capacitor platform starts from the package’s version. Version overrides affect only the copied native project, and embedded extensions are verified against the same reserved version/build number.
+
+Export/import portable settings from the project screen, or provide `ios-submit.json` / `--config FILE`:
+
+```json
+{
+  "settings": {
+    "projectType": "capacitor",
+    "appDirectory": "apps/mobile",
+    "webBuildScript": "build",
+    "minimumIosSdk": "27.2",
+    "localProfiles": {
+      "development": {
+        "configuration": "Debug",
+        "distribution": "internal",
+        "simulator": true,
+        "debug": true,
+        "buildType": "apk",
+        "autoIncrement": true
+      },
+      "production": {
+        "configuration": "Release",
+        "distribution": "store",
+        "buildType": "app-bundle",
+        "autoIncrement": true
+      }
+    }
+  }
+}
+```
+
+Portable exports omit signing references, account connections, and machine-specific tool/storage paths. Profile `env` values are configuration literals; keep secrets in imported encrypted environment values or invocation credential references. The encrypted backup retains the complete local setup. Builds with unpinned dependencies are excluded from artifact reuse; Capacitor web changes always invalidate packaged artifacts. No Expo development-client shortcut is used for native or Capacitor binaries.
+
+The CLI accepts `--project-type`, `--app-directory`, `--ios-target`, `--scheme`, `--configuration`, `--web-build-script`, `--ios-dependency-manager`, and `--android-module`. When a repository has several imported apps, select its project ID or `--app-directory` so signing settings cannot come from another app. For a packaged native build without the Node-based CLI wrapper, use the bundled executable directly:
+
+```sh
+"/Applications/Local Build Desk.app/Contents/MacOS/Local Build Desk" --desk-cli build --project /path/to/native-app --platform ios --profile development
+```
+
+XcodeGen projects are supported: when a `project.yml` has no committed `.xcodeproj` beside it (or the generated project is gitignored), Local Build Desk runs `xcodegen generate` inside each disposable snapshot, so your checkout is never modified. Install XcodeGen from Guided setup or `brew install xcodegen`. macOS/watchOS/tvOS apps, standalone Swift libraries, Tuist projects, and hosted web/OTA updates are outside this release; generate a Tuist project before importing it. Local dependencies must stay within the imported repository root; external source symlinks are rejected.
 
 ## From zero to TestFlight
 
@@ -127,6 +190,8 @@ Data lives in `~/Library/Application Support/Local Build Desk`:
 - `cache/`: package downloads, Gradle caches, and compatible native output caches.
 - `setup/`: setup activity logs.
 
+Project records are keyed by repository root and app directory. The first launch upgrades older path-only records transactionally while preserving IDs, jobs, and counters.
+
 Secrets are encrypted using Electron `safeStorage`, backed by the macOS Keychain. Decrypted credential files live in private temporary directories and are removed after use. Gradle configuration caching is disabled for builds so injected signing passwords are not serialized into that cache. Native outputs and dependency download caches remain available. Signing keychains are temporary; imported profiles are removed when the job ends if the app installed them. Build logs redact imported environment values, signing passwords, and keys. Secrets required by project scripts remain available to those scripts; only import projects you trust. Back up your signing keys and keep your Mac account secure.
 
 The renderer is sandboxed with context isolation and no Node integration. Its preload bridge exposes validated methods; it cannot run arbitrary shell commands. `LOCAL_BUILD_DESK_DATA_DIR` selects an alternative data directory for tests or isolated installations.
@@ -135,7 +200,7 @@ The renderer is sandboxed with context isolation and no Node integration. Its pr
 
 Supported build-profile behavior includes inheritance, platform overrides, environment values, development/preview/store profiles, simulator builds, build-number increments, Android APK/AAB selection, explicit schemes/configurations, and EAS lifecycle hooks. `expo-dev-client` is required for profiles that request it. Tool version fields are checked against local tools. Cloud resource/image/cache settings are reported as local differences. Unsupported fields stop preflight instead of being silently ignored.
 
-Generated native projects get versions in the copied Expo config. Maintained native projects retain their native configuration and are verified against the expected identity/version. Custom multi-flavor Gradle commands must yield one artifact. Dynamic bundle IDs must resolve consistently. Signing multiple iOS targets requires matching profiles for each literal bundle identifier. Workspace dependencies or symlinks outside the imported project root need a self-contained project root; external symlinks are rejected.
+Generated native projects get versions in the copied Expo config. Maintained native projects retain their native configuration and are verified against the expected identity/version. Custom multi-flavor Gradle commands must yield one artifact. Dynamic bundle IDs must resolve consistently. Signing multiple iOS targets requires matching profiles for every resolved bundle identifier; native iOS/Capacitor setup resolves build-setting variables and prepares embedded-target profiles. Workspace dependencies or symlinks outside the imported project root need a self-contained project root; external symlinks are rejected.
 
 Screenshots, review submission, external tester invitation/review, and production rollout remain outside this release. Localized release/listing metadata can be prepared in the Release assistant. Uploading to TestFlight is not an App Store production release.
 

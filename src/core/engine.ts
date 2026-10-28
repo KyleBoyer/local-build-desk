@@ -1,3 +1,7 @@
+import { inside } from "./xcode-project";
+import { projectApplications, projectSettings } from "./project-discovery";
+import { settingsSchema } from "./settings-schema";
+import { defaultLocalProfiles } from "./project-adapters";
 import { withLock } from "./locks";
 import {
   captureBackup,
@@ -9,7 +13,7 @@ import {
 import { compareBuilds } from "./comparison";
 import { inspectReuse } from "./reuse";
 import { listInstallTargets, installAndLaunch } from "./devices";
-import type { ReusableBuild } from "./types";
+import type { ReusableBuild, ToolName } from "./types";
 import {
   releaseContext,
   contextFingerprint,
@@ -33,7 +37,7 @@ import {
   readdirSync,
   mkdirSync as requireMkdir,
 } from "node:fs";
-import { resolve, join, dirname, extname } from "node:path";
+import { resolve, join, dirname, extname, relative } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { Store, id, now } from "./database";
 import { Vault, importCredential, privateDirectory } from "./vault";
@@ -644,13 +648,23 @@ export class Engine extends EventEmitter {
   changed() {
     this.emit("event", { type: "state" } satisfies DeskEvent);
   }
-  async importProject(path: string) {
+  projectApplications(path: string) {
+    return projectApplications(path);
+  }
+  async importProject(path: string, settings: ProjectSettings = {}) {
     path = await realpath(resolve(path));
+    settings = await projectSettings(path, settings);
+    settings.appDirectory =
+      relative(path, inside(path, settings.appDirectory ?? ".")) || ".";
     const existing = this.store
       .list<Project>("projects")
-      .find((p) => p.path === path);
+      .find(
+        (p) =>
+          p.path === path &&
+          (p.settings.appDirectory ?? ".") === settings.appDirectory,
+      );
     if (existing) return existing;
-    const info = await inspectProject(path);
+    const info = await inspectProject(path, settings);
     const project: Project = {
       id: id(),
       path,
@@ -659,9 +673,13 @@ export class Engine extends EventEmitter {
       packageName: info.packageName,
       version: info.version,
       sdk: info.sdk,
+      usesCocoaPods: info.usesCocoaPods,
+      usesXcodeGen: info.usesXcodeGen,
+      type: info.type,
+      platforms: info.platforms,
       profiles: info.profiles,
       createdAt: now(),
-      settings: { track: "internal" },
+      settings: { track: "internal", ...settings },
     };
     this.store.putProject(project);
     this.changed();
@@ -683,10 +701,22 @@ export class Engine extends EventEmitter {
       ? resolveProfile(inspection.eas, profile, platform)
       : undefined;
     if (resolved)
-      inspection = await inspectProject(project.path, project.settings, {
-        ...env,
-        ...resolved.env,
-      });
+      inspection = await inspectProject(
+        project.path,
+        {
+          ...project.settings,
+          configuration: resolved.configuration,
+          scheme: project.settings.scheme ?? resolved.scheme,
+        },
+        {
+          ...env,
+          ...resolved.env,
+        },
+      );
+    project.usesCocoaPods = inspection.usesCocoaPods;
+    project.usesXcodeGen = inspection.usesXcodeGen;
+    project.type = inspection.type;
+    project.platforms = inspection.platforms;
     project.name = inspection.name;
     project.bundleId = inspection.bundleId;
     project.packageName = inspection.packageName;
@@ -696,8 +726,78 @@ export class Engine extends EventEmitter {
     this.store.putProject(project);
     return { inspection, profile: resolved };
   }
+  private portableKeys = [
+    "projectType",
+    "appDirectory",
+    "iosTarget",
+    "scheme",
+    "configuration",
+    "webBuildScript",
+    "iosDependencyManager",
+    "androidModule",
+    "localProfiles",
+    "minimumIosSdk",
+    "iosSdk",
+  ] as const;
+  portableBuildSettings(projectId: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const settings = {
+      ...project.settings,
+      projectType: project.type ?? "expo",
+      localProfiles:
+        project.settings.localProfiles ??
+        ((project.type ?? "expo") === "expo"
+          ? undefined
+          : defaultLocalProfiles),
+    };
+    return (
+      JSON.stringify(
+        {
+          settings: Object.fromEntries(
+            this.portableKeys
+              .filter((key) => settings[key] !== undefined)
+              .map((key) => [key, settings[key]]),
+          ),
+        },
+        null,
+        2,
+      ) + "\n"
+    );
+  }
+  loadBuildSettings(projectId: string, text: string) {
+    const value = JSON.parse(text),
+      settings = settingsSchema.parse(value.settings);
+    invariant(
+      Object.keys(settings).every((key) =>
+        this.portableKeys.includes(key as any),
+      ),
+      "BUILD_SETTINGS",
+      "Import only portable build settings. Use the encrypted backup for credentials and machine-specific settings.",
+    );
+    const project = this.store.get<Project>("projects", projectId);
+    this.saveSettings(projectId, { ...project.settings, ...settings });
+  }
   saveSettings(projectId: string, settings: ProjectSettings) {
     const project = this.store.get<Project>("projects", projectId);
+    if (settings.appDirectory)
+      settings = {
+        ...settings,
+        appDirectory:
+          relative(project.path, inside(project.path, settings.appDirectory)) ||
+          ".",
+      };
+    invariant(
+      !this.store
+        .list<Project>("projects")
+        .some(
+          (p) =>
+            p.id !== projectId &&
+            p.path === project.path &&
+            (p.settings.appDirectory ?? ".") === (settings.appDirectory ?? "."),
+        ),
+      "PROJECT_EXISTS",
+      "This app is already imported. Select its existing project instead.",
+    );
     if (settings.buildDirectory) {
       settings.buildDirectory = resolve(settings.buildDirectory);
       invariant(
@@ -707,13 +807,38 @@ export class Engine extends EventEmitter {
         "Choose build storage outside the imported project so snapshots cannot include generated builds.",
       );
     }
+    if (
+      ["projectType", "appDirectory", "iosTarget"].some(
+        (key) => (project.settings as any)[key] !== (settings as any)[key],
+      )
+    )
+      settings = {
+        ...settings,
+        setupAppleComplete: false,
+        ascAppId: undefined,
+        testFlightGroupId: undefined,
+        testFlightGroupName: undefined,
+      };
+    if (
+      settings.localProfiles &&
+      (settings.projectType ?? project.type ?? "expo") !== "expo"
+    )
+      project.profiles = Object.keys(settings.localProfiles);
     project.settings = settings;
     this.store.putProject(project);
     this.changed();
   }
   doctor(projectId?: string) {
+    const project = projectId
+      ? this.store.get<Project>("projects", projectId)
+      : undefined;
     return doctor(
-      projectId ? this.store.get<Project>("projects", projectId).settings : {},
+      project?.settings ?? {},
+      project?.platforms?.length === 1 ? project.platforms[0] : "all",
+      false,
+      project?.type ?? project?.settings.projectType,
+      project?.usesCocoaPods,
+      project?.usesXcodeGen,
     );
   }
   xcodeInstallations(projectId: string) {
@@ -783,8 +908,31 @@ export class Engine extends EventEmitter {
     if (invocation?.concurrency)
       this.configureConcurrency(invocation.concurrency);
     const jobs: Job[] = [];
+    const effectiveType = project.settings.projectType ?? project.type;
+    const supported =
+      (project.settings.projectType &&
+      project.type &&
+      project.settings.projectType !== project.type
+        ? undefined
+        : project.platforms) ??
+      (effectiveType === "native-ios"
+        ? (["ios"] as Platform[])
+        : project.id.startsWith("invocation:")
+          ? ((await inspectProject(project.path, project.settings))
+              .platforms ?? ["ios", "android"])
+          : ["ios", "android"]);
+    invariant(
+      supported.length > 0,
+      "PLATFORM_UNAVAILABLE",
+      "This project declares no native platform. Add @capacitor/ios or @capacitor/android to the project before building.",
+    );
+    invariant(
+      request.platform === "all" || supported.includes(request.platform),
+      "PLATFORM_UNAVAILABLE",
+      "This project does not declare the selected platform.",
+    );
     for (const platform of request.platform === "all"
-      ? (["ios", "android"] as const)
+      ? supported
       : [request.platform]) {
       const job: Job = {
         id: id(),
@@ -1867,7 +2015,7 @@ export class Engine extends EventEmitter {
   }
   installTool(
     projectId: string,
-    tool: "node" | "cocoapods" | "android" | "gcloud" | "ios-platform",
+    tool: ToolName,
     acceptAndroidLicense: boolean,
   ) {
     const key = `${projectId}:${tool}`;
@@ -1889,7 +2037,7 @@ export class Engine extends EventEmitter {
   }
   private async installToolOperation(
     projectId: string,
-    tool: "node" | "cocoapods" | "android" | "gcloud" | "ios-platform",
+    tool: ToolName,
     acceptAndroidLicense: boolean,
     signal: AbortSignal,
   ) {

@@ -53,11 +53,31 @@ export async function makeStoreSetup(
     submitted: {},
     stage: "opening",
   };
+  invariant(
+    !request.targetBundleId || request.mode === "capabilities",
+    "STORE_TARGET",
+    "An embedded target can only be selected for capability assignment.",
+  );
   if (request.mode === "capabilities") {
     const info = await inspectProject(project.path, project.settings);
-    const entitlements = info.native.ios
-      ? (info.config.ios?.entitlements ?? {})
-      : await inspectIOSEntitlements(project.path, project.settings);
+    const target = request.targetBundleId
+      ? info.iosTarget?.targets.find(
+          (t) => t.bundleId === request.targetBundleId,
+        )
+      : undefined;
+    invariant(
+      !request.targetBundleId ||
+        request.targetBundleId === project.bundleId ||
+        target,
+      "STORE_TARGET",
+      "Choose an app or embedded extension from this project's selected scheme.",
+    );
+    if (target) state.identity = target.bundleId;
+    const entitlements =
+      target?.entitlements ??
+      (info.native.ios
+        ? (info.config.ios?.entitlements ?? {})
+        : await inspectIOSEntitlements(project.path, project.settings));
     const values = [
       ...(entitlements["com.apple.developer.icloud-container-identifiers"] ??
         []),

@@ -181,3 +181,109 @@ it("rolls back all imported keys, settings and counters when a history write fai
     rmSync(root, { recursive: true, force: true });
   }
 });
+it("round-trips native project selections, local profiles and extension facts while preserving old-format records", async () => {
+  const root = mkdtempSync(join(tmpdir(), "desk-backup-native-")),
+    a = new Store(join(root, "a")),
+    b = new Store(join(root, "b"));
+  try {
+    const av = new Vault(a, encryption("A")),
+      bv = new Vault(b, encryption("B"));
+    a.putProject({
+      id: "native",
+      type: "native-ios",
+      platforms: ["ios"],
+      usesCocoaPods: false,
+      path: join(root, "source"),
+      name: "Native",
+      profiles: ["development"],
+      createdAt: "2026-10-01",
+      settings: {
+        projectType: "native-ios",
+        appDirectory: "apps/native",
+        iosTarget: "apps/native/App.xcodeproj",
+        scheme: "App",
+        localProfiles: {
+          development: { configuration: "Debug", simulator: true, debug: true },
+        },
+      },
+    });
+    a.putProject({
+      id: "legacy",
+      path: join(root, "legacy"),
+      name: "Legacy Expo",
+      profiles: ["production"],
+      createdAt: "2026-10-01",
+      settings: {},
+    });
+    a.putJob({
+      id: "native-job",
+      kind: "build",
+      projectId: "native",
+      projectName: "Native",
+      platform: "ios",
+      profile: "development",
+      status: "succeeded",
+      stage: "complete",
+      createdAt: "2026-10-01",
+      autoSubmit: false,
+      clean: false,
+      facts: {
+        projectType: "native-ios",
+        nativeTarget: "apps/native/App.xcodeproj · App",
+        configuration: "Debug",
+        distribution: "internal",
+        developmentClient: false,
+        simulator: true,
+        destination: "iOS Simulator",
+        targetEntitlements: {
+          "com.example.app.widget": {
+            "com.apple.security.application-groups": [
+              "group.com.example.shared",
+            ],
+          },
+        },
+      },
+    });
+    const payload = await decryptBackup(
+      await encryptBackup(
+        await captureBackup(a, av),
+        "native backup passphrase",
+      ),
+      "native backup passphrase",
+    );
+    await restorePayload(
+      b,
+      bv,
+      payload,
+      {
+        native: join(root, "relocated"),
+        legacy: join(root, "legacy-relocated"),
+      },
+      () => {},
+    );
+    const projects = b.list<Project>("projects");
+    expect(projects.find((p) => p.name === "Native")).toMatchObject({
+      type: "native-ios",
+      platforms: ["ios"],
+      usesCocoaPods: false,
+      settings: {
+        appDirectory: "apps/native",
+        localProfiles: { development: { simulator: true } },
+      },
+    });
+    expect(
+      projects.find((p) => p.name === "Legacy Expo")?.type,
+    ).toBeUndefined();
+    expect(
+      b.get<Job>("jobs", "native-job").facts?.targetEntitlements?.[
+        "com.example.app.widget"
+      ],
+    ).toMatchObject({
+      "com.apple.security.application-groups": ["group.com.example.shared"],
+    });
+  } finally {
+    a.close();
+    b.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

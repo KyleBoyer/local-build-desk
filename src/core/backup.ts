@@ -17,7 +17,7 @@ import {
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { z } from "zod";
 import { settingsSchema } from "./settings-schema";
-import { Store } from "./database";
+import { Store, appDirectoryKey } from "./database";
 import { Vault } from "./vault";
 import { invariant } from "./errors";
 import type { Project, Job, Artifact, Credential } from "./types";
@@ -102,6 +102,10 @@ const credentialSchema = z.discriminatedUnion("kind", [
 const projectSchema = z
   .object({
     id,
+    type: z.enum(["expo", "capacitor", "native-ios"]).optional(),
+    usesCocoaPods: z.boolean().optional(),
+    usesXcodeGen: z.boolean().optional(),
+    platforms: z.array(z.enum(["ios", "android"])).optional(),
     path: text.refine(isAbsolute),
     name: text,
     bundleId: text.optional(),
@@ -142,6 +146,11 @@ const submissionSchema = z
   .strict();
 const factsSchema = z
   .object({
+    projectType: z.enum(["expo", "capacitor", "native-ios"]).optional(),
+    nativeTarget: text.optional(),
+    targetEntitlements: z
+      .record(z.string(), z.record(z.string(), z.unknown()))
+      .optional(),
     sourceHash: z
       .string()
       .regex(/^[a-f0-9]{64}$/)
@@ -538,13 +547,22 @@ export async function restorePayload(
     );
     const requested = resolve(mappings[source.id] ?? source.path);
     const path = await realpath(requested).catch(() => requested);
+    const identity = JSON.stringify([
+      path,
+      appDirectoryKey(source.settings.appDirectory),
+    ]);
     invariant(
-      !paths.has(path),
+      !paths.has(identity),
       "BACKUP_PATH",
-      "Two restored projects cannot use the same source folder.",
+      "Two restored projects cannot select the same app directory inside the same source root.",
     );
-    paths.add(path);
-    const match = existing.find((p) => p.path === path);
+    paths.add(identity);
+    const match = existing.find(
+      (p) =>
+        p.path === path &&
+        appDirectoryKey(p.settings.appDirectory) ===
+          appDirectoryKey(source.settings.appDirectory),
+    );
     const project = {
       ...source,
       id: match?.id ?? randomUUID(),

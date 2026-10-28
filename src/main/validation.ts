@@ -74,6 +74,8 @@ export const methods = {
     identifier,
     z.boolean(),
   ]),
+  exportBuildSettings: z.tuple([identifier]),
+  importBuildSettings: z.tuple([identifier]),
   exportBackup: z.tuple([z.string().min(12).max(1024)]),
   previewBackup: z.tuple([z.string().min(1).max(1024)]),
   restoreBackup: z.tuple([
@@ -128,7 +130,8 @@ export const methods = {
       })
       .strict(),
   ]),
-  importProject: z.tuple([text]),
+  projectApplications: z.tuple([text]),
+  importProject: z.tuple([text, settingsSchema.optional()]),
   inspect: z.tuple([identifier, text.optional(), platform.optional()]),
   saveSettings: z.tuple([identifier, settingsSchema]),
   doctor: z.tuple([identifier.optional()]),
@@ -191,7 +194,14 @@ export const methods = {
   setupLogs: z.tuple([identifier]),
   installTool: z.tuple([
     identifier,
-    z.enum(["node", "cocoapods", "android", "gcloud", "ios-platform"]),
+    z.enum([
+      "node",
+      "cocoapods",
+      "xcodegen",
+      "android",
+      "gcloud",
+      "ios-platform",
+    ]),
     z.boolean(),
   ]),
   googleLogin: z.tuple([identifier]),
@@ -205,6 +215,10 @@ export const methods = {
       .object({
         provider: z.enum(["apple", "google"]),
         mode: z.enum(["record", "capabilities", "bootstrap"]),
+        targetBundleId: z
+          .string()
+          .regex(/^[A-Za-z0-9][A-Za-z0-9.-]+$/)
+          .optional(),
         appName: z.string().trim().min(1).max(50),
         language: z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
         sku: z.string().trim().min(1).max(100).optional(),

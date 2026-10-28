@@ -35,6 +35,9 @@ export async function doctor(
   settings: ProjectSettings = {},
   platform: "ios" | "android" | "all" = "all",
   noKeychain = false,
+  projectType: import("./types").ProjectType = "expo",
+  usesCocoaPods = projectType === "expo",
+  usesXcodeGen = false,
 ): Promise<Check[]> {
   const env = toolEnvironment(settings);
   const sdk =
@@ -42,12 +45,17 @@ export async function doctor(
     process.env.ANDROID_HOME ??
     process.env.ANDROID_SDK_ROOT ??
     join(homedir(), "Library/Android/sdk");
+  const js = projectType !== "native-ios",
+    android = platform !== "ios" && projectType !== "native-ios",
+    apple = platform !== "android";
+  const probe = (enabled: boolean, cmd: string, args: string[]) =>
+    enabled ? existsCommand(cmd, args, env) : Promise.resolve(undefined);
   const results = await Promise.allSettled([
-    existsCommand(settings.nodePath ?? "node", ["--version"], env),
-    existsCommand("xcodebuild", ["-version"], env),
-    existsCommand("pod", ["--version"], env),
-    existsCommand("java", ["-version"], env),
-    existsCommand("npm", ["--version"], env),
+    probe(js, settings.nodePath ?? "node", ["--version"]),
+    probe(apple, "xcodebuild", ["-version"]),
+    probe(apple && usesCocoaPods, "pod", ["--version"]),
+    probe(android, "java", ["-version"]),
+    probe(js, "npm", ["--version"]),
     existsCommand("git", ["--version"], env),
     existsCommand(
       "xcrun",
@@ -55,6 +63,7 @@ export async function doctor(
       env,
     ),
     existsCommand("xcrun", ["simctl", "list", "runtimes", "--json"], env),
+    probe(apple && usesXcodeGen, "xcodegen", ["--version"]),
   ]);
   const value = (i: number) =>
     results[i].status === "fulfilled"
@@ -82,6 +91,7 @@ export async function doctor(
       "Install Xcode, open it once, accept its license, and select its developer directory.",
     ),
     check("CocoaPods", value(2), "Install CocoaPods: brew install cocoapods"),
+    check("XcodeGen", value(8), "Install XcodeGen: brew install xcodegen"),
     check(
       "Java",
       value(3),
@@ -144,10 +154,17 @@ export async function doctor(
   const hasSDK =
     (await hasFile(join(sdk, "platforms"))) &&
     (await hasFile(join(sdk, "build-tools")));
+  const sdkTools = await hasFile(
+    join(sdk, "cmdline-tools/latest/bin/sdkmanager"),
+  );
   checks.push({
     name: "Android SDK",
-    status: hasSDK ? "ok" : "error",
-    detail: hasSDK ? sdk : "No Android platforms/build-tools found",
+    status: hasSDK ? "ok" : sdkTools ? "warning" : "error",
+    detail: hasSDK
+      ? sdk
+      : sdkTools
+        ? "SDK tools ready; project platforms/build tools install during the build"
+        : "No Android platforms/build-tools found",
     action: hasSDK
       ? undefined
       : "Install Android Studio or command-line SDK tools, accept SDK licenses, and select the SDK folder.",
@@ -186,13 +203,30 @@ export async function doctor(
         detail: "Keychain unavailable",
       });
     }
-  return checks.filter(
-    (check) =>
-      platform === "all" ||
-      !(
-        platform === "ios"
-          ? ["Java", "Android SDK", "Android NDK"]
-          : ["Xcode", "CocoaPods", "iOS SDK", "iOS platform", "Apple signing"]
-      ).includes(check.name),
-  );
+  return checks
+    .filter((c) => c.name !== "CocoaPods" || usesCocoaPods)
+    .filter((c) => c.name !== "XcodeGen" || usesXcodeGen)
+    .filter(
+      (c) =>
+        projectType !== "native-ios" ||
+        !["Node.js", "npm", "Java", "Android SDK", "Android NDK"].includes(
+          c.name,
+        ),
+    )
+    .filter(
+      (check) =>
+        platform === "all" ||
+        !(
+          platform === "ios"
+            ? ["Java", "Android SDK", "Android NDK"]
+            : [
+                "Xcode",
+                "CocoaPods",
+                "XcodeGen",
+                "iOS SDK",
+                "iOS platform",
+                "Apple signing",
+              ]
+        ).includes(check.name),
+    );
 }

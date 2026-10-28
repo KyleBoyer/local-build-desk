@@ -31,6 +31,7 @@ import type {
   ProjectSettings,
   SetupReport,
   SetupRequest,
+  ToolName,
 } from "./types";
 export function requestedCapabilities(config: Record<string, any>): string[] {
   const entitlements = config.ios?.entitlements ?? {};
@@ -74,6 +75,8 @@ export async function prepareApple(
   log: (text: string) => void,
   signal?: AbortSignal,
   environment: Record<string, string> = {},
+  signingTarget?: import("./types").IOSTarget,
+  distribution: "store" | "internal" = "store",
 ): Promise<SetupReport> {
   invariant(
     project.settings.appleConnectionId,
@@ -118,11 +121,24 @@ export async function prepareApple(
           ),
     },
   };
+  if (signingTarget) {
+    config.name = `${inspection.name} ${signingTarget.name}`;
+    config.ios = {
+      ...config.ios,
+      bundleIdentifier: signingTarget.bundleId,
+      entitlements: signingTarget.entitlements,
+    };
+  }
   const bundleId = config.ios?.bundleIdentifier;
+  if (!signingTarget) {
+    project.bundleId = bundleId;
+    project.name = inspection.name ?? config.name;
+    project.type = inspection.type ?? project.type;
+  }
   invariant(
     bundleId,
     "BUNDLE_ID_REQUIRED",
-    "Set ios.bundleIdentifier in your Expo project.",
+    "Configure the selected app target’s bundle identifier.",
   );
   let bundles = (
     await api.request(
@@ -173,16 +189,17 @@ export async function prepareApple(
       });
     }
   }
-  const apps = await api.apps(bundleId);
+  const needsAppRecord = !signingTarget && distribution === "store";
+  const apps = needsAppRecord ? await api.apps(bundleId) : [];
   const app = apps[0];
-  if (!app)
+  if (!app && needsAppRecord)
     report.handoffs.push({
       title: "Create the App Store Connect app record",
       automation: "record",
       detail: `Choose New App → iOS. Name: ${config.name}; bundle ID: ${bundleId}; SKU: ${bundleId}; primary language: your app’s language. Return here and select Check again.`,
       url: "https://appstoreconnect.apple.com/apps",
     });
-  else {
+  else if (app) {
     project.settings.ascAppId = app.id;
     record(`Found App Store Connect app ${app.attributes.name}.`);
   }
@@ -259,7 +276,7 @@ export async function prepareApple(
             bundleId,
             credential.teamId,
           ),
-          "store",
+          distribution,
         );
         matching = !(
           config.ios?.usesIcloudStorage &&
@@ -282,7 +299,7 @@ export async function prepareApple(
       const created = await api.profile(
         bundleId,
         `Local Build Desk ${config.name} ${Date.now()}`,
-        "IOS_APP_STORE",
+        distribution === "store" ? "IOS_APP_STORE" : "IOS_APP_ADHOC",
         certId,
       );
       selectedProfile = await decodeProfile(
@@ -319,7 +336,7 @@ export async function prepareApple(
           bundleId,
           credential.teamId,
         ),
-        "store",
+        distribution,
       );
     } catch (error) {
       report.handoffs.push({
@@ -359,9 +376,22 @@ export async function prepareApple(
     } else if (request.newApp && store.counter(key) === undefined) {
       store.seed(key, 0);
       record("Initialized a new app’s iOS build counter.");
+    } else if (
+      inspection.type &&
+      inspection.type !== "expo" &&
+      /^\d+$/.test(String(config.ios?.buildNumber)) &&
+      store.counter(key) === undefined
+    ) {
+      store.seed(key, Math.max(0, Number(config.ios.buildNumber) - 1));
+      record(
+        "Initialized the local counter from the native target's configured build number.",
+      );
     } else if (store.counter(key) === undefined)
       report.handoffs.push({
-        title: "Enter your last EAS build number",
+        title:
+          (inspection.type ?? "expo") === "expo"
+            ? "Enter your last EAS build number"
+            : "Enter your last used build number",
         detail:
           "This existing project has no visible Apple build number. Enter the last used number in Migration so unsubmitted EAS builds are not reused.",
       });
@@ -371,6 +401,31 @@ export async function prepareApple(
     record(
       `Imported last used iOS build number ${request.lastIosBuildNumber}.`,
     );
+  }
+  if (signingTarget) {
+    report.ready = !!project.settings.iosSigningId && !report.handoffs.length;
+    return report;
+  }
+  for (const target of (inspection.iosTarget?.targets ?? []).filter(
+    (t) => t.productType === "extension",
+  )) {
+    const result = await prepareApple(
+      store,
+      vault,
+      project,
+      request,
+      log,
+      signal,
+      environment,
+      target,
+      distribution,
+    );
+    report.actions.push(...result.actions);
+    report.handoffs.push(...result.handoffs);
+  }
+  if (distribution === "internal") {
+    report.ready = !!project.settings.iosSigningId && !report.handoffs.length;
+    return report;
   }
   project.settings.setupAppleComplete = Boolean(
     app &&
@@ -398,7 +453,7 @@ export async function prepareAndroid(
   invariant(
     packageName,
     "ANDROID_PACKAGE",
-    "Set android.package in the Expo project.",
+    "Configure the selected Android app’s application ID.",
   );
   if (!project.settings.androidSigningId) {
     invariant(
@@ -582,7 +637,7 @@ export async function createGoogleServiceAccount(
   return { credential: saved, email };
 }
 export async function installTool(
-  tool: "node" | "cocoapods" | "android" | "gcloud" | "ios-platform",
+  tool: ToolName,
   acceptAndroidLicense: boolean,
   log: (text: string) => void,
   projectPath?: string,
@@ -619,6 +674,10 @@ export async function installTool(
     ).stdout.trim();
     return { nodePath: join(prefix, "opt/node@24/bin/node") };
   }
+  if (tool === "xcodegen") {
+    await run("brew", ["install", "xcodegen"], { env, log, signal });
+    return {};
+  }
   if (tool === "cocoapods") {
     await run("brew", ["install", "cocoapods"], { env, log, signal });
     return {};
@@ -636,7 +695,16 @@ export async function installTool(
     "ANDROID_LICENSE",
     "Review and accept the Android SDK license in setup before installing SDK packages.",
   );
-  await run("brew", ["install", "openjdk@17"], { env, log, signal });
+  const javaVersion = projectPath
+    ? await (
+        await import("./android-toolchain")
+      ).requiredAndroidJava(projectPath)
+    : 17;
+  await run("brew", ["install", `openjdk@${javaVersion}`], {
+    env,
+    log,
+    signal,
+  });
   await run("brew", ["install", "--cask", "android-commandlinetools"], {
     env,
     log,
@@ -647,7 +715,7 @@ export async function installTool(
   ).stdout.trim();
   const javaHome = join(
     prefix,
-    "opt/openjdk@17/libexec/openjdk.jdk/Contents/Home",
+    `opt/openjdk@${javaVersion}/libexec/openjdk.jdk/Contents/Home`,
   );
   const androidSdk =
     settings.androidSdk ??

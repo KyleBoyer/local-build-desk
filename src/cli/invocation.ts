@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname, isAbsolute } from "node:path";
+import { resolve, dirname, isAbsolute, relative } from "node:path";
 import { z } from "zod";
 import { settingsSchema } from "../main/validation";
 import { id, now } from "../core/database";
@@ -15,6 +15,13 @@ export type InvocationFlags = Record<
   string | boolean | string[] | undefined
 >;
 const fields: Record<string, string> = {
+  "project-type": "projectType",
+  "app-directory": "appDirectory",
+  "ios-target": "iosTarget",
+  configuration: "configuration",
+  "web-build-script": "webBuildScript",
+  "ios-dependency-manager": "iosDependencyManager",
+  "android-module": "androidModule",
   xcode: "xcodePath",
   "ios-sdk": "iosSdk",
   "minimum-ios-sdk": "minimumIosSdk",
@@ -178,10 +185,29 @@ export async function resolveInvocation(
   fallback?: Project,
 ): Promise<BuildInvocation> {
   const projects = engine.state().projects;
-  const find = (key: unknown) =>
-    typeof key === "string"
-      ? projects.find((p) => p.id === key || p.path === resolve(key))
-      : undefined;
+  const find = (key: unknown) => {
+    if (typeof key !== "string") return undefined;
+    const exact = projects.find((p) => p.id === key);
+    if (exact) return exact;
+    const matches = projects.filter((p) => p.path === resolve(key));
+    const selected =
+      flags["app-directory"] ??
+      environment.IOS_SUBMIT_APP_DIRECTORY ??
+      configAt(flags, String(flags.source ?? key), environment).value.settings
+        ?.appDirectory;
+    if (selected)
+      return matches.find(
+        (p) =>
+          (p.settings.appDirectory ?? ".") ===
+          (relative(resolve(key), resolve(key, String(selected))) || "."),
+      );
+    invariant(
+      matches.length <= 1,
+      "PROJECT_AMBIGUOUS",
+      "More than one app is imported at this repository root. Use its project ID or --app-directory to choose the correct app and signing settings.",
+    );
+    return matches[0];
+  };
   const template =
     find(
       flags["settings-from"] ??
@@ -212,7 +238,9 @@ export async function resolveInvocation(
     if (environment[envName] !== undefined)
       settings[key] = booleanSettings.includes(key)
         ? bool(environment[envName]!)
-        : environment[envName];
+        : key === "localProfiles"
+          ? json(environment[envName]!)
+          : environment[envName];
   }
   for (const [flag, key] of Object.entries(fields))
     if (flags[flag] !== undefined)
@@ -225,7 +253,11 @@ export async function resolveInvocation(
     invariant(n > 0, "SETTING", "Use --set settingName=value.");
     const key = assignment.slice(0, n),
       value = assignment.slice(n + 1);
-    settings[key] = booleanSettings.includes(key) ? bool(value) : value;
+    settings[key] = booleanSettings.includes(key)
+      ? bool(value)
+      : key === "localProfiles"
+        ? json(value)
+        : value;
   }
   const checked = settingsSchema.safeParse(settings);
   invariant(

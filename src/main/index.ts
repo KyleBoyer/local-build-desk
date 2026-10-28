@@ -614,6 +614,38 @@ function registerIPC() {
           return { ok: true, value: updater.status() };
         if (method === "notificationSettings")
           return { ok: true, value: notifications.settings(values[0]) };
+        if (method === "exportBuildSettings") {
+          const selected = await dialog.showSaveDialog(window!, {
+            title: "Export portable build settings",
+            defaultPath: "ios-submit.json",
+            filters: [{ name: "Build settings", extensions: ["json"] }],
+          });
+          if (selected.canceled || !selected.filePath)
+            return { ok: true, value: false };
+          await (
+            await import("node:fs/promises")
+          ).writeFile(
+            selected.filePath,
+            engine.portableBuildSettings(values[0]),
+            { mode: 0o600 },
+          );
+          return { ok: true, value: true };
+        }
+        if (method === "importBuildSettings") {
+          const selected = await dialog.showOpenDialog(window!, {
+            title: "Import build settings",
+            properties: ["openFile"],
+            filters: [{ name: "Build settings", extensions: ["json"] }],
+          });
+          if (selected.filePaths[0])
+            engine.loadBuildSettings(
+              values[0],
+              await (
+                await import("node:fs/promises")
+              ).readFile(selected.filePaths[0], "utf8"),
+            );
+          return { ok: true };
+        }
         if (method === "exportBackup") {
           const selected = await dialog.showSaveDialog(window!, {
             title: "Create encrypted Local Build Desk backup",

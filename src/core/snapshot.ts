@@ -24,6 +24,8 @@ const ignored = new Set([
   "out",
   "release",
   ".local-build-desk",
+  ".local-build-data",
+  ".browser-info",
   ".DS_Store",
   ".claude",
   ".codex",
@@ -33,7 +35,8 @@ export function eligible(
   native: { ios: boolean; android: boolean },
 ) {
   const parts = path.split("/");
-  if (parts.some((p) => ignored.has(p))) return false;
+  if (parts.some((p) => ignored.has(p) || p.startsWith(".browser-")))
+    return false;
   if (
     parts.some((p) => /^\.env(?:\.|$)/.test(p)) ||
     /(?:^|\/)(?:credentials\.json|google-services\.json|GoogleService-Info\.plist|local\.properties)$/.test(
@@ -56,6 +59,7 @@ export async function snapshot(
   native: { ios: boolean; android: boolean },
   signal?: AbortSignal,
   copyFiles = true,
+  requiredPaths: string[] = [],
 ): Promise<string> {
   const sourceRoot = resolve(source),
     destRoot = resolve(destination);
@@ -70,8 +74,17 @@ export async function snapshot(
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: sourceRoot, allowFailure: true, signal },
   );
+  const ignoredRoot =
+    git.code === 0 &&
+    (
+      await run("git", ["check-ignore", "-q", "--", "."], {
+        cwd: sourceRoot,
+        allowFailure: true,
+        signal,
+      })
+    ).code === 0;
   let files: string[] = [];
-  if (git.code === 0)
+  if (git.code === 0 && !ignoredRoot)
     files = [...new Set(git.stdout.split("\0").filter(Boolean))];
   else {
     const walk = async (dir: string) => {
@@ -87,8 +100,11 @@ export async function snapshot(
     await walk("");
   }
   // Maintained native files can be intentionally ignored by Git; include them explicitly.
-  for (const platform of ["ios", "android"] as const)
-    if (native[platform] && (await hasFile(join(sourceRoot, platform)))) {
+  for (const platform of [
+    ...(["ios", "android"] as const).filter((p) => native[p]),
+    ...requiredPaths,
+  ])
+    if (await hasFile(join(sourceRoot, platform))) {
       const walk = async (dir: string) => {
         for (const entry of await readdir(join(sourceRoot, dir), {
           withFileTypes: true,
@@ -99,6 +115,12 @@ export async function snapshot(
           else files.push(name);
         }
       };
+      invariant(
+        !isAbsolute(platform) &&
+          resolve(sourceRoot, platform).startsWith(sourceRoot + sep),
+        "SNAPSHOT_PATH",
+        "Native project paths must stay inside the imported root.",
+      );
       await walk(platform);
     }
   const hash = createHash("sha256");

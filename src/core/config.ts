@@ -1,7 +1,17 @@
+import { projectSettings } from "./project-discovery";
+import {
+  detectProjectType,
+  inspectOtherProject,
+  resolveLocalProfile,
+  appRoot,
+  projectTool,
+  dependencyRoot,
+  packageManager as projectPackageManager,
+} from "./project-adapters";
 import { readFile, access } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { run } from "./process";
+import { run, type CommandOptions } from "./process";
 import { DeskError, invariant } from "./errors";
 import type {
   Inspection,
@@ -108,6 +118,8 @@ export function resolveProfile(
   name: string,
   platform: Platform,
 ): Profile {
+  if (eas.__local)
+    return resolveLocalProfile(eas.build, name, platform, eas.settings);
   const raw = inheritedProfile(eas, name);
   const values = merge(raw, raw[platform] ?? {});
   const issues: Issue[] = [];
@@ -224,7 +236,14 @@ export async function inspectProject(
   root: string,
   settings: ProjectSettings = {},
   extraEnv: Record<string, string> = {},
+  options: CommandOptions = {},
 ): Promise<Inspection> {
+  settings = await projectSettings(root, settings);
+  const kind = await detectProjectType(root, settings);
+  if (kind !== "expo")
+    return inspectOtherProject(root, settings, extraEnv, options);
+  const repository = root;
+  root = appRoot(root, settings);
   const pkg = await readJSON(join(root, "package.json"));
   invariant(
     pkg.dependencies?.expo || pkg.devDependencies?.expo,
@@ -234,7 +253,7 @@ export async function inspectProject(
   const eas = await readJSON(join(root, "eas.json"), {
     build: { production: {} },
   });
-  const cli = join(root, "node_modules/expo/bin/cli");
+  const cli = await projectTool(repository, root, "expo/bin/cli");
   invariant(
     await hasFile(cli),
     "INSTALL_DEPENDENCIES",
@@ -244,7 +263,9 @@ export async function inspectProject(
     settings.nodePath ?? "node",
     [cli, "config", "--json", "--type", "prebuild"],
     {
+      ...options,
       cwd: root,
+      log: undefined,
       env: { ...toolEnvironment(settings), ...extraEnv },
       timeout: 60000,
     },
@@ -258,14 +279,9 @@ export async function inspectProject(
       "Expo did not return valid JSON. Check config evaluation and dependencies.",
     );
   }
-  const packageManager = (await hasFile(join(root, "pnpm-lock.yaml")))
-    ? "pnpm"
-    : (await hasFile(join(root, "yarn.lock")))
-      ? "yarn"
-      : (await hasFile(join(root, "bun.lock"))) ||
-          (await hasFile(join(root, "bun.lockb")))
-        ? "bun"
-        : "npm";
+  const packageManager = await projectPackageManager(
+    await dependencyRoot(repository, root),
+  );
   const native = { ios: false, android: false };
   const tracked = await run("git", ["ls-files", "--", "ios", "android"], {
     cwd: root,
@@ -298,6 +314,8 @@ export async function inspectProject(
       message: "Missing android.package.",
     });
   return {
+    type: "expo",
+    platforms: ["ios", "android"],
     name: config.name ?? pkg.name,
     version: config.version ?? "1.0.0",
     bundleId: config.ios?.bundleIdentifier,
@@ -316,10 +334,17 @@ export async function inspectIOSEntitlements(
   settings: ProjectSettings = {},
   extraEnv: Record<string, string> = {},
 ) {
+  if ((await detectProjectType(root, settings)) !== "expo")
+    return (
+      (await inspectOtherProject(root, settings, extraEnv)).config.ios
+        ?.entitlements ?? {}
+    );
+  const repository = root;
+  root = appRoot(root, settings);
   const result = await run(
     settings.nodePath ?? "node",
     [
-      join(root, "node_modules/expo/bin/cli"),
+      await projectTool(repository, root, "expo/bin/cli"),
       "config",
       "--json",
       "--type",

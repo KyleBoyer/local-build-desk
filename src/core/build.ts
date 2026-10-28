@@ -1,3 +1,17 @@
+import {
+  detectProjectType,
+  appRoot,
+  dependencyRoot,
+  projectTool,
+} from "./project-adapters";
+import { buildNonExpo } from "./build-adapters";
+import {
+  inspectXcode,
+  containerArguments,
+  xcodeContainers,
+} from "./xcode-project";
+import { configureNativeSigning, applyNativeVersions } from "./native-signing";
+import type { IOSBuildTarget } from "./types";
 import { withLock } from "./locks";
 import { reuseKeys } from "./reuse";
 import { toolProgress } from "./progress";
@@ -11,7 +25,7 @@ import {
   stat,
   symlink,
 } from "node:fs/promises";
-import { join, basename, resolve } from "node:path";
+import { join, basename, resolve, dirname, relative } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -77,7 +91,7 @@ export function gradleTasks(profile: Profile) {
     return profile.gradleCommand.trim().split(/\s+/);
   }
   return [
-    profile.developmentClient
+    profile.developmentClient || profile.debugBuild
       ? ":app:assembleDebug"
       : profile.buildType === "apk"
         ? ":app:assembleRelease"
@@ -94,9 +108,10 @@ export function archiveArguments(
   version: string,
   keychain: string,
   sdk?: string,
+  containerKind: "workspace" | "project" = "workspace",
 ) {
   return [
-    "-workspace",
+    containerKind === "project" ? "-project" : "-workspace",
     workspace,
     "-scheme",
     scheme,
@@ -180,6 +195,10 @@ async function artifact(
   return value;
 }
 export async function buildLocal(ctx: BuildContext) {
+  if (
+    (await detectProjectType(ctx.project.path, ctx.project.settings)) !== "expo"
+  )
+    return buildNonExpo(ctx);
   const { job, project, store, vault } = ctx;
   const redactor = new Redactor();
   let importedEnv: Record<string, string> = {};
@@ -196,6 +215,7 @@ export async function buildLocal(ctx: BuildContext) {
   );
   const profile = resolveProfile(inspection.eas, job.profile, job.platform);
   job.facts = {
+    projectType: "expo",
     configuration: profile.configuration,
     distribution: profile.distribution,
     developmentClient: profile.developmentClient,
@@ -246,7 +266,9 @@ export async function buildLocal(ctx: BuildContext) {
     "PROFILE_UNSUPPORTED",
     "Resolve the profile compatibility errors before building.",
   );
-  const pkg = await readJSON(join(project.path, "package.json"));
+  const pkg = await readJSON(
+    join(appRoot(project.path, project.settings), "package.json"),
+  );
   invariant(
     !profile.developmentClient ||
       pkg.dependencies?.["expo-dev-client"] ||
@@ -431,7 +453,18 @@ export async function buildLocal(ctx: BuildContext) {
     source,
     inspection.native,
     ctx.signal,
+    true,
+    (["ios", "android"] as const)
+      .filter((p) => inspection.native[p])
+      .map((p) =>
+        relative(
+          project.path,
+          join(appRoot(project.path, project.settings), p),
+        ),
+      ),
   );
+  const sourceApp = appRoot(source, project.settings),
+    installRoot = await dependencyRoot(source, sourceApp);
   job.facts.sourceHash = sourceHash;
   if (vault.canFingerprint) {
     try {
@@ -480,7 +513,7 @@ export async function buildLocal(ctx: BuildContext) {
     env.ANDROID_SDK_ROOT = env.ANDROID_HOME;
   }
   const options: CommandOptions = {
-    cwd: source,
+    cwd: sourceApp,
     env,
     signal: ctx.signal,
     secrets: redactor,
@@ -524,9 +557,9 @@ export async function buildLocal(ctx: BuildContext) {
     await withLock(
       `dependency-cache:${inspection.packageManager}:${buildStorage}`,
       ctx.signal,
-      () => run(command, args, options),
+      () => run(command, args, { ...options, cwd: installRoot }),
     );
-    const expo = join(source, "node_modules/expo/bin/cli");
+    const expo = await projectTool(source, sourceApp, "expo/bin/cli");
     ctx.stage("configure");
     // Evaluate config using the copied project and its newly installed dependencies.
     const cfgResult = await run(
@@ -557,28 +590,30 @@ export async function buildLocal(ctx: BuildContext) {
       "app.config.mjs",
       "app.config.cjs",
     ])
-      await rm(join(source, file), { force: true });
+      await rm(join(sourceApp, file), { force: true });
     await writeFile(
-      join(source, "app.json"),
+      join(sourceApp, "app.json"),
       JSON.stringify({ expo: config }, null, 2),
     );
-    if (!inspection.native[job.platform])
+    if (!inspection.native[job.platform]) {
+      await rm(join(sourceApp, job.platform), { recursive: true, force: true });
       await run(
         project.settings.nodePath ?? "node",
         [expo, "prebuild", "--no-install", "--platform", job.platform],
         options,
       );
+    }
     const cacheKey = fingerprint({
       lock: await readFile(
         join(
-          source,
+          installRoot,
           inspection.packageManager === "npm"
             ? "package-lock.json"
             : inspection.packageManager === "pnpm"
               ? "pnpm-lock.yaml"
               : inspection.packageManager === "yarn"
                 ? "yarn.lock"
-                : (await hasFile(join(source, "bun.lock")))
+                : (await hasFile(join(installRoot, "bun.lock")))
                   ? "bun.lock"
                   : "bun.lockb",
         ),
@@ -607,13 +642,21 @@ export async function buildLocal(ctx: BuildContext) {
       await mkdir(cache, { recursive: true });
       if (job.platform === "ios") {
         await withLock("cocoapods-downloads", ctx.signal, () =>
-          run("pod", ["install"], { ...options, cwd: join(source, "ios") }),
+          run("pod", ["install"], { ...options, cwd: join(sourceApp, "ios") }),
         );
         await hook("eas-build-post-install");
         await buildIOS(ctx, profile, source, output, cache, options);
       } else {
         await hook("eas-build-post-install");
-        await buildAndroid(ctx, profile, source, output, cache, options);
+        await buildAndroid(
+          ctx,
+          profile,
+          source,
+          output,
+          cache,
+          options,
+          relative(source, join(sourceApp, "android")),
+        );
       }
     });
     await hook("eas-build-on-success");
@@ -631,50 +674,60 @@ export async function buildLocal(ctx: BuildContext) {
 function optionsForCommit(project: Project) {
   return { cwd: project.path, timeout: 5000 };
 }
-async function buildIOS(
+export async function buildIOS(
   ctx: BuildContext,
   profile: Profile,
   source: string,
   output: string,
   cache: string,
   options: CommandOptions,
+  nativeTarget?: IOSBuildTarget,
 ) {
-  const iosRoot = join(source, "ios");
-  const entries = await readdir(iosRoot);
-  const workspace = ctx.project.settings.workspace
-    ? resolve(iosRoot, ctx.project.settings.workspace)
-    : join(iosRoot, entries.find((x) => x.endsWith(".xcworkspace")) ?? "");
+  const iosRoot = join(appRoot(source, ctx.project.settings), "ios");
+  const hosts = nativeTarget
+    ? []
+    : (await xcodeContainers(iosRoot)).filter(
+        (c) => c.kind === "workspace" && dirname(c.path) === ".",
+      );
+  const generatedHost =
+    hosts.length === 1 && !ctx.project.settings.workspace
+      ? relative(source, join(iosRoot, hosts[0].path))
+      : undefined;
+  const selected =
+    nativeTarget ??
+    (
+      await inspectXcode(
+        source,
+        {
+          ...ctx.project.settings,
+          configuration: profile.configuration,
+          scheme: ctx.project.settings.scheme ?? profile.scheme,
+        },
+        options,
+        true,
+      )
+    ).selected;
   invariant(
-    workspace !== iosRoot && (await hasFile(workspace)),
-    "WORKSPACE_MISSING",
-    "No Xcode workspace found. Select one in project settings.",
-  );
-  const schemes = await run(
-    "xcodebuild",
-    ["-list", "-json", "-workspace", workspace],
-    options,
-  );
-  const available = JSON.parse(schemes.stdout).workspace?.schemes ?? [];
-  const scheme =
-    ctx.project.settings.scheme ??
-    profile.scheme ??
-    (available.length === 1
-      ? available[0]
-      : available.find(
-          (x: string) => x === ctx.project.name.replace(/[^A-Za-z0-9]/g, ""),
-        ));
-  invariant(
-    scheme,
+    selected,
     "SCHEME_REQUIRED",
-    `Choose an Xcode scheme in project settings. Available: ${available.join(", ")}`,
+    "Choose the application's Xcode container and scheme in project settings.",
   );
+  const workspace = resolve(source, selected.container.path),
+    scheme = selected.scheme;
+  const selectionArguments = containerArguments(selected.container, source);
+  if (nativeTarget)
+    await applyNativeVersions(
+      source,
+      selected,
+      ctx.job.version!,
+      ctx.job.buildNumber!,
+    );
   if (profile.simulator) {
     ctx.stage("compile");
     await run(
       "xcodebuild",
       [
-        "-workspace",
-        workspace,
+        ...selectionArguments,
         "-scheme",
         scheme,
         "-configuration",
@@ -707,6 +760,41 @@ async function buildIOS(
     );
     const path = join(output, basename(apps[0]));
     await cp(apps[0], path, { recursive: true });
+    if (nativeTarget) {
+      ctx.job.facts!.targetEntitlements = Object.fromEntries(
+        selected.targets.map((t) => [t.bundleId, t.entitlements]),
+      );
+      ctx.save();
+      const bundles = [
+        path,
+        ...(await walk(path, (p) => p.endsWith(".appex"))),
+      ];
+      const infos = await Promise.all(
+        bundles.map(
+          async (p) =>
+            plist.parse(
+              (
+                await run(
+                  "plutil",
+                  ["-convert", "xml1", "-o", "-", join(p, "Info.plist")],
+                  { ...options, log: undefined },
+                )
+              ).stdout,
+            ) as any,
+        ),
+      );
+      for (const item of selected.targets)
+        invariant(
+          infos.some(
+            (info) =>
+              info.CFBundleIdentifier === item.bundleId &&
+              String(info.CFBundleVersion) === ctx.job.buildNumber &&
+              info.CFBundleShortVersionString === ctx.job.version,
+          ),
+          "SIMULATOR_TARGET",
+          `Simulator build is missing ${item.name} or its identity/version differs from the job.`,
+        );
+    }
     await artifact(ctx, path, "app");
     return;
   }
@@ -719,13 +807,21 @@ async function buildIOS(
     withIOSSigning(credential, root, options, async (signing) => {
       ctx.job.facts!.signing = `${signing.identity} · ${signing.teamId}`;
       ctx.save();
-      const profiles = await configureIOSSigning(
-        iosRoot,
-        signing,
-        profile,
-        ctx.job.bundleId!,
-        ctx.log,
-      );
+      const profiles = nativeTarget
+        ? await configureNativeSigning(
+            source,
+            selected,
+            signing,
+            profile,
+            ctx.log,
+          )
+        : await configureIOSSigning(
+            iosRoot,
+            signing,
+            profile,
+            ctx.job.bundleId!,
+            ctx.log,
+          );
       const archive = join(output, "App.xcarchive");
       ctx.stage("compile");
       await run(
@@ -740,6 +836,7 @@ async function buildIOS(
           ctx.job.version!,
           signing.keychain,
           ctx.job.toolchain?.iosSdk,
+          selected.container.kind,
         ),
         options,
       );
@@ -835,6 +932,64 @@ async function buildIOS(
           `The IPA reports SDK ${info.DTSDKName ?? "unknown"}; selected iOS ${ctx.job.toolchain.iosSdk} was required.`,
         );
       }
+      if (nativeTarget) {
+        const bundles = [
+          appPath,
+          ...(await walk(appPath, (p) => p.endsWith(".appex"))),
+        ];
+        for (const item of selected.targets) {
+          let found = false;
+          for (const path of bundles) {
+            const details = plist.parse(
+              (
+                await run(
+                  "plutil",
+                  ["-convert", "xml1", "-o", "-", join(path, "Info.plist")],
+                  options,
+                )
+              ).stdout,
+            ) as any;
+            if (details.CFBundleIdentifier !== item.bundleId) continue;
+            invariant(
+              String(details.CFBundleVersion) === ctx.job.buildNumber &&
+                details.CFBundleShortVersionString === ctx.job.version,
+              "EXTENSION_VERSION",
+              `Exported target ${item.bundleId} has a different version/build number.`,
+            );
+            const { decodeProfile, validateProvision } =
+              await import("./signing");
+            const profileData = await decodeProfile(
+              (await readFile(join(path, "embedded.mobileprovision"))).toString(
+                "base64",
+              ),
+              root,
+            );
+            const signed = await run(
+              "codesign",
+              ["-d", "--entitlements", ":-", path],
+              { ...options, log: undefined },
+            );
+            const ent = plist.parse(
+              signed.stdout.slice(signed.stdout.indexOf("<?xml")),
+            ) as any;
+            (ctx.job.facts!.targetEntitlements ??= {})[item.bundleId] = ent;
+            validateProvision(
+              profileData,
+              item.bundleId,
+              signing.teamId,
+              ent,
+              profile.distribution,
+            );
+            found = true;
+            break;
+          }
+          invariant(
+            found,
+            "EXTENSION_MISSING",
+            `Exported application is missing embedded target ${item.name} (${item.bundleId}).`,
+          );
+        }
+      }
       await artifact(ctx, ipas[0], "ipa");
       await artifact(ctx, archive, "archive");
       const dsym = join(archive, "dSYMs");
@@ -842,16 +997,17 @@ async function buildIOS(
     }),
   );
 }
-async function buildAndroid(
+export async function buildAndroid(
   ctx: BuildContext,
   profile: Profile,
   source: string,
   output: string,
   cache: string,
   options: CommandOptions,
+  androidPath = "android",
 ) {
   await privateDirectory(async (root) => {
-    const android = join(source, "android");
+    const android = resolve(source, androidPath);
     for (const [local, cached] of [
       [join(android, "build"), join(cache, "root-build")],
       [join(android, "app/build"), join(cache, "app-build")],
@@ -868,7 +1024,7 @@ async function buildAndroid(
       ),
     };
     let signing = "";
-    if (!profile.developmentClient) {
+    if (!profile.developmentClient && !profile.debugBuild) {
       ctx.stage("signing");
       const credential = await ctx.vault.get(
         ctx.project.settings.androidSigningId,
@@ -906,14 +1062,17 @@ async function buildAndroid(
     const init = await secretFile(
       root,
       "local-build-desk.gradle",
-      `allprojects { p -> p.afterEvaluate { if (p.plugins.hasPlugin('com.android.application')) { def a = p.extensions.getByName('android'); a.defaultConfig.versionCode = ${Number(ctx.job.buildNumber)}; a.defaultConfig.versionName = ${JSON.stringify(ctx.job.version)}; ${profile.raw.ndk ? `a.ndkVersion = ${JSON.stringify(profile.raw.ndk)};` : ""} ${signing} } } }`,
+      ctx.project.type === "capacitor"
+        ? `allprojects { p -> p.plugins.withId('com.android.application') { if (p.path == ${JSON.stringify((ctx.project.settings.androidModule ?? ":app").replace(/^([^:])/, ":$1"))}) { def ac = p.extensions.getByName('androidComponents'); ac.onVariants(ac.selector().all()) { v -> if (v.name.equalsIgnoreCase(${JSON.stringify(profile.raw.androidVariant)})) { v.outputs.each { o -> o.versionCode.set(${Number(ctx.job.buildNumber)}); o.versionName.set(${JSON.stringify(ctx.job.version)}) } } }; ac.finalizeDsl { a -> ${signing} } } } }`
+        : `allprojects { p -> p.afterEvaluate { if (p.plugins.hasPlugin('com.android.application')) { def a = p.extensions.getByName('android'); a.defaultConfig.versionCode = ${Number(ctx.job.buildNumber)}; a.defaultConfig.versionName = ${JSON.stringify(ctx.job.version)}; ${profile.raw.ndk ? `a.ndkVersion = ${JSON.stringify(profile.raw.ndk)};` : ""} ${signing} } } }`,
     );
     await ensureAndroidPackages(
-      source,
+      appRoot(source, ctx.project.settings),
       env.ANDROID_HOME!,
       ctx.project.settings.androidSdkLicenseAccepted === true,
       { ...options, env },
       profile.raw.ndk as string | undefined,
+      android,
     );
     // Gradle determines exact Java compatibility; print it before the expensive build.
     await run(join(android, "gradlew"), ["--version"], {
@@ -939,8 +1098,15 @@ async function buildAndroid(
         ? ".apk"
         : ".aab";
     const candidates = (
-      await walk(join(android, "app/build/outputs"), (p) =>
-        p.endsWith(extension),
+      await walk(
+        join(
+          android,
+          (ctx.project.settings.androidModule ?? "app")
+            .replace(/^:/, "")
+            .replaceAll(":", "/"),
+          "build/outputs",
+        ),
+        (p) => p.endsWith(extension),
       )
     ).filter((p) => !p.includes("androidTest"));
     invariant(
@@ -1026,6 +1192,39 @@ async function buildAndroid(
       ctx.job.facts!.signing = apkSignature.stdout.match(
         /certificate SHA-256 digest:\s*(\S+)/,
       )?.[1];
+      if (env.DESK_KEYSTORE) {
+        const local = await run(
+          "keytool",
+          [
+            "-exportcert",
+            "-rfc",
+            "-keystore",
+            env.DESK_KEYSTORE,
+            "-alias",
+            env.DESK_KEY_ALIAS!,
+            "-storepass:env",
+            "DESK_STORE_PASSWORD",
+          ],
+          { ...options, env, log: undefined },
+        );
+        const cert = local.stdout
+          .match(
+            /-----BEGIN CERTIFICATE-----([\s\S]*?)-----END CERTIFICATE-----/,
+          )?.[1]
+          .replace(/\s/g, "");
+        const expected =
+          cert &&
+          createHash("sha256")
+            .update(Buffer.from(cert, "base64"))
+            .digest("hex");
+        invariant(
+          expected &&
+            ctx.job.facts!.signing?.replaceAll(":", "").toLowerCase() ===
+              expected,
+          "APK_CERTIFICATE",
+          "The APK is signed with a different certificate than the selected upload key.",
+        );
+      }
       ctx.save();
       const aapt = join(env.ANDROID_HOME!, "build-tools", tool, "aapt");
       const info = await run(aapt, ["dump", "badging", target], {
