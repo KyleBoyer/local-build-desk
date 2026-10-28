@@ -306,12 +306,24 @@ it("verifies an imported P12 certificate and its private key against the Apple t
     await expect(
       certificateId(api as any, credential, root, true),
     ).resolves.toBe("apple-cert");
+    const pkcs12Help = await run("openssl", ["pkcs12", "-help"], {
+      allowFailure: true,
+    });
+    const legacyProvider = /(?:^|\s)-legacy(?:\s|$)/m.test(
+      pkcs12Help.stdout + pkcs12Help.stderr,
+    );
     await run(
       "openssl",
       [
         "pkcs12",
         "-export",
-        "-legacy",
+        ...(legacyProvider ? ["-legacy"] : []),
+        "-certpbe",
+        "PBE-SHA1-RC2-40",
+        "-keypbe",
+        "PBE-SHA1-3DES",
+        "-macalg",
+        "sha1",
         "-in",
         join(root, "cert.pem"),
         "-inkey",
