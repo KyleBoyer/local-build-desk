@@ -131,6 +131,10 @@ export interface Submission {
   uploadedAt?: string;
 }
 export interface Job {
+  restoredFromBackup?: boolean;
+  reuseFingerprint?: string;
+  nativeReuseFingerprint?: string;
+  facts?: BuildFacts;
   projectSnapshot?: Project;
   requiresInvocationCredentials?: boolean;
   connectionFingerprint?: string;
@@ -251,12 +255,52 @@ export interface UpdateStatus {
   error?: string;
 }
 export interface DeskEvent {
-  type: "state" | "log" | "update";
+  type: "state" | "log" | "update" | "focus-job" | "operation-progress";
+  operationId?: string;
+  progress?: WorkProgress;
   jobId?: string;
   entry?: LogEntry;
   update?: UpdateStatus;
 }
 export interface DesktopAPI {
+  readRelease(
+    jobId: string,
+    draft: ReleaseDraft,
+  ): Promise<Record<string, string>>;
+  relinkArtifact(artifactId: string, path: string): Promise<Artifact>;
+  installTargets(
+    artifactId: string,
+  ): Promise<{ targets: InstallTarget[]; notes: string[] }>;
+  installArtifact(artifactId: string, targetId: string): Promise<void>;
+  cancelInstall(artifactId: string): Promise<void>;
+  findReusableBuilds(
+    projectId: string,
+    profile: string,
+    platform: Platform,
+  ): Promise<ReusableBuild[]>;
+  useReusableBuild(
+    projectId: string,
+    profile: string,
+    platform: Platform,
+    artifactId: string,
+    upload: boolean,
+  ): Promise<Job>;
+  exportBackup(password: string): Promise<string | undefined>;
+  previewBackup(password: string): Promise<BackupPreview | undefined>;
+  restoreBackup(
+    token: string,
+    mappings: Record<string, string>,
+    resetMachinePaths?: boolean,
+  ): Promise<{ projects: number; credentials: number; jobs: number }>;
+  prepareRelease(jobId: string, draft: ReleaseDraft): Promise<ReleasePreview>;
+  applyRelease(token: string): Promise<string>;
+  savePlayNotes(projectId: string, text: string, locale: string): Promise<void>;
+  releaseNoteDraft(jobId: string): Promise<{ text: string; note: string }>;
+  notificationSettings(
+    enabled?: boolean,
+  ): Promise<{ enabled: boolean; supported: boolean; error?: string }>;
+  testNotification(): Promise<void>;
+  compareBuild(jobId: string): Promise<BuildComparison>;
   xcodeInstallations(
     projectId: string,
   ): Promise<import("./xcode-toolchain").XcodeInstallation[]>;
@@ -391,6 +435,75 @@ export interface DesktopAPI {
   checkForUpdates(): Promise<UpdateStatus>;
   installUpdate(): Promise<void>;
   onEvent(listener: (event: DeskEvent) => void): () => void;
+}
+
+export interface BuildFacts {
+  toolVersions?: Record<string, string>;
+  sourceCommit?: string;
+  sourceHash?: string;
+  configuration: string;
+  distribution: string;
+  developmentClient: boolean;
+  simulator: boolean;
+  signing?: string;
+  entitlements?: Record<string, unknown>;
+  destination: string;
+}
+export interface BuildDifference {
+  field: string;
+  before: string;
+  after: string;
+  changed: boolean;
+}
+export interface BuildComparison {
+  baselineId?: string;
+  baselineLabel?: string;
+  fields: BuildDifference[];
+  note?: string;
+}
+export interface ReleaseDraft {
+  destination: "testflight" | "appstore";
+  locale: string;
+  createVersion?: boolean;
+  fields: {
+    whatsNew?: string;
+    description?: string;
+    keywords?: string;
+    promotionalText?: string;
+    supportUrl?: string;
+    marketingUrl?: string;
+  };
+}
+export interface ReleasePreview {
+  token: string;
+  destination: ReleaseDraft["destination"];
+  identity: string;
+  version: string;
+  buildNumber?: string;
+  locale: string;
+  createsVersion: boolean;
+  changes: BuildDifference[];
+}
+export interface BackupPreview {
+  token: string;
+  createdAt: string;
+  projects: { id: string; name: string; path: string }[];
+  credentials: number;
+  jobs: number;
+  counters: number;
+}
+export interface ReusableBuild {
+  job: Job;
+  artifact: Artifact;
+  match: "exact" | "native-development";
+  alreadySubmitted: boolean;
+}
+export interface InstallTarget {
+  id: string;
+  kind: "ios-simulator" | "android-device" | "android-avd";
+  name: string;
+  available: boolean;
+  detail: string;
 }
 
 export interface SetupRequest {

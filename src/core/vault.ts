@@ -8,6 +8,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHmac, randomBytes } from "node:crypto";
 import { Store, id, now } from "./database";
 import { invariant } from "./errors";
 import type { Credential, CredentialSummary } from "./types";
@@ -16,6 +17,38 @@ export interface Encryption {
   decrypt(value: Buffer): Promise<string>;
 }
 export class Vault {
+  get canFingerprint() {
+    return true;
+  }
+  private fingerprintKey?: Promise<Buffer>;
+  async fingerprint(value: string): Promise<string> {
+    if (!this.fingerprintKey)
+      this.fingerprintKey = (async () => {
+        const saved = this.store.preference<string | undefined>(
+          "reuseFingerprintKey",
+          undefined,
+        );
+        if (saved)
+          return Buffer.from(
+            await this.encryption.decrypt(Buffer.from(saved, "base64")),
+            "base64",
+          );
+        const key = randomBytes(32);
+        this.store.setPreference(
+          "reuseFingerprintKey",
+          (await this.encryption.encrypt(key.toString("base64"))).toString(
+            "base64",
+          ),
+        );
+        return key;
+      })().catch((error) => {
+        this.fingerprintKey = undefined;
+        throw error;
+      });
+    return createHmac("sha256", await this.fingerprintKey)
+      .update(value)
+      .digest("hex");
+  }
   readonly ephemeral: boolean = false;
   constructor(
     private store: Store,
@@ -25,6 +58,11 @@ export class Vault {
     credential: Credential,
     existingId?: string,
   ): Promise<CredentialSummary> {
+    const prepared = await this.prepareCredential(credential, existingId);
+    this.writePrepared(prepared);
+    return prepared.summary;
+  }
+  async prepareCredential(credential: Credential, existingId?: string) {
     const summary: CredentialSummary = {
       id: existingId ?? id(),
       kind: credential.kind,
@@ -42,12 +80,23 @@ export class Vault {
                 : `${Object.keys(credential.values).length} environment values`,
     };
     const encrypted = await this.encryption.encrypt(JSON.stringify(credential));
+    return { summary, encrypted };
+  }
+  writePrepared({
+    summary,
+    encrypted,
+  }: {
+    summary: CredentialSummary;
+    encrypted: Buffer;
+  }) {
     this.store.db
       .prepare(
         "INSERT INTO credentials(id,summary,encrypted) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET summary=excluded.summary,encrypted=excluded.encrypted",
       )
       .run(summary.id, JSON.stringify(summary), encrypted);
-    return summary;
+  }
+  async decryptRecord(bytes: Uint8Array): Promise<Credential> {
+    return JSON.parse(await this.encryption.decrypt(Buffer.from(bytes)));
   }
   async get<T extends Credential["kind"]>(
     id: string | undefined,

@@ -16,7 +16,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS credentials(id TEXT PRIMARY KEY,summary TEXT NOT NULL,encrypted BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS counters(identity TEXT PRIMARY KEY,last_used INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS version_claims(identity TEXT NOT NULL,number INTEGER NOT NULL,owner TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(identity,number),UNIQUE(identity,owner));
-      CREATE TABLE IF NOT EXISTS counter_authority(identity TEXT PRIMARY KEY,authority TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS counter_authority(identity TEXT PRIMARY KEY,authority TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL);`);
     for (const summary of this.credentialSummaries().filter(
       (item) => item.kind === "apple" && item.detail.includes(" · "),
     )) {
@@ -65,6 +66,19 @@ export class Store {
         summary: string;
       }[]
     ).map((r) => JSON.parse(r.summary));
+  }
+  preference<T>(key: string, fallback: T): T {
+    const row = this.db
+      .prepare("SELECT value FROM preferences WHERE key=?")
+      .get(key) as { value: string } | undefined;
+    return row ? JSON.parse(row.value) : fallback;
+  }
+  setPreference(key: string, value: unknown) {
+    this.db
+      .prepare(
+        "INSERT INTO preferences(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      )
+      .run(key, JSON.stringify(value));
   }
   seed(identity: string, lastUsed: number) {
     invariant(

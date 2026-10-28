@@ -55,6 +55,7 @@ export async function snapshot(
   destination: string,
   native: { ios: boolean; android: boolean },
   signal?: AbortSignal,
+  copyFiles = true,
 ): Promise<string> {
   const sourceRoot = resolve(source),
     destRoot = resolve(destination);
@@ -63,7 +64,7 @@ export async function snapshot(
     "SNAPSHOT_LOCATION",
     "Build storage must be outside the project folder.",
   );
-  await mkdir(destRoot, { recursive: true, mode: 0o700 });
+  if (copyFiles) await mkdir(destRoot, { recursive: true, mode: 0o700 });
   const git = await run(
     "git",
     ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -121,7 +122,13 @@ export async function snapshot(
         "EXTERNAL_SYMLINK",
         `Symlink ${path} points outside the project. Vendor that dependency or use a self-contained project root.`,
       );
-      hash.update(path).update(link);
+      hash
+        .update(
+          JSON.stringify(["link", path, stat.mode, Buffer.byteLength(link)]) +
+            "\0",
+        )
+        .update(link)
+        .update("\0");
     } else if (stat.isFile()) {
       const content = await readFile(from);
       if (
@@ -129,10 +136,17 @@ export async function snapshot(
         /"(?:private_key|privateKey)"\s*:/.test(content.toString("utf8"))
       )
         continue;
-      hash.update(path).update(content);
+      hash
+        .update(
+          JSON.stringify(["file", path, stat.mode, content.length]) + "\0",
+        )
+        .update(content)
+        .update("\0");
     } else continue;
-    await mkdir(join(to, ".."), { recursive: true });
-    await cp(from, to, { dereference: false, preserveTimestamps: true });
+    if (copyFiles) {
+      await mkdir(join(to, ".."), { recursive: true });
+      await cp(from, to, { dereference: false, preserveTimestamps: true });
+    }
   }
   return hash.digest("hex");
 }

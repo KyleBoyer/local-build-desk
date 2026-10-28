@@ -1,4 +1,5 @@
 import { withLock } from "./locks";
+import { reuseKeys } from "./reuse";
 import { toolProgress } from "./progress";
 import {
   mkdir,
@@ -13,6 +14,7 @@ import {
 import { join, basename, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import plist from "plist";
 import { prepareApple } from "./setup";
 import { AppleAPI, GoogleAPI } from "./stores";
@@ -128,13 +130,11 @@ async function walk(
 }
 async function digest(path: string): Promise<{ sha256: string; size: number }> {
   const info = await stat(path);
-  if (info.isFile())
-    return {
-      sha256: createHash("sha256")
-        .update(await readFile(path))
-        .digest("hex"),
-      size: info.size,
-    };
+  if (info.isFile()) {
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    return { sha256: hash.digest("hex"), size: info.size };
+  }
   const hash = createHash("sha256");
   let size = 0;
   const add = async (root: string) => {
@@ -195,6 +195,19 @@ export async function buildLocal(ctx: BuildContext) {
     importedEnv,
   );
   const profile = resolveProfile(inspection.eas, job.profile, job.platform);
+  job.facts = {
+    configuration: profile.configuration,
+    distribution: profile.distribution,
+    developmentClient: profile.developmentClient,
+    simulator: profile.simulator,
+    destination: profile.simulator
+      ? "iOS Simulator"
+      : profile.distribution === "internal" || profile.developmentClient
+        ? "Direct installation"
+        : job.platform === "ios"
+          ? "App Store Connect / TestFlight"
+          : `Google Play · ${project.settings.track ?? "internal"}`,
+  };
   job.storeEligible =
     profile.distribution === "store" &&
     !profile.simulator &&
@@ -247,6 +260,22 @@ export async function buildLocal(ctx: BuildContext) {
     `Set ${job.platform === "ios" ? "ios.bundleIdentifier" : "android.package"} in Expo config.`,
   );
   const checks = await doctor(project.settings, job.platform, vault.ephemeral);
+  job.facts.toolVersions = Object.fromEntries(
+    checks
+      .filter((c) =>
+        [
+          "Node.js",
+          "Xcode",
+          "iOS SDK",
+          "CocoaPods",
+          "Java",
+          "Android SDK",
+          "Android NDK",
+        ].includes(c.name),
+      )
+      .map((c) => [c.name, c.detail]),
+  );
+  ctx.save();
   const required =
     job.platform === "ios"
       ? [
@@ -403,6 +432,35 @@ export async function buildLocal(ctx: BuildContext) {
     inspection.native,
     ctx.signal,
   );
+  job.facts.sourceHash = sourceHash;
+  if (vault.canFingerprint) {
+    try {
+      Object.assign(
+        job,
+        await reuseKeys(
+          project,
+          inspection,
+          profile,
+          job.platform,
+          sourceHash,
+          checks,
+          vault,
+          importedEnv,
+        ),
+      );
+    } catch {
+      ctx.log(
+        "Build reuse fingerprint is unavailable; continuing with a fresh build.",
+      );
+    }
+  }
+  const sourceCommit = await run("git", ["rev-parse", "HEAD"], {
+    ...optionsForCommit(project),
+    allowFailure: true,
+  });
+  if (/^[a-f0-9]{40}$/.test(sourceCommit.stdout.trim()))
+    job.facts.sourceCommit = sourceCommit.stdout.trim();
+  ctx.save();
   const env: NodeJS.ProcessEnv = {
     ...toolEnvironment(project.settings),
     ...importedEnv,
@@ -570,6 +628,9 @@ export async function buildLocal(ctx: BuildContext) {
     );
   }
 }
+function optionsForCommit(project: Project) {
+  return { cwd: project.path, timeout: 5000 };
+}
 async function buildIOS(
   ctx: BuildContext,
   profile: Profile,
@@ -656,6 +717,8 @@ async function buildIOS(
   ctx.stage("signing");
   await privateDirectory((root) =>
     withIOSSigning(credential, root, options, async (signing) => {
+      ctx.job.facts!.signing = `${signing.identity} · ${signing.teamId}`;
+      ctx.save();
       const profiles = await configureIOSSigning(
         iosRoot,
         signing,
@@ -727,6 +790,20 @@ async function buildIOS(
       );
       invariant(app, "IPA_INVALID", "No app in IPA payload.");
       const appPath = join(extracted, "Payload", app);
+      const signedEntitlements = await run(
+        "codesign",
+        ["-d", "--entitlements", ":-", appPath],
+        { ...options, log: undefined },
+      );
+      const xml = signedEntitlements.stdout.slice(
+        signedEntitlements.stdout.indexOf("<?xml"),
+      );
+      if (xml.startsWith("<?xml"))
+        ctx.job.facts!.entitlements = plist.parse(xml) as Record<
+          string,
+          unknown
+        >;
+      ctx.save();
       await run(
         "codesign",
         ["--verify", "--deep", "--strict", appPath],
@@ -923,6 +1000,10 @@ async function buildAndroid(
         "AAB_CERTIFICATE",
         "The AAB is signed with a different certificate than the selected upload key.",
       );
+      ctx.job.facts!.signing = createHash("sha256")
+        .update(Buffer.from(extract(local.stdout)!, "base64"))
+        .digest("hex");
+      ctx.save();
     } else {
       const tools = await readdir(join(env.ANDROID_HOME!, "build-tools"));
       const tool = tools
@@ -934,10 +1015,18 @@ async function buildAndroid(
         tool,
         "apksigner",
       );
-      await run(apksigner, ["verify", "--verbose", "--print-certs", target], {
-        ...options,
-        env,
-      });
+      const apkSignature = await run(
+        apksigner,
+        ["verify", "--verbose", "--print-certs", target],
+        {
+          ...options,
+          env,
+        },
+      );
+      ctx.job.facts!.signing = apkSignature.stdout.match(
+        /certificate SHA-256 digest:\s*(\S+)/,
+      )?.[1];
+      ctx.save();
       const aapt = join(env.ANDROID_HOME!, "build-tools", tool, "aapt");
       const info = await run(aapt, ["dump", "badging", target], {
         ...options,

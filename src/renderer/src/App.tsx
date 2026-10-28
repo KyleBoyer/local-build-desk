@@ -1,5 +1,12 @@
 import { useLogFollow } from "./useLogFollow";
 import { WorkProgress } from "./WorkProgress";
+import {
+  BuildChanges,
+  DeskPreferences,
+  ReleaseAssistant,
+  ReusePicker,
+  DeviceInstaller,
+} from "./WorkflowTools";
 import { stageGuidance } from "../../core/progress";
 import {
   useState,
@@ -87,6 +94,8 @@ const pageNames = {
   signing: "Signing",
   connections: "Connections",
   toolchain: "Toolchain",
+  preferences: "Preferences",
+  release: "Release",
 } as const;
 type Page = keyof typeof pageNames;
 const statusLabel = (value: string) =>
@@ -375,6 +384,14 @@ function Modal({
   );
 }
 export function App() {
+  const [reuseChoice, setReuseChoice] = useState<{
+    candidates: import("../../core/types").ReusableBuild[];
+    projectId: string;
+    profile: string;
+    platform: Platform;
+    autoSubmit: boolean;
+  }>();
+  const [reuseSearching, setReuseSearching] = useState(false);
   const [state, setState] = useState(initial),
     [page, setPage] = useState<Page>("project"),
     [projectId, setProjectId] = useState("");
@@ -418,6 +435,17 @@ export function App() {
     void refresh();
     return api.onEvent((e) => {
       if (e.type === "state") void refresh();
+      if (e.type === "focus-job" && e.jobId) {
+        void api.state().then((next) => {
+          setState(next);
+          const job = next.jobs.find((j) => j.id === e.jobId);
+          if (job) {
+            setProjectId(job.projectId);
+            setSelectedJob(job.id);
+            setPage("builds");
+          }
+        });
+      }
     });
   }, [refresh]);
   useEffect(() => {
@@ -477,9 +505,42 @@ export function App() {
       );
       setPage("setup");
     }, undefined);
-  const build = (autoSubmit: boolean) =>
+  const build = (autoSubmit: boolean, fresh = false) =>
     action(async () => {
       if (!project) return;
+      if (
+        !fresh &&
+        !clean &&
+        platform !== "all" &&
+        state.jobs.some(
+          (j) =>
+            j.projectId === project.id &&
+            j.profile === profile &&
+            j.platform === platform &&
+            j.reuseFingerprint,
+        )
+      ) {
+        setReuseSearching(true);
+        try {
+          const candidates = await api.findReusableBuilds(
+            project.id,
+            profile,
+            platform,
+          );
+          if (candidates.length) {
+            setReuseChoice({
+              candidates,
+              projectId: project.id,
+              profile,
+              platform,
+              autoSubmit,
+            });
+            return;
+          }
+        } finally {
+          setReuseSearching(false);
+        }
+      }
       const jobs = await api.build({
         projectId: project.id,
         platform,
@@ -489,7 +550,8 @@ export function App() {
       });
       setSelectedJob(jobs[0].id);
       setPage("builds");
-    }, "Build added to your local queue.");
+      notify("Build added to your local queue.");
+    });
   const localJobs = state.jobs.filter((j) => j.projectId === project?.id),
     running = state.jobs.filter((j) =>
       ["running", "queued"].includes(j.status),
@@ -562,6 +624,8 @@ export function App() {
               signing: ShieldCheck,
               connections: Link2,
               toolchain: CircuitBoard,
+              preferences: Settings2,
+              release: FileCode2,
             }[p];
             return (
               <button
@@ -641,6 +705,17 @@ export function App() {
           </div>
         </header>
         <div className="content">
+          {page === "preferences" && <DeskPreferences />}
+          {page === "release" &&
+            (project ? (
+              <ReleaseAssistant
+                key={project.id}
+                project={project}
+                jobs={state.jobs}
+              />
+            ) : (
+              <p className="muted">Import a project to prepare a release.</p>
+            ))}
           {page === "project" && (
             <>
               <div className="page-heading">
@@ -1366,7 +1441,7 @@ export function App() {
       {busy && (
         <div className="busy-indicator" role="status">
           <LoaderCircle className="spin" size={15} />
-          Working…
+          {reuseSearching ? "Checking local build compatibility…" : "Working…"}
         </div>
       )}
       {toast && (
@@ -1407,6 +1482,26 @@ export function App() {
             credentials={state.credentials}
             action={action}
             close={() => setModal(undefined)}
+          />
+        </Modal>
+      )}
+      {reuseChoice && (
+        <Modal
+          title="Reuse an existing build"
+          close={() => setReuseChoice(undefined)}
+        >
+          <ReusePicker
+            {...reuseChoice}
+            onUse={(job) => {
+              setReuseChoice(undefined);
+              setSelectedJob(job.id);
+              setPage("builds");
+            }}
+            onFresh={() => {
+              const submit = reuseChoice.autoSubmit;
+              setReuseChoice(undefined);
+              void build(submit, true);
+            }}
           />
         </Modal>
       )}
@@ -1635,6 +1730,14 @@ function JobDetail({
           </span>
         )}
       </div>
+      <BuildChanges job={job} />
+      {job.restoredFromBackup && (
+        <p className="muted">
+          Restored history. Check this Mac’s project/tool paths and use “Check
+          store status” for pending uploads. Build files and logs are not
+          included in the backup.
+        </p>
+      )}
       <div className="stage-track">
         {stages
           .filter(
@@ -1757,6 +1860,23 @@ function JobDetail({
               >
                 <FolderOpen size={16} />
               </button>
+              <Button
+                onClick={() =>
+                  void action(async () => {
+                    const paths = await api.choose({
+                      kind: ["app", "archive", "dsym"].includes(a.kind)
+                        ? "directory"
+                        : "file",
+                      extensions: ["ipa", "aab", "apk"].includes(a.kind)
+                        ? [a.kind]
+                        : undefined,
+                    });
+                    if (paths[0]) await api.relinkArtifact(a.id, paths[0]);
+                  }, "Artifact location verified and updated.")
+                }
+              >
+                Locate file
+              </Button>
               {["ipa", "aab"].includes(a.kind) &&
                 (!job.submission || job.submission.state === "rejected") && (
                   <Button
@@ -1768,6 +1888,9 @@ function JobDetail({
                     Upload
                   </Button>
                 )}
+              {["app", "apk"].includes(a.kind) && (
+                <DeviceInstaller artifact={a} />
+              )}
             </div>
           ))}
         </div>

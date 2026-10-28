@@ -1,4 +1,22 @@
 import { withLock } from "./locks";
+import {
+  captureBackup,
+  writeBackup,
+  readBackup,
+  restorePayload,
+  type BackupPayload,
+} from "./backup";
+import { compareBuilds } from "./comparison";
+import { inspectReuse } from "./reuse";
+import { listInstallTargets, installAndLaunch } from "./devices";
+import type { ReusableBuild } from "./types";
+import {
+  releaseContext,
+  contextFingerprint,
+  previewRelease,
+  applyRelease,
+} from "./release-assistant";
+import type { ReleaseDraft, ReleasePreview } from "./types";
 import { makeStoreSetup, verifyBootstrapArtifact } from "./store-onboarding";
 import {
   internalTeamUsers,
@@ -73,6 +91,483 @@ import {
   type RuntimeContext,
 } from "./runtime-context";
 export class Engine extends EventEmitter {
+  private releaseOperations = new Map<
+    string,
+    { controller: AbortController; operation: Promise<unknown> }
+  >();
+  private releaseOperation<T>(
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    invariant(
+      !this.closing,
+      "DESK_CLOSING",
+      "Local Build Desk is shutting down. Reopen it to continue.",
+    );
+    const key = id(),
+      controller = new AbortController();
+    const operation = Promise.resolve()
+      .then(() => fn(controller.signal))
+      .finally(() => this.releaseOperations.delete(key));
+    this.releaseOperations.set(key, { controller, operation });
+    return operation;
+  }
+  readRelease(jobId: string, draft: ReleaseDraft) {
+    return this.releaseOperation((signal) =>
+      this.readReleaseMetadata(jobId, draft, signal),
+    );
+  }
+  private async readReleaseMetadata(
+    jobId: string,
+    draft: ReleaseDraft,
+    signal: AbortSignal,
+  ) {
+    const job = this.store.get<Job>("jobs", jobId),
+      project = this.store.get<Project>("projects", job.projectId);
+    invariant(
+      job.storeEligible,
+      "RELEASE_BUILD",
+      "Choose a store build first.",
+    );
+    const context = await releaseContext(
+      new AppleAPI(
+        await this.vaultFor(job).get(
+          project.settings.appleConnectionId,
+          "apple",
+        ),
+        fetch,
+        undefined,
+        { signal },
+      ),
+      job,
+      draft,
+    );
+    return context.current;
+  }
+  async relinkArtifact(artifactId: string, path: string) {
+    invariant(
+      !this.deviceOperations.has(artifactId) &&
+        !this.store
+          .list<Job>("jobs")
+          .some(
+            (j) =>
+              j.artifactId === artifactId &&
+              ["queued", "running"].includes(j.status),
+          ),
+      "ARTIFACT_BUSY",
+      "Wait for this artifact’s upload or installation to finish before relocating it.",
+    );
+    const artifact = this.store.get<Artifact>("artifacts", artifactId),
+      resolved = await realpath(resolve(path)),
+      digest = await hashArtifact(resolved);
+    invariant(
+      digest.sha256 === artifact.sha256 && digest.size === artifact.size,
+      "ARTIFACT_CHANGED",
+      "Choose the original, unmodified artifact. Its checksum and size must match the recorded build.",
+    );
+    artifact.path = resolved;
+    this.store.putArtifact(artifact);
+    this.changed();
+    return artifact;
+  }
+  private deviceOperations = new Map<
+    string,
+    { controller: AbortController; operation: Promise<void> }
+  >();
+  isBusy() {
+    return (
+      !!this.controllers.size ||
+      !!this.toolchainOperations.size ||
+      !!this.toolInstalls.size ||
+      !!this.deviceOperations.size ||
+      !!this.releaseOperations.size ||
+      !!this.reconciliations.size ||
+      this.store
+        .list<Job>("jobs")
+        .some((j) => ["queued", "running"].includes(j.status))
+    );
+  }
+  private installProject(artifactId: string) {
+    const artifact = this.store.get<Artifact>("artifacts", artifactId),
+      job = this.store.get<Job>("jobs", artifact.jobId);
+    return {
+      artifact,
+      project:
+        this.store
+          .list<Project>("projects")
+          .find((p) => p.id === job.projectId) ?? this.projectFor(job),
+    };
+  }
+  async installTargets(artifactId: string) {
+    const { artifact, project } = this.installProject(artifactId);
+    return listInstallTargets(project.settings, artifact.kind);
+  }
+  installArtifact(artifactId: string, targetId: string): Promise<void> {
+    const existing = this.deviceOperations.get(artifactId);
+    if (existing) return existing.operation;
+    const controller = new AbortController();
+    const startedAt = now();
+    const progress = (label: string) =>
+      this.emit("event", {
+        type: "operation-progress",
+        operationId: artifactId,
+        progress: { kind: "work", label, startedAt, updatedAt: now() },
+      } satisfies DeskEvent);
+    const operation = (async () => {
+      const { artifact, project } = this.installProject(artifactId);
+      progress("Verifying build checksum");
+      const digest = await hashArtifact(artifact.path);
+      invariant(
+        digest.sha256 === artifact.sha256 && digest.size === artifact.size,
+        "ARTIFACT_CHANGED",
+        "This artifact is missing or changed. Restore the original build files or build again.",
+      );
+      const target = (
+        await listInstallTargets(project.settings, artifact.kind)
+      ).targets.find((t) => t.id === targetId);
+      invariant(
+        target?.available,
+        "INSTALL_TARGET",
+        "Refresh devices and select an available compatible target.",
+      );
+      await installAndLaunch(
+        artifact,
+        target,
+        project.settings,
+        controller.signal,
+        progress,
+      );
+      progress("Installed and launched");
+    })().finally(() => this.deviceOperations.delete(artifactId));
+    this.deviceOperations.set(artifactId, { controller, operation });
+    return operation;
+  }
+  cancelInstall(artifactId: string) {
+    this.deviceOperations.get(artifactId)?.controller.abort();
+  }
+  async findReusableBuilds(
+    projectId: string,
+    profile: string,
+    platform: Platform,
+  ): Promise<ReusableBuild[]> {
+    const project = this.store.get<Project>("projects", projectId),
+      jobs = this.store.list<Job>("jobs");
+    if (
+      !jobs.some(
+        (j) =>
+          j.projectId === projectId &&
+          j.profile === profile &&
+          j.platform === platform &&
+          j.reuseFingerprint,
+      )
+    )
+      return [];
+    const keys = await inspectReuse(project, profile, platform, this.vault),
+      identity =
+        platform === "ios"
+          ? keys.inspection.bundleId
+          : keys.inspection.packageName;
+    const result: ReusableBuild[] = [];
+    for (const job of jobs
+      .filter(
+        (j) =>
+          j.projectId === projectId &&
+          j.kind === "build" &&
+          j.profile === profile &&
+          j.platform === platform &&
+          j.bundleId === identity &&
+          j.artifactId &&
+          ["succeeded", "needs-attention"].includes(j.status),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
+      const exact =
+        !!keys.reuseFingerprint &&
+        job.reuseFingerprint === keys.reuseFingerprint;
+      const native =
+        keys.profile.developmentClient &&
+        !!keys.nativeReuseFingerprint &&
+        job.nativeReuseFingerprint === keys.nativeReuseFingerprint;
+      if (!exact && !native) continue;
+      let artifact: Artifact;
+      try {
+        artifact = this.store.get<Artifact>("artifacts", job.artifactId!);
+        const digest = await hashArtifact(artifact.path);
+        if (digest.sha256 !== artifact.sha256 || digest.size !== artifact.size)
+          continue;
+      } catch {
+        continue;
+      }
+      result.push({
+        job,
+        artifact,
+        match: exact ? "exact" : "native-development",
+        alreadySubmitted: jobs.some(
+          (j) =>
+            j.artifactId === artifact.id &&
+            (!!j.submission ||
+              (j.kind === "submit" &&
+                ["queued", "running"].includes(j.status))),
+        ),
+      });
+      if (result.length === 5) break;
+    }
+    return result;
+  }
+  async useReusableBuild(
+    projectId: string,
+    profile: string,
+    platform: Platform,
+    artifactId: string,
+    upload: boolean,
+  ) {
+    const candidate = (
+      await this.findReusableBuilds(projectId, profile, platform)
+    ).find((c) => c.artifact.id === artifactId);
+    invariant(
+      candidate,
+      "REUSE_CHANGED",
+      "The source, toolchain, credentials, or artifact changed. Check for reuse again or build fresh.",
+    );
+    if (upload) {
+      invariant(
+        candidate.match === "exact" && !candidate.alreadySubmitted,
+        "REUSE_UPLOAD",
+        "This artifact cannot be uploaded again. Open its existing build or build a new version.",
+      );
+      return this.submit(artifactId);
+    }
+    return candidate.job;
+  }
+  private restorePreview?: {
+    token: string;
+    payload: BackupPayload;
+    expires: number;
+  };
+  assertBackupIdle() {
+    invariant(
+      !this.isBusy(),
+      "BACKUP_BUSY",
+      "Wait for builds and tool/device operations to finish before backing up or restoring.",
+    );
+  }
+  async exportBackupFile(path: string, password: string) {
+    this.assertBackupIdle();
+    await writeBackup(
+      path,
+      await captureBackup(this.store, this.vault),
+      password,
+    );
+    return path;
+  }
+  async previewBackupFile(path: string, password: string) {
+    const payload = await readBackup(path, password),
+      token = id();
+    this.restorePreview = { token, payload, expires: Date.now() + 600000 };
+    const pending = this.restorePreview;
+    const timer = setTimeout(() => {
+      if (this.restorePreview === pending) this.restorePreview = undefined;
+    }, 600000);
+    timer.unref();
+    return {
+      token,
+      createdAt: payload.createdAt,
+      projects: payload.projects.map((p) => ({
+        id: p.id,
+        name: p.name,
+        path: p.path,
+      })),
+      credentials: payload.credentials.length,
+      jobs: payload.jobs.length,
+      counters: payload.counters.length,
+    };
+  }
+  async restoreBackup(
+    token: string,
+    mappings: Record<string, string>,
+    resetMachinePaths = true,
+  ) {
+    const preview = this.restorePreview;
+    invariant(
+      preview && preview.token === token && preview.expires > Date.now(),
+      "BACKUP_PREVIEW",
+      "Choose and preview the encrypted backup again before restoring.",
+    );
+    this.restorePreview = undefined;
+    const result = await restorePayload(
+      this.store,
+      this.vault,
+      preview.payload,
+      mappings,
+      () => this.assertBackupIdle(),
+      resetMachinePaths,
+    );
+    this.changed();
+    return result;
+  }
+  private releasePreviews = new Map<
+    string,
+    {
+      job: Job;
+      draft: ReleaseDraft;
+      fingerprint: string;
+      connectionId: string;
+      revision: string;
+      expires: number;
+    }
+  >();
+  prepareRelease(jobId: string, draft: ReleaseDraft): Promise<ReleasePreview> {
+    return this.releaseOperation((signal) =>
+      this.prepareReleaseMetadata(jobId, draft, signal),
+    );
+  }
+  private async prepareReleaseMetadata(
+    jobId: string,
+    draft: ReleaseDraft,
+    signal: AbortSignal,
+  ): Promise<ReleasePreview> {
+    const job = this.store.get<Job>("jobs", jobId),
+      project = this.store.get<Project>("projects", job.projectId);
+    const connectionId = project.settings.appleConnectionId;
+    invariant(
+      connectionId && job.storeEligible && job.artifactId,
+      "RELEASE_BUILD",
+      "Choose a store build and connect its Apple team first.",
+    );
+    const api = new AppleAPI(
+      await this.vaultFor(job).get(connectionId, "apple"),
+      fetch,
+      undefined,
+      { signal },
+    );
+    const context = await releaseContext(api, job, draft),
+      preview = previewRelease(job, draft, context);
+    for (const [token, value] of this.releasePreviews)
+      if (value.expires < Date.now()) this.releasePreviews.delete(token);
+    invariant(
+      this.releasePreviews.size < 50,
+      "RELEASE_PREVIEWS",
+      "Close older previews and try again shortly.",
+    );
+    this.releasePreviews.set(preview.token, {
+      job: structuredClone(job),
+      draft: structuredClone(draft),
+      fingerprint: contextFingerprint(context),
+      connectionId,
+      revision:
+        this.store.credentialSummaries().find((c) => c.id === connectionId)
+          ?.createdAt ?? "",
+      expires: Date.now() + 600000,
+    });
+    return preview;
+  }
+  applyRelease(token: string) {
+    return this.releaseOperation((signal) =>
+      this.applyReleaseMetadata(token, signal),
+    );
+  }
+  private async applyReleaseMetadata(token: string, signal: AbortSignal) {
+    const preview = this.releasePreviews.get(token);
+    invariant(
+      preview && preview.expires > Date.now(),
+      "RELEASE_PREVIEW",
+      "Preview the proposed release changes again before applying.",
+    );
+    this.releasePreviews.delete(token);
+    try {
+      return await withLock(
+        `release:${preview.job.bundleId}:${preview.draft.destination}:${preview.draft.locale}`,
+        signal,
+        async () => {
+          const project = this.store.get<Project>(
+            "projects",
+            preview.job.projectId,
+          );
+          invariant(
+            project.settings.appleConnectionId === preview.connectionId &&
+              this.store
+                .credentialSummaries()
+                .find((c) => c.id === preview.connectionId)?.createdAt ===
+                preview.revision,
+            "RELEASE_CONNECTION",
+            "The Apple connection changed. Preview again before applying.",
+          );
+          return applyRelease(
+            new AppleAPI(
+              await this.vaultFor(preview.job).get(
+                preview.connectionId,
+                "apple",
+              ),
+              fetch,
+              undefined,
+              { signal },
+            ),
+            preview.job,
+            preview.draft,
+            preview.fingerprint,
+          );
+        },
+      );
+    } catch (error) {
+      throw new DeskError(
+        "RELEASE_APPLY",
+        messageOf(error) +
+          " Refresh the preview before retrying; a preceding store change may already have succeeded.",
+      );
+    }
+  }
+  savePlayNotes(projectId: string, text: string, locale: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    this.saveSettings(projectId, {
+      ...project.settings,
+      playReleaseNotes: text,
+      playReleaseNotesLanguage: locale,
+    });
+  }
+  async releaseNoteDraft(jobId: string) {
+    const job = this.store.get<Job>("jobs", jobId),
+      project = this.projectFor(job);
+    const previous = this.store
+      .list<Job>("jobs")
+      .filter(
+        (j) =>
+          j.id !== job.id &&
+          j.bundleId === job.bundleId &&
+          j.platform === job.platform &&
+          j.submission?.state === "accepted" &&
+          j.createdAt < job.createdAt &&
+          j.facts?.sourceCommit,
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    const commit = job.facts?.sourceCommit;
+    invariant(
+      commit && /^[a-f0-9]{40}$/.test(commit),
+      "RELEASE_COMMITS",
+      "This older build has no recorded source commit. Write release notes manually.",
+    );
+    const result = await run(
+      "git",
+      [
+        "log",
+        "--format=%s",
+        "--max-count=30",
+        previous?.facts?.sourceCommit
+          ? `${previous.facts.sourceCommit}..${commit}`
+          : commit,
+        "--",
+      ],
+      { cwd: project.path, timeout: 10000 },
+    );
+    return {
+      text: result.stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((s) => "• " + s)
+        .join("\n"),
+      note: previous
+        ? "Commit subjects since the previous accepted build. Review before publishing."
+        : "Recent commit subjects; no previous accepted source commit was recorded. Review before publishing.",
+    };
+  }
   private contexts = new Map<string, RuntimeContext>();
   projectFor(job: Job): Project {
     return (
@@ -107,6 +602,7 @@ export class Engine extends EventEmitter {
   private pollTimer?: NodeJS.Timeout;
   private pollErrors = new Map<string, string>();
   private reconciliations = new Map<string, Promise<void>>();
+  private reconciliationControllers = new Map<string, AbortController>();
   private controllers = new Map<string, AbortController>();
   private toolchainControllers = new Map<string, AbortController>();
   private toolchainOperations = new Map<
@@ -137,6 +633,13 @@ export class Engine extends EventEmitter {
       dataPath: this.store.root,
       concurrency: { ...this.limits },
     };
+  }
+  compareBuild(jobId: string) {
+    return compareBuilds(
+      this.store.get<Job>("jobs", jobId),
+      this.store.list<Job>("jobs"),
+      this.store.list<Artifact>("artifacts"),
+    );
   }
   changed() {
     this.emit("event", { type: "state" } satisfies DeskEvent);
@@ -685,7 +1188,7 @@ export class Engine extends EventEmitter {
         .catch(() => []);
       job.submission =
         appleBuildState(result, artifact.version) ?? job.submission;
-      await this.finishTestFlight(job, project);
+      await this.finishTestFlight(job, project, signal);
       this.saveJob(job);
     } else {
       const credential = await this.vaultFor(job).get(
@@ -784,13 +1287,21 @@ export class Engine extends EventEmitter {
   reconcile(jobId: string): Promise<void> {
     const existing = this.reconciliations.get(jobId);
     if (existing) return existing;
-    const pending = this.reconcileJob(jobId).finally(() =>
-      this.reconciliations.delete(jobId),
+    invariant(
+      !this.closing,
+      "DESK_CLOSING",
+      "Local Build Desk is shutting down. Reopen it to continue.",
     );
+    const controller = new AbortController();
+    this.reconciliationControllers.set(jobId, controller);
+    const pending = this.reconcileJob(jobId, controller.signal).finally(() => {
+      this.reconciliations.delete(jobId);
+      this.reconciliationControllers.delete(jobId);
+    });
     this.reconciliations.set(jobId, pending);
     return pending;
   }
-  private async reconcileJob(jobId: string) {
+  private async reconcileJob(jobId: string, signal: AbortSignal) {
     const job = this.store.get<Job>("jobs", jobId);
     invariant(
       job.status !== "running",
@@ -822,6 +1333,9 @@ export class Engine extends EventEmitter {
           project.settings.appleConnectionId,
           "apple",
         ),
+        fetch,
+        undefined,
+        { signal },
       );
       const builds = await api.build(
         artifact.bundleId,
@@ -844,7 +1358,7 @@ export class Engine extends EventEmitter {
       job.submission = { ...job.submission, ...state, lastCheckedAt: now() };
     } else
       job.submission = {
-        ...(await new GoogleAPI(googleCredential!, fetch, undefined, () =>
+        ...(await new GoogleAPI(googleCredential!, fetch, signal, () =>
           this.assertGoogleIdle(
             googleCredential!.serviceAccount.client_email,
             job.id,
@@ -863,7 +1377,8 @@ export class Engine extends EventEmitter {
         supersededVersionCodes: job.submission.supersededVersionCodes,
         lastCheckedAt: now(),
       };
-    await this.finishTestFlight(job, project);
+    await this.finishTestFlight(job, project, signal);
+    job.restoredFromBackup = false;
     job.status =
       job.submission.state === "rejected"
         ? "failed"
@@ -874,7 +1389,11 @@ export class Engine extends EventEmitter {
     job.error = undefined;
     this.saveJob(job);
   }
-  private async finishTestFlight(job: Job, project: Project) {
+  private async finishTestFlight(
+    job: Job,
+    project: Project,
+    signal?: AbortSignal,
+  ) {
     if (
       job.platform !== "ios" ||
       job.submission?.state !== "accepted" ||
@@ -884,6 +1403,9 @@ export class Engine extends EventEmitter {
       return;
     const api = new AppleAPI(
       await this.vaultFor(job).get(project.settings.appleConnectionId, "apple"),
+      fetch,
+      undefined,
+      { signal },
     );
     const group = (
       await api.request(`/betaGroups/${project.settings.testFlightGroupId}`)
@@ -905,7 +1427,10 @@ export class Engine extends EventEmitter {
       for (const job of this.store
         .list<Job>("jobs")
         .filter(
-          (j) => j.submission?.state === "processing" && j.status !== "running",
+          (j) =>
+            j.submission?.state === "processing" &&
+            j.status !== "running" &&
+            !j.restoredFromBackup,
         )) {
         try {
           await this.reconcile(job.id);
@@ -1676,6 +2201,24 @@ export class Engine extends EventEmitter {
     });
   }
   async shutdown() {
+    this.closing = true;
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    for (const item of [
+      ...this.deviceOperations.values(),
+      ...this.releaseOperations.values(),
+    ])
+      item.controller.abort();
+    for (const controller of this.reconciliationControllers.values())
+      controller.abort();
+    await Promise.allSettled([
+      ...[
+        ...this.deviceOperations.values(),
+        ...this.releaseOperations.values(),
+      ].map((item) => item.operation),
+      ...this.reconciliations.values(),
+    ]);
+    this.restorePreview = undefined;
+    this.releasePreviews.clear();
     this.closing = true;
     if (this.pollTimer) clearInterval(this.pollTimer);
     for (const controller of this.toolchainControllers.values())

@@ -2,48 +2,8 @@ import { z } from "zod";
 const text = z.string().max(4096),
   identifier = z.string().min(1).max(128),
   platform = z.enum(["ios", "android"]);
-export const settingsSchema = z
-  .object({
-    ascAppId: text.optional(),
-    setupAppleComplete: z.boolean().optional(),
-    testFlightGroupId: text.optional(),
-    testFlightGroupName: text.optional(),
-    nodePath: text.optional(),
-    javaHome: text.optional(),
-    androidSdk: text.optional(),
-    androidSdkLicenseAccepted: z.boolean().optional(),
-    xcodePath: text.optional(),
-    buildDirectory: text.optional(),
-    pendingXcodePath: text.optional(),
-    minimumIosSdk: z
-      .string()
-      .regex(/^(?:\d+(?:\.\d+){0,2})?$/)
-      .optional(),
-    iosSdk: z
-      .string()
-      .regex(/^(?:\d+(?:\.\d+){0,2})?$/)
-      .optional(),
-    workspace: text.optional(),
-    scheme: text.optional(),
-    nativeMode: z.enum(["auto", "generated", "maintained"]).optional(),
-    appleConnectionId: identifier.optional(),
-    iosSigningId: identifier.optional(),
-    androidSigningId: identifier.optional(),
-    googleConnectionId: identifier.optional(),
-    envCredentialId: identifier.optional(),
-    track: z
-      .string()
-      .regex(/^[a-zA-Z0-9_:.\-]+$/)
-      .optional(),
-    playAutoRollout: z.boolean().optional(),
-    // Google Play limits release notes to 500 characters per language.
-    playReleaseNotes: z.string().max(500).optional(),
-    playReleaseNotesLanguage: z
-      .string()
-      .regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/)
-      .optional(),
-  })
-  .strict();
+export { settingsSchema } from "../core/settings-schema";
+import { settingsSchema } from "../core/settings-schema";
 const credential = z.discriminatedUnion("kind", [
   z
     .object({
@@ -84,6 +44,77 @@ const credential = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 export const methods = {
+  readRelease: z.tuple([
+    identifier,
+    z
+      .object({
+        destination: z.enum(["testflight", "appstore"]),
+        locale: z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
+        createVersion: z.boolean().optional(),
+        fields: z.object({}).strict(),
+      })
+      .strict(),
+  ]),
+  relinkArtifact: z.tuple([identifier, text]),
+  installTargets: z.tuple([identifier]),
+  installArtifact: z.tuple([
+    identifier,
+    z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(/^(?:sim|adb|avd):[A-Za-z0-9_.:-]+$/),
+  ]),
+  cancelInstall: z.tuple([identifier]),
+  findReusableBuilds: z.tuple([identifier, text, platform]),
+  useReusableBuild: z.tuple([
+    identifier,
+    text,
+    platform,
+    identifier,
+    z.boolean(),
+  ]),
+  exportBackup: z.tuple([z.string().min(12).max(1024)]),
+  previewBackup: z.tuple([z.string().min(1).max(1024)]),
+  restoreBackup: z.tuple([
+    z.string().uuid(),
+    z.record(z.string().min(1).max(128), text),
+    z.boolean().optional(),
+  ]),
+  prepareRelease: z.tuple([
+    identifier,
+    z
+      .object({
+        destination: z.enum(["testflight", "appstore"]),
+        locale: z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
+        createVersion: z.boolean().optional(),
+        fields: z
+          .object({
+            whatsNew: z.string().max(4000).optional(),
+            description: z.string().max(4000).optional(),
+            keywords: z.string().max(100).optional(),
+            promotionalText: z.string().max(170).optional(),
+            supportUrl: z
+              .union([z.literal(""), z.string().url().startsWith("https://")])
+              .optional(),
+            marketingUrl: z
+              .union([z.literal(""), z.string().url().startsWith("https://")])
+              .optional(),
+          })
+          .strict(),
+      })
+      .strict(),
+  ]),
+  applyRelease: z.tuple([z.string().uuid()]),
+  savePlayNotes: z.tuple([
+    identifier,
+    z.string().max(500),
+    z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
+  ]),
+  releaseNoteDraft: z.tuple([identifier]),
+  notificationSettings: z.tuple([z.boolean().optional()]),
+  testNotification: z.tuple([]),
+  compareBuild: z.tuple([identifier]),
   xcodeInstallations: z.tuple([identifier]),
   installXcode: z.tuple([identifier, text, z.boolean().optional()]),
   openXcodeDownload: z.tuple([identifier]),

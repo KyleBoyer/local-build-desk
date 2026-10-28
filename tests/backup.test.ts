@@ -1,0 +1,183 @@
+import { it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { Store } from "../src/core/database";
+import { Vault } from "../src/core/vault";
+import {
+  captureBackup,
+  encryptBackup,
+  decryptBackup,
+  restorePayload,
+} from "../src/core/backup";
+import type { Project, Job } from "../src/core/types";
+const encryption = (prefix: string) => ({
+  async encrypt(value: string) {
+    return Buffer.from(prefix + value);
+  },
+  async decrypt(bytes: Buffer) {
+    if (!bytes.toString().startsWith(prefix)) throw Error("Different Mac key");
+    return bytes.toString().slice(prefix.length);
+  },
+});
+it("encrypts credentials portably and restores into a different vault without lowering counters or overwriting keys", async () => {
+  const root = mkdtempSync(join(tmpdir(), "desk-backup-")),
+    a = new Store(join(root, "a")),
+    b = new Store(join(root, "b"));
+  try {
+    const av = new Vault(a, encryption("MacA:")),
+      bv = new Vault(b, encryption("MacB:"));
+    const signing = await av.put({
+      kind: "android",
+      label: "Upload",
+      keystore: "a2V5",
+      storePassword: "private-password",
+      alias: "upload",
+      keyPassword: "private-password",
+    });
+    const project: Project = {
+      id: "project",
+      path: join(root, "source"),
+      name: "Fixture",
+      createdAt: "2026-10-01",
+      profiles: ["production"],
+      settings: {
+        androidSigningId: signing.id,
+        nodePath: "/source/node",
+        buildDirectory: "/source/builds",
+      },
+    };
+    a.putProject(project);
+    a.seed("android:com.example.app", 39);
+    a.claimNumber("android:com.example.app", "job");
+    const job: Job = {
+      id: "job",
+      projectId: "project",
+      projectName: "Fixture",
+      platform: "android",
+      kind: "build",
+      profile: "production",
+      status: "succeeded",
+      stage: "complete",
+      createdAt: "2026-10-01",
+      autoSubmit: false,
+      clean: false,
+      buildNumber: "40",
+      bundleId: "com.example.app",
+      version: "1.0",
+      artifactId: "artifact",
+    };
+    a.putJob(job);
+    a.putArtifact({
+      id: "artifact",
+      jobId: "job",
+      platform: "android",
+      kind: "aab",
+      path: join(root, "missing.aab"),
+      sha256: "a".repeat(64),
+      size: 12,
+      bundleId: "com.example.app",
+      version: "1.0",
+      buildNumber: "40",
+    });
+    const payload = await captureBackup(a, av),
+      bytes = await encryptBackup(payload, "a strong backup passphrase");
+    expect(bytes.toString()).not.toContain("private-password");
+    expect(bytes.toString()).not.toContain("keystore");
+    const opened = await decryptBackup(bytes, "a strong backup passphrase");
+    const existing = await bv.put({
+      kind: "environment",
+      label: "Keep me",
+      values: { KEEP: "existing" },
+    });
+    b.seed("android:com.example.app", 99);
+    await restorePayload(
+      b,
+      bv,
+      opened,
+      { project: join(root, "relocated") },
+      () => {},
+    );
+    const restored = b.list<Project>("projects")[0];
+    expect(restored.path).toBe(join(root, "relocated"));
+    expect(restored.settings.nodePath).toBeUndefined();
+    expect(restored.settings.buildDirectory).toBeUndefined();
+    expect(restored.settings.androidSigningId).not.toBe(signing.id);
+    expect(
+      (await bv.get(restored.settings.androidSigningId, "android"))
+        .storePassword,
+    ).toBe("private-password");
+    expect(await bv.get(existing.id, "environment")).toMatchObject({
+      values: { KEEP: "existing" },
+    });
+    expect(b.counter("android:com.example.app")).toBe(99);
+    expect(b.claimNumber("android:com.example.app", "next")).toBe("100");
+    expect(b.get<Job>("jobs", "job").restoredFromBackup).toBe(true);
+    await expect(decryptBackup(bytes, "wrong passphrase")).rejects.toThrow(
+      /passphrase/,
+    );
+    const tampered = JSON.parse(bytes.toString());
+    tampered.ciphertext =
+      (tampered.ciphertext[0] === "A" ? "B" : "A") +
+      tampered.ciphertext.slice(1);
+    await expect(
+      decryptBackup(
+        Buffer.from(JSON.stringify(tampered)),
+        "a strong backup passphrase",
+      ),
+    ).rejects.toThrow(/damaged/);
+  } finally {
+    a.close();
+    b.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+it("rolls back all imported keys, settings and counters when a history write fails", async () => {
+  const root = mkdtempSync(join(tmpdir(), "desk-backup-rollback-")),
+    a = new Store(join(root, "a")),
+    b = new Store(join(root, "b"));
+  try {
+    const av = new Vault(a, encryption("A")),
+      bv = new Vault(b, encryption("B"));
+    const key = await av.put({
+      kind: "environment",
+      label: "Env",
+      values: { SECRET: "private" },
+    });
+    a.putProject({
+      id: "project",
+      path: join(root, "source"),
+      name: "Fixture",
+      createdAt: "now",
+      profiles: ["production"],
+      settings: { envCredentialId: key.id },
+    });
+    a.seed("ios:com.example.app", 8);
+    a.putArtifact({
+      id: "artifact",
+      jobId: "old-job",
+      platform: "ios",
+      kind: "ipa",
+      path: join(root, "x.ipa"),
+      sha256: "b".repeat(64),
+      size: 1,
+      bundleId: "com.example.app",
+      version: "1",
+      buildNumber: "8",
+    });
+    const payload = await captureBackup(a, av);
+    vi.spyOn(b, "putArtifact").mockImplementation(() => {
+      throw Error("Disk failure");
+    });
+    await expect(restorePayload(b, bv, payload, {}, () => {})).rejects.toThrow(
+      "Disk failure",
+    );
+    expect(b.credentialSummaries()).toHaveLength(0);
+    expect(b.list("projects")).toHaveLength(0);
+    expect(b.counter("ios:com.example.app")).toBeUndefined();
+  } finally {
+    a.close();
+    b.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

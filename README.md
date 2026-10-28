@@ -104,6 +104,20 @@ AAB transfer, waiting for Google’s bundle confirmation, validation, and draft 
 
 Replay fixtures are deliberately sanitized and run in hidden windows; dummy Apple pages are never presented as live account pages. CLI owners and forwarded CLI clients run without an extra Dock icon.
 
+## Everyday build and release tools
+
+**Preferences → Completion notifications** enables native macOS alerts for finished builds, upload results, processing completion, and failures. Click an alert to open that build, including delivered alerts from an earlier app session. Notifications need the signed app and macOS permission. The desktop must be running to observe completion; CLI jobs forwarded to an open desktop also notify. The preference is local to this Mac.
+
+**Builds → What changed?** compares the selected build with the previous successful build for the same app/platform. It includes source fingerprints and commits, profile/configuration, versions, signing and entitlements, destination, tool versions, Xcode/iOS SDK, and artifact size. Older builds show missing details as “Not recorded”; new builds capture those facts automatically.
+
+**Release** prepares TestFlight What to Test, App Store draft What’s New, optional localized listing fields, or Google Play notes for the next upload. Draft notes from recorded git commits, edit them, then review the exact current/proposed Apple values before applying. Apple previews expire after ten minutes, are invalidated by changed remote metadata/connections, and are consumed once. An uncertain write requires a fresh preview instead of a blind retry. Creating a missing App Store version is opt-in and selects manual release. Saving metadata does not submit for App Review or release to production. Play notes are saved locally and used by subsequent uploads; they do not modify existing releases.
+
+**Preferences → Encrypted backup & restore** creates a portable `.lbdbackup` protected by a passphrase of at least 12 characters (AES-256-GCM with scrypt). It includes signing credentials, API connections, imported environment values, project settings, build history/artifact metadata, and version reservations. It excludes source code, artifact contents, logs, caches, browser sessions, and notification preferences. Keep the passphrase separately; it is not stored or recoverable by the app. Restore previews its contents and lets you map source folders. Machine-specific tool/storage paths reset by default. Existing credentials are preserved, imported credentials receive new IDs and are encrypted for the destination Mac, and counters never move below existing floors. Active historical jobs become interrupted/uncertain and restored uploads require explicit reconciliation. Transfer artifact files separately and use **Locate file** in build history; the original checksum and size must match.
+
+**Build** and **Build & Upload** offer existing verified artifacts when source, configuration, environment, signing credentials, and toolchain fingerprints match. Reuse keeps the original version and does not reserve another build number. Already-uploaded artifacts open their existing result instead of uploading twice. Development clients may also offer native-compatible reuse using the project’s installed `@expo/fingerprint`; run Metro to load the current JavaScript. Production artifacts require an exact match. A clean build or **Build fresh** bypasses reuse. Builds made before fingerprint capture need one fresh build before they can be matched. Invocation-only/no-Keychain CI credentials do not create reusable fingerprints.
+
+**Install & launch** on a simulator `.app` or Android APK verifies its checksum, lets you select a target, boots the simulator/emulator if necessary, installs, and launches the app. Existing Android virtual devices and USB-debugging devices are supported; unauthorized devices show the approval needed. Installation preserves app data and never uninstalls an app to work around a signing mismatch. Store IPAs and AABs use TestFlight/Play distribution; build a simulator or APK profile for direct installation. First boot can take a minute and has cancellable progress. An app that exits within a few seconds of launching is reported as a launch failure instead of a success.
+
 ## Storage and security
 
 Data lives in `~/Library/Application Support/Local Build Desk`:
@@ -123,7 +137,7 @@ Supported build-profile behavior includes inheritance, platform overrides, envir
 
 Generated native projects get versions in the copied Expo config. Maintained native projects retain their native configuration and are verified against the expected identity/version. Custom multi-flavor Gradle commands must yield one artifact. Dynamic bundle IDs must resolve consistently. Signing multiple iOS targets requires matching profiles for each literal bundle identifier. Workspace dependencies or symlinks outside the imported project root need a self-contained project root; external symlinks are rejected.
 
-Store metadata, screenshots, review submission, external tester invitation/review, and production rollout are outside the initial release. Uploading to TestFlight is not an App Store production release.
+Screenshots, review submission, external tester invitation/review, and production rollout remain outside this release. Localized release/listing metadata can be prepared in the Release assistant. Uploading to TestFlight is not an App Store production release.
 
 ## Verification
 
@@ -133,7 +147,7 @@ npm test
 npm run test:ui
 ```
 
-Unit and fixture integration tests cover profile resolution, version reservations, encrypted storage boundaries, snapshots, profile validation, secret redaction, process cancellation, queue recovery, AAB metadata, Apple version matching, and Google draft/ambiguous-upload behavior. Electron UI tests exercise actual IPC, project import, profile controls, migration, navigation, keyboard dialogs, and build errors.
+Unit and fixture integration tests cover profile resolution, version reservations, encrypted storage boundaries, snapshots, profile validation, secret redaction, process cancellation, queue recovery, AAB metadata, Apple version matching, and Google draft/ambiguous-upload behavior. Electron UI tests exercise actual IPC, project import, profile controls, migration, navigation, keyboard dialogs, and build errors. Additional tests cover native notification routing, comparison, metadata previews and uncertain writes, encrypted backup/restore rollback and counter preservation, artifact integrity and reuse, and simulator/device installation commands. The desktop workflow test exports and restores an encrypted backup through real IPC.
 
 Real signed builds and store acceptance are a separate validation step. They require your own store accounts, app records, signing credentials, and compatible native toolchains. Fixture tests do not establish live acceptance for a newly imported app. Local acceptance reports and account diagnostics are intentionally excluded from this repository.
 
@@ -272,20 +286,20 @@ CI reuses npm, Electron, and electron-builder download caches. Credentials and s
 
 Configure a GitHub environment named **release**, limited to the `main` branch and `v*` tags. Set these environment variables:
 
-| Variable | Value |
-| --- | --- |
+| Variable                 | Value                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `MACOS_SIGNING_IDENTITY` | Your Developer ID Application name without its prefix, such as `Example Developer (TEAM123456)`, or its certificate SHA-1 fingerprint |
-| `MACOS_TEAM_ID` | The 10-character Apple developer team ID |
+| `MACOS_TEAM_ID`          | The 10-character Apple developer team ID                                                                                              |
 
 Set these **environment secrets**, never repository files:
 
-| Secret | Value |
-| --- | --- |
+| Secret                         | Value                                                                                                           |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------- |
 | `MACOS_CERTIFICATE_P12_BASE64` | Base64 of a password-protected P12 containing your **Developer ID Application certificate and its private key** |
-| `MACOS_CERTIFICATE_PASSWORD` | The P12 export password |
-| `APPLE_API_KEY_P8_BASE64` | Base64 of the notarization team API `.p8` key |
-| `APPLE_API_KEY_ID` | The API key ID |
-| `APPLE_API_ISSUER` | The team API issuer UUID |
+| `MACOS_CERTIFICATE_PASSWORD`   | The P12 export password                                                                                         |
+| `APPLE_API_KEY_P8_BASE64`      | Base64 of the notarization team API `.p8` key                                                                   |
+| `APPLE_API_KEY_ID`             | The API key ID                                                                                                  |
+| `APPLE_API_ISSUER`             | The team API issuer UUID                                                                                        |
 
 An iOS Apple Distribution certificate does not sign desktop releases. Prefer a dedicated notarization API key with the least privilege Apple accepts; a provisioning Admin key is unnecessary for notarization. GitHub encrypts the secrets, but trusted release workflow code can use them, so review changes to release scripts and workflows before pushing version tags. Revoke/rotate CI credentials in Apple and replace the GitHub secrets if access changes. No existing certificates or API keys need to be revoked to enable releases.
 

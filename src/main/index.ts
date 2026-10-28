@@ -1,3 +1,4 @@
+import type { Job } from "../core/types";
 import {
   app,
   BrowserWindow,
@@ -21,6 +22,7 @@ import { Store } from "../core/database";
 import { Vault, cleanupStaleSecrets } from "../core/vault";
 import { AccountSetupManager } from "./account-setup";
 import { Updater } from "./updater";
+import { JobNotifications } from "./notifications";
 import { methods, type Method } from "./validation";
 import { captureInvocationEnvironment } from "../cli/invocation";
 import { runCLI } from "../cli/commands";
@@ -75,6 +77,7 @@ if ((cliArgs || hideTestUI) && process.platform === "darwin")
 let engine: Engine;
 let accountSetup: AccountSetupManager;
 let updater: Updater;
+let notifications: JobNotifications;
 let window: BrowserWindow | undefined;
 // Electron's single-instance lock can admit two processes that launch at the
 // same instant (parallel CI jobs), so an atomically created lock file holding
@@ -232,7 +235,30 @@ function startOwner() {
         },
       });
       engine = new Engine(store, vault);
+      if (!cliArgs) {
+        notifications = new JobNotifications(
+          store,
+          (jobId) => {
+            void (async () => {
+              if (!window || window.isDestroyed()) await createWindow();
+              if (window!.isMinimized()) window!.restore();
+              window!.show();
+              window!.focus();
+              window!.webContents.send("desk:event", {
+                type: "focus-job",
+                jobId,
+              });
+            })();
+          },
+          hideTestUI,
+        );
+        engine.on("event", (event) => {
+          if (event.type === "state") notifications.scan();
+        });
+      }
       engine.start();
+      notifications?.scan();
+      if (!cliArgs) void notifications.restoreHistory();
       try {
         unlinkSync(socketPath);
       } catch {}
@@ -381,10 +407,7 @@ function startOwner() {
           if (window && !window.isDestroyed())
             window.webContents.send("desk:event", { type: "update", update });
         },
-        () =>
-          engine
-            .state()
-            .jobs.some((job) => ["queued", "running"].includes(job.status)),
+        () => engine.isBusy(),
         app.isPackaged &&
           !hideTestUI &&
           !process.env.LOCAL_BUILD_DESK_DISABLE_UPDATES,
@@ -567,6 +590,7 @@ function registerIPC() {
           const path = resolve(values[0]);
           const allowed = [
             dataRoot,
+            ...engine.state().artifacts.map((a) => a.path),
             ...engine.state().projects.map((p) => p.path),
             ...engine
               .state()
@@ -588,6 +612,53 @@ function registerIPC() {
         }
         if (method === "updateStatus")
           return { ok: true, value: updater.status() };
+        if (method === "notificationSettings")
+          return { ok: true, value: notifications.settings(values[0]) };
+        if (method === "exportBackup") {
+          const selected = await dialog.showSaveDialog(window!, {
+            title: "Create encrypted Local Build Desk backup",
+            defaultPath: "Local-Build-Desk.lbdbackup",
+            filters: [
+              { name: "Encrypted desk backup", extensions: ["lbdbackup"] },
+            ],
+          });
+          if (selected.canceled || !selected.filePath) return { ok: true };
+          const path = selected.filePath.endsWith(".lbdbackup")
+            ? selected.filePath
+            : selected.filePath + ".lbdbackup";
+          return {
+            ok: true,
+            value: await engine.exportBackupFile(path, values[0]),
+          };
+        }
+        if (method === "previewBackup") {
+          const selected = await dialog.showOpenDialog(window!, {
+            title: "Restore encrypted Local Build Desk backup",
+            properties: ["openFile"],
+            filters: [
+              { name: "Encrypted desk backup", extensions: ["lbdbackup"] },
+            ],
+          });
+          return {
+            ok: true,
+            value: selected.filePaths[0]
+              ? await engine.previewBackupFile(selected.filePaths[0], values[0])
+              : undefined,
+          };
+        }
+        if (method === "testNotification") {
+          const latest = engine.store
+            .list<Job>("jobs")
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+          notifications.show(
+            "Local Build Desk notifications",
+            latest
+              ? "Click to open your most recent build."
+              : "Build and upload results will appear here.",
+            latest?.id,
+          );
+          return { ok: true };
+        }
         if (method === "checkForUpdates")
           return { ok: true, value: await updater.check() };
         if (method === "installUpdate") {

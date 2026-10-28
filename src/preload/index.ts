@@ -1,6 +1,23 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAPI, DeskEvent } from "../core/types";
 const names = [
+  "readRelease",
+  "relinkArtifact",
+  "installTargets",
+  "installArtifact",
+  "cancelInstall",
+  "findReusableBuilds",
+  "useReusableBuild",
+  "exportBackup",
+  "previewBackup",
+  "restoreBackup",
+  "prepareRelease",
+  "applyRelease",
+  "savePlayNotes",
+  "releaseNoteDraft",
+  "notificationSettings",
+  "testNotification",
+  "compareBuild",
   "xcodeInstallations",
   "installXcode",
   "openXcodeDownload",

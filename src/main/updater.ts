@@ -106,7 +106,7 @@ export class Updater {
     invariant(
       !this.busy(),
       "UPDATE_BUSY",
-      "Finish or cancel running builds before restarting to update.",
+      "Finish or cancel running builds and setup/device operations before restarting to update.",
     );
     // The app's before-quit handler shuts the engine down first; Squirrel
     // replaces the bundle once the process exits and relaunches it.

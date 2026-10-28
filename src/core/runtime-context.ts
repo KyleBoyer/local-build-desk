@@ -49,6 +49,20 @@ function summary(key: string, value: Credential): CredentialSummary {
   };
 }
 export class RunVault extends Vault {
+  override get canFingerprint() {
+    return (
+      !this.context.noKeychain &&
+      Object.keys(this.context.credentials).length === 0
+    );
+  }
+  override async fingerprint(value: string) {
+    invariant(
+      this.canFingerprint,
+      "CI_FINGERPRINT",
+      "Invocation-only credentials are not used for persistent build reuse.",
+    );
+    return this.base.fingerprint(value);
+  }
   override readonly ephemeral = true;
   constructor(
     store: Store,
