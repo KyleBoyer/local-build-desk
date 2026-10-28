@@ -1,3 +1,4 @@
+import { DeskError } from "../../src/core/errors";
 import { app, session, ipcMain } from "electron";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -62,8 +63,9 @@ const request: StoreSetupRequest = {
 const state: StoreSetupState = {
   ...request,
   identity: "com.example.fixture",
-  stage: "opening",
-  submitted: {},
+  // apple-stuck resumes a session saved after a create Apple never completed.
+  stage: scenario === "apple-stuck" ? "verifying" : "opening",
+  submitted: scenario === "apple-stuck" ? { create: "earlier attempt" } : {},
   ...(provider === "google" ? { developerId: "123" } : {}),
   ...(mode === "bootstrap"
     ? {
@@ -99,7 +101,12 @@ const engine = Object.assign(new EventEmitter(), {
       mode === "record" &&
       outcome.creates !== (scenario === "google-existing" ? 0 : 1)
     )
-      throw Error("App not created");
+      throw provider === "apple"
+        ? new DeskError(
+            "STORE_APP_PENDING",
+            "Apple has not exposed this bundle ID's app record yet.",
+          )
+        : Error("App not created");
     outcome.verified++;
     if (mode === "capabilities") outcome.profiles++;
     save();

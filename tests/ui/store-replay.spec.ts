@@ -70,6 +70,34 @@ test("apple-taken: a taken name is reported, renamed, and created only after a n
     await rm(h.root, { recursive: true, force: true });
   }
 });
+test("apple-stuck: a resumed create that never reached Apple is offered again behind a new approval", async () => {
+  test.setTimeout(120000);
+  const h = await harness("apple-stuck"),
+    app = await h.launch(),
+    page = await app.firstWindow();
+  try {
+    const approve = page.getByRole("button", {
+      name: "Approve create app record",
+    });
+    await expect(approve).toBeVisible({ timeout: 80000 });
+    await expect(
+      page.getByText(/has no app record for this bundle ID/).first(),
+    ).toBeVisible();
+    expect((await h.outcome()).creates).toBe(0);
+    await approve.click();
+    await expect(
+      page
+        .getByText("Store setup verified for com.example.fixture.", {
+          exact: true,
+        })
+        .first(),
+    ).toBeVisible({ timeout: 30000 });
+    expect(await h.outcome()).toMatchObject({ creates: 1, verified: 1 });
+  } finally {
+    await app.close();
+    await rm(h.root, { recursive: true, force: true });
+  }
+});
 for (const scenario of ["apple", "google"])
   test(`${scenario}: prepares a store record and creates only after approval`, async () => {
     const h = await harness(scenario),

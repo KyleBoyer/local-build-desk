@@ -2088,6 +2088,32 @@ export class AccountSetupManager {
         this.note(account, message);
       } catch (error) {
         account.storeVerifyFailures = (account.storeVerifyFailures ?? 0) + 1;
+        if (
+          state.provider === "apple" &&
+          state.mode === "record" &&
+          account.storeVerifyFailures >= 3 &&
+          (error as { code?: string }).code === "STORE_APP_PENDING"
+        ) {
+          // Apple allows one app record per bundle ID and only offers unused
+          // bundle IDs in New App, so a record that is still missing means the
+          // create never went through (e.g. a rejected name). Offer the form again,
+          // behind a fresh approval.
+          delete state.submitted.create;
+          state.createSubmittedAt = undefined;
+          state.stage = "preparing";
+          state.approval = undefined;
+          state.rejection ??=
+            "App Store Connect has no app record for this bundle ID, so the earlier create did not go through. Check the name, then retry.";
+          account.storeApprovalScope = undefined;
+          account.storeVerifyFailures = 0;
+          account.storeVerificationPaused = false;
+          this.persist(account);
+          this.note(account, state.rejection);
+          await account.view.webContents.loadURL(
+            "https://appstoreconnect.apple.com/apps",
+          );
+          return;
+        }
         account.storeVerificationPaused =
           state.mode === "capabilities" || account.storeVerifyFailures >= 6;
         if (
