@@ -798,6 +798,7 @@ export class AccountSetupManager {
   update(
     sender: WebContents,
     values: Partial<AccountSetupState> & {
+      storeAppName?: string;
       googleCloudProject?: string;
       googleCreateProject?: boolean;
       googleDeveloperId?: string;
@@ -806,6 +807,29 @@ export class AccountSetupManager {
     },
   ) {
     const account = this.get(sender);
+    const store = account.state.storeSetup;
+    if (values.storeAppName !== undefined && store) {
+      const name = values.storeAppName.trim();
+      invariant(
+        store.mode === "record" && !store.submitted.create && !account.busy,
+        "STORE_NAME_LOCKED",
+        "The app name can only change before the app record is submitted.",
+      );
+      invariant(
+        store.provider !== "apple" || name.length <= 30,
+        "STORE_APP_NAME",
+        "Apple app names are limited to 30 characters.",
+      );
+      store.appName = name;
+      store.staleError = store.rejection;
+      store.rejection = undefined;
+      store.approval = undefined;
+      account.storeApprovalScope = undefined;
+      account.lastProbe = undefined;
+      account.state.status = "working";
+      this.persist(account);
+      this.note(account, `Retrying the app record as ${name}.`);
+    }
     for (const key of [
       "issuerId",
       "teamId",
@@ -1956,6 +1980,7 @@ export class AccountSetupManager {
     }
     if (mutation) {
       state.submitted[mutation] = storeScope(state, mutation);
+      if (mutation === "create") state.createSubmittedAt = Date.now();
       this.persist(account);
     }
     const result = await account.view.webContents.executeJavaScript(
@@ -2119,8 +2144,37 @@ export class AccountSetupManager {
       );
       return;
     }
-    if (probe.error) {
-      this.prompt(account, "The provider needs attention: " + probe.error);
+    const onCreateForm =
+      state.mode === "record" &&
+      (probe.phase === "apple-form" || probe.phase === "google-form");
+    if (probe.error && onCreateForm && state.submitted.create) {
+      // Give the provider a moment to replace any earlier message after submit.
+      if (Date.now() - (state.createSubmittedAt ?? 0) < 4000) return;
+      // The provider kept its form open with an error, so nothing was created.
+      // Allow a corrected name and a fresh approval instead of waiting to verify.
+      delete state.submitted.create;
+      state.createSubmittedAt = undefined;
+      state.staleError = undefined;
+      state.rejection = probe.error;
+      state.approval = undefined;
+      account.storeApprovalScope = undefined;
+      this.persist(account);
+      this.prompt(
+        account,
+        `${state.provider === "apple" ? "Apple" : "Google"} did not create the app: ${probe.error} Enter a different store app name and retry.`,
+      );
+      return;
+    }
+    if (
+      probe.error &&
+      !(onCreateForm && !state.rejection && probe.error === state.staleError)
+    ) {
+      this.prompt(
+        account,
+        state.rejection && state.mode === "record"
+          ? `${state.provider === "apple" ? "Apple" : "Google"} did not create the app: ${state.rejection} Enter a different store app name and retry.`
+          : "The provider needs attention: " + probe.error,
+      );
       return;
     }
     if (probe.developerId) {
@@ -2252,6 +2306,10 @@ export class AccountSetupManager {
       }
       if (probe.phase === "apple-form" || probe.phase === "google-form") {
         if (state.submitted.create) {
+          // Apple leaves the form up while it responds; only fall back to API
+          // verification once the form has stayed open without an error.
+          state.createSubmittedAt ??= Date.now();
+          if (Date.now() - state.createSubmittedAt < 20000) return;
           if (state.provider === "apple") {
             state.stage = "verifying";
             this.persist(account);

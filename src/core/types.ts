@@ -492,6 +492,7 @@ export interface DesktopAPI {
   ): Promise<void>;
   updateAccountSetup(
     values: Partial<AccountSetupState> & {
+      storeAppName?: string;
       googleCloudProject?: string;
       googleCreateProject?: boolean;
       googleDeveloperId?: string;
@@ -650,6 +651,12 @@ export interface StoreSetupState extends StoreSetupRequest {
   stage: "opening" | "preparing" | "uploading" | "verifying" | "complete";
   submitted: Record<string, string>;
   approval?: { action: string; scope: string; title: string; detail: string };
+  /** The provider's message when it rejected the create form, e.g. a taken app name. */
+  rejection?: string;
+  /** A rejection the user already answered with a new name; it may linger on the form until resubmitted. */
+  staleError?: string;
+  /** When the create form was submitted, to tell a slow response from a stuck form. */
+  createSubmittedAt?: number;
 }
 export interface AccountSetupState {
   google?: GoogleSetupState;

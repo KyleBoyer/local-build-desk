@@ -270,6 +270,7 @@ export const methods = {
         label: text.optional(),
         downloadedFile: text.optional(),
         hideWhenWorking: z.boolean().optional(),
+        storeAppName: z.string().trim().min(1).max(50).optional(),
         googleCloudProject: z
           .string()
           .regex(/^(?:[a-z][a-z0-9-]{4,28}[a-z0-9])?$/)

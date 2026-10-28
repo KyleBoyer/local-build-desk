@@ -169,11 +169,34 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
     .filter(visible)
     .map(label)
     .filter(Boolean);
-  const error = alerts.find((text) =>
-    /error|failed|invalid|already|not available|not allowed|permission|must|taken/i.test(
-      text,
-    ),
-  );
+  // App Store Connect marks form errors only with text: a banner plus a plain
+  // message under each field. Report the innermost field message, not the banner.
+  const problem =
+    /already|not available|invalid|required|must|can't|cannot|isn't|not allowed/i;
+  const formErrors =
+    dialog && /one or more validation errors/i.test(dialog.textContent ?? "")
+      ? [...dialog.querySelectorAll<HTMLElement>("*")]
+          .filter(
+            (el) =>
+              visible(el) &&
+              problem.test(el.textContent ?? "") &&
+              !/one or more validation errors/i.test(el.textContent ?? "") &&
+              ![...el.children].some((child) =>
+                problem.test(child.textContent ?? ""),
+              ),
+          )
+          .map((el) => norm(el.textContent ?? ""))
+      : [];
+  const error =
+    formErrors[0] ??
+    alerts.find((text) =>
+      /error|failed|invalid|already|not available|not allowed|permission|must|taken/i.test(
+        text,
+      ),
+    ) ??
+    (dialog && /one or more validation errors/i.test(dialog.textContent ?? "")
+      ? "The provider rejected the form. Review the highlighted fields."
+      : undefined);
   if (target.mode === "capabilities") {
     const id = target.identifiers?.[target.capabilityIndex ?? 0] ?? "";
     const fields = inputs.some((el) =>
@@ -452,6 +475,12 @@ export function performStoreAction(
     hits = hits.filter(
       (el) => !hits.some((other) => other !== el && el.contains(other)),
     );
+    // A menu trigger often shares its item's label (App Store Connect's "+" is
+    // aria-labelled "New App"). Once that menu is open, its item is the target.
+    const inMenu = hits.filter((el) =>
+      el.closest("[role=menu],[role=menuitem]"),
+    );
+    if (hits.length > 1 && inMenu.length === 1) hits = inMenu;
     if (hits.length !== 1)
       return {
         done: false,

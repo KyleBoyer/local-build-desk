@@ -184,6 +184,20 @@ export function AccountSetup() {
             {state.storeSetup.identifiers?.map((id) => (
               <code key={id}>{id}</code>
             ))}
+            {state.storeSetup.rejection && (
+              <StoreNameRetry
+                key={state.storeSetup.rejection}
+                current={state.storeSetup.appName}
+                provider={state.provider}
+                rejection={state.storeSetup.rejection}
+                busy={busy}
+                retry={(name) =>
+                  void action(() =>
+                    api.updateAccountSetup({ storeAppName: name }),
+                  )
+                }
+              />
+            )}
             {state.storeSetup.approval && (
               <div className="account-approval">
                 <strong>{state.storeSetup.approval.title}</strong>
@@ -545,6 +559,39 @@ function GoogleSetupControls({
           Prepare a new Play app record
         </button>
       </details>
+    </div>
+  );
+}
+
+function StoreNameRetry(props: {
+  current: string;
+  provider: AccountSetupState["provider"];
+  rejection: string;
+  busy: boolean;
+  retry: (name: string) => void;
+}) {
+  const [name, setName] = useState(props.current);
+  const limit = props.provider === "apple" ? 30 : 50,
+    trimmed = name.trim();
+  return (
+    <div className="account-approval">
+      <strong>Choose another store app name</strong>
+      <p>{props.rejection}</p>
+      <label className="field">
+        <span>Store app name</span>
+        <input
+          value={name}
+          maxLength={limit}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </label>
+      <button
+        className="primary"
+        disabled={props.busy || !trimmed || trimmed === props.current}
+        onClick={() => props.retry(trimmed)}
+      >
+        Retry with this name
+      </button>
     </div>
   );
 }

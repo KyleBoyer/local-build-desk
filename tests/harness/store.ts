@@ -13,7 +13,9 @@ app.setName("Local Build Desk Store Replay");
 if (process.platform === "darwin") app.setActivationPolicy("accessory");
 const scenario = process.env.DESK_STORE_SCENARIO || "apple";
 const provider =
-  scenario === "apple" || scenario === "capabilities" ? "apple" : "google";
+  scenario.startsWith("apple") || scenario === "capabilities"
+    ? "apple"
+    : "google";
 const mode =
   scenario === "capabilities"
     ? "capabilities"
@@ -24,6 +26,7 @@ const bytes = "signed-aab-fixture-content";
 writeFileSync(join(root, "fixture.aab"), bytes);
 const outcome = {
   creates: 0,
+  rejected: 0,
   uploads: 0,
   drafts: 0,
   verified: 0,
@@ -113,6 +116,11 @@ app.whenReady().then(async () => {
   partition.protocol.handle("https", async (request) => {
     const url = new URL(request.url),
       path = url.pathname;
+    if (path === "/fixture-reject") {
+      outcome.rejected++;
+      save();
+      return new Response("{}");
+    }
     if (path === "/fixture-create") {
       outcome.creates++;
       save();
@@ -130,6 +138,13 @@ app.whenReady().then(async () => {
       save();
       return new Response("{}");
     }
+    if (scenario === "apple-taken" && path === "/apps")
+      // Mirrors App Store Connect: a "+" trigger labelled like its menu item, and
+      // a taken name reported as plain text under the field with nothing created.
+      return page(
+        '<h1>Apps</h1><button aria-label="New App" id=plus>+</button>',
+        `document.querySelector('#plus').onclick=()=>{if(document.querySelector('#menu'))return;document.body.insertAdjacentHTML('beforeend','<ul id=menu><li role=menuitem><button id=new>New App</button></li><li role=menuitem><button>New App Bundle</button></li></ul>');document.querySelector('#new').onclick=()=>{document.body.insertAdjacentHTML('beforeend','<div role=dialog><h2>New App</h2><p id=banner></p><label>iOS<input type=checkbox></label><label>Name<input id=name></label><p id=nameError></p><label>SKU<input></label><label>Bundle ID<select><option>Pick</option><option value=bundle>com.example.fixture</option></select></label><label>Primary Language<select><option>Pick</option><option value=en-US>English (U.S.)</option></select></label><button id=create>Create</button></div>');document.querySelector('#create').onclick=async()=>{if(document.querySelector('#name').value==='Fixture'){await fetch('/fixture-reject');document.querySelector('#banner').textContent='There are one or more validation errors below.';document.querySelector('#nameError').textContent='The app name you entered is already being used.';return;}await fetch('/fixture-create');location.href='/apps/456';};};};`,
+      );
     if (provider === "apple" && mode === "record") {
       if (path === "/apps")
         return page(
@@ -191,6 +206,8 @@ app.whenReady().then(async () => {
           return { ok: true, value: manager.state(event.sender) };
         if (method === "approveStoreSetup")
           await manager.approveStore(event.sender);
+        else if (method === "updateAccountSetup")
+          manager.update(event.sender, values[0]);
         else if (method === "retryAccountAutomation")
           manager.retry(event.sender);
         else if (method === "closeAccountSetup")

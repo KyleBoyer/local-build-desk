@@ -32,6 +32,44 @@ async function harness(scenario: string) {
       JSON.parse(await readFile(join(root, "outcome.json"), "utf8")),
   };
 }
+test("apple-taken: a taken name is reported, renamed, and created only after a new approval", async () => {
+  const h = await harness("apple-taken"),
+    app = await h.launch(),
+    page = await app.firstWindow();
+  try {
+    await page
+      .getByRole("button", { name: "Approve create app record" })
+      .click({ timeout: 25000 });
+    await expect(
+      page.getByText("The app name you entered is already being used.").first(),
+    ).toBeVisible({ timeout: 20000 });
+    expect(await h.outcome()).toMatchObject({ creates: 0, rejected: 1 });
+    await page
+      .getByLabel("Store app name", { exact: true })
+      .fill("Fixture Two");
+    await page.getByRole("button", { name: "Retry with this name" }).click();
+    const approve = page.getByRole("button", {
+      name: "Approve create app record",
+    });
+    await expect(approve).toBeVisible({ timeout: 20000 });
+    await expect(
+      page.getByText(/Create Fixture Two for/).first(),
+    ).toBeVisible();
+    expect((await h.outcome()).creates).toBe(0);
+    await approve.click();
+    await expect(
+      page
+        .getByText("Store setup verified for com.example.fixture.", {
+          exact: true,
+        })
+        .first(),
+    ).toBeVisible({ timeout: 30000 });
+    expect(await h.outcome()).toMatchObject({ creates: 1, rejected: 1 });
+  } finally {
+    await app.close();
+    await rm(h.root, { recursive: true, force: true });
+  }
+});
 for (const scenario of ["apple", "google"])
   test(`${scenario}: prepares a store record and creates only after approval`, async () => {
     const h = await harness(scenario),

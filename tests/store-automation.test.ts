@@ -135,3 +135,29 @@ it("recognizes a provider redirect to the exact existing Play app without confus
     "com.example.fixture.other";
   expect(probe(dom, t).identityMatches).toBe(false);
 });
+it("chooses the open menu's New App item over a trigger with the same label", () => {
+  const dom = page(
+    '<h1>Apps</h1><button aria-label="New App" id="trigger">+</button><ul><li role="menuitem"><button id="item">New App</button></li><li role="menuitem"><button>New App Bundle</button></li></ul>',
+  );
+  const clicked: string[] = [];
+  for (const id of ["trigger", "item"])
+    dom.window.document.getElementById(id)!.onclick = () => clicked.push(id);
+  expect(act(dom, "new-app").done).toBe(true);
+  expect(clicked).toEqual(["item"]);
+  // Two matching items in the same menu are still ambiguous.
+  dom.window.document
+    .querySelector("ul")!
+    .insertAdjacentHTML(
+      "beforeend",
+      '<li role="menuitem"><button>New App</button></li>',
+    );
+  expect(act(dom, "new-app").done).toBe(false);
+});
+it("reports App Store Connect's unmarked form validation message instead of waiting for a record", () => {
+  const dom = page(
+    '<div role="dialog"><h2>New App</h2><p><span>There are one or more validation errors below.</span></p><label>iOS<input type=checkbox checked></label><label>Name<input name="name" value="Fixture"></label><p>The app name you entered is already being used. If you have trademark rights to this name and would like it released for your use, submit a claim.</p><button>Create</button></div>',
+  );
+  expect(probe(dom).error).toMatch(
+    /^The app name you entered is already being used/,
+  );
+});
