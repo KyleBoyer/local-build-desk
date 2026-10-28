@@ -18,9 +18,21 @@ function run(command, args) {
   });
   if (r.error || r.status !== 0)
     throw new Error(
-      `${command} failed: ${r.stderr || r.error?.message || r.status}`,
+      `${command} ${args[0]} failed (${r.status}): ${(r.stderr + r.stdout).trim() || r.error?.message}`,
     );
   return r.stdout + r.stderr;
+}
+// A ticket for an accepted submission can take a few minutes to become
+// available to stapler.
+function staple(path) {
+  for (let attempt = 1; ; attempt++)
+    try {
+      return run("xcrun", ["stapler", "staple", path]);
+    } catch (error) {
+      if (attempt === 6) throw error;
+      console.warn(`${error.message}\nRetrying staple in 30 seconds.`);
+      spawnSync("sleep", ["30"]);
+    }
 }
 const team = process.env.MACOS_TEAM_ID;
 if (!/^[A-Z0-9]{10}$/.test(team ?? ""))
@@ -96,7 +108,7 @@ if (submitted.status !== "Accepted")
   throw new Error(
     `Apple did not accept the DMG (request ${submitted.id ?? "unknown"}). No release will be published.`,
   );
-run("xcrun", ["stapler", "staple", dmg]);
+staple(dmg);
 run("xcrun", ["stapler", "validate", dmg]);
 const dmgSignature = run("codesign", ["--display", "--verbose=4", dmg]);
 if (!dmgSignature.includes(`TeamIdentifier=${team}`))
