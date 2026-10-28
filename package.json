@@ -16,7 +16,8 @@
     "cli": "tsx src/cli/index.ts",
     "package": "npm run build && electron-builder --mac dir",
     "test:ui": "npm run build && playwright test",
-    "format": "prettier --write src tests *.ts *.json README.md"
+    "format": "prettier --write src tests *.ts *.json README.md",
+    "release:mac": "npm run build && electron-builder --config electron-builder.release.cjs --mac dmg zip --publish never"
   },
   "dependencies": {
     "@fontsource/dm-sans": "^5.2.8",

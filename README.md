@@ -20,7 +20,7 @@ npm run package
 # Open the .app in release/mac-arm64 (Apple Silicon) or release/mac (Intel).
 ```
 
-The packaged app is for local use. Public distribution signing and notarization are not configured.
+`npm run package` produces an unsigned local app. Signed and notarized distributable packages use the dedicated GitHub release workflow described below.
 
 ## From zero to TestFlight
 
@@ -260,4 +260,45 @@ Credentials, provider sessions, local databases, acceptance evidence, native art
 
 Toolchain paths come from project settings, environment variables, standard macOS locations, and discovery. Existing Xcode installations use their installed device SDK unless you configure a minimum or exact SDK. Automatic Xcode download requires an explicit target SDK; no particular SDK release is imposed on new projects. Android SDK/NDK packages are inferred from the imported project's React Native/Gradle configuration.
 
-Do not commit `ios-submit.json` if it contains local paths or credential material. CI configuration should use environment references as shown above. Publishing and notarizing a distributable desktop binary remain outside this source repository's local packaging setup.
+Do not commit `ios-submit.json` if it contains local paths or credential material. CI configuration should use environment references as shown above. Publishing and notarizing distributable desktop binaries use the separate signed-release setup below; local packaging stays credential-free.
+
+## Signed GitHub releases
+
+`.github/workflows/ci.yml` checks pull requests and main with isolated tests and an unsigned local package. It has no signing credentials. `.github/workflows/release.yml` builds **Developer ID signed, notarized and stapled** macOS packages for Apple Silicon and Intel on separate GitHub-hosted runners, then publishes a GitHub Release only after both architectures pass verification. Actions are pinned to commits. No signing workflow runs on pull requests.
+
+Configure a GitHub environment named **release**, limited to the `main` branch and `v*` tags. Set these environment variables:
+
+| Variable | Value |
+| --- | --- |
+| `MACOS_SIGNING_IDENTITY` | Your Developer ID Application name without its prefix, such as `Example Developer (TEAM123456)`, or its certificate SHA-1 fingerprint |
+| `MACOS_TEAM_ID` | The 10-character Apple developer team ID |
+
+Set these **environment secrets**, never repository files:
+
+| Secret | Value |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12_BASE64` | Base64 of a password-protected P12 containing your **Developer ID Application certificate and its private key** |
+| `MACOS_CERTIFICATE_PASSWORD` | The P12 export password |
+| `APPLE_API_KEY_P8_BASE64` | Base64 of the notarization team API `.p8` key |
+| `APPLE_API_KEY_ID` | The API key ID |
+| `APPLE_API_ISSUER` | The team API issuer UUID |
+
+An iOS Apple Distribution certificate does not sign desktop releases. Prefer a dedicated notarization API key with the least privilege Apple accepts; a provisioning Admin key is unnecessary for notarization. GitHub encrypts the secrets, but trusted release workflow code can use them, so review changes to release scripts and workflows before pushing version tags. Revoke/rotate CI credentials in Apple and replace the GitHub secrets if access changes. No existing certificates or API keys need to be revoked to enable releases.
+
+For example, after exporting the chosen certificate from Keychain Access, set binary secrets from private local files without printing their contents:
+
+```sh
+base64 -i /secure/path/DeveloperID.p12 | gh secret set MACOS_CERTIFICATE_P12_BASE64 --repo OWNER/REPO --env release
+gh secret set MACOS_CERTIFICATE_PASSWORD --repo OWNER/REPO --env release
+base64 -i /secure/path/AuthKey.p8 | gh secret set APPLE_API_KEY_P8_BASE64 --repo OWNER/REPO --env release
+gh secret set APPLE_API_KEY_ID --repo OWNER/REPO --env release
+gh secret set APPLE_API_ISSUER --repo OWNER/REPO --env release
+```
+
+The remaining `gh secret set` commands prompt for values. Keep exported key files private and remove temporary plaintext copies after upload. The signing job restores a temporary keychain and a mode-600 `.p8` file, deletes them even if the build fails, and never uploads either as an artifact. Missing credentials or the wrong signing identity fail the release; unsigned/ad-hoc packages are never substituted.
+
+To publish, bump `package.json` and its lockfile, commit, and push a matching version tag (`v0.1.0` for version `0.1.0`). Alternatively run **Signed macOS release** from `main` with the matching tag through workflow dispatch. An existing tag must point to the exact checked-out source commit. A version mismatch stops before credentials are used. The workflow checks signatures, team, hardened runtime, timestamps, bundle identity/version, architecture, notarization tickets, Gatekeeper acceptance and ZIP contents. The DMG itself is separately notarized and stapled. Releases include per-architecture DMG/ZIP downloads and SHA-256 files; production app-store submission and automatic application updates are separate features.
+
+The publisher creates a draft with all six files and publishes it only after verifying both architectures' checksums. It never overwrites an existing release. If a publication is interrupted and leaves a draft, inspect that draft and its assets before deleting/retrying or bumping the version. Signing/notarization failures remain failed workflow runs; no public release is created.
+
+`npm run package` remains unsigned and credential-free for local development. `npm run release:mac -- --arm64` (or `--x64`) uses the separate strict `electron-builder.release.cjs` configuration and requires the release signing/notarization environment. GitHub release credentials do not contain any imported Expo project's signing keystore or provisioning profiles.

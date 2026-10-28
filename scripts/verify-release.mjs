@@ -1,0 +1,128 @@
+import { spawnSync } from "node:child_process";
+import {
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  mkdtempSync,
+  rmSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import plist from "plist";
+function run(command, args) {
+  const r = spawnSync(command, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 35 * 60 * 1000,
+  });
+  if (r.error || r.status !== 0)
+    throw new Error(
+      `${command} failed: ${r.stderr || r.error?.message || r.status}`,
+    );
+  return r.stdout + r.stderr;
+}
+const team = process.env.MACOS_TEAM_ID,
+  arch = process.env.RELEASE_ARCH;
+if (!/^[A-Z0-9]{10}$/.test(team ?? "") || !["arm64", "x64"].includes(arch))
+  throw new Error("Expected Apple team and release architecture are required.");
+const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+const root = resolve("release-signed"),
+  app = join(
+    root,
+    arch === "arm64" ? "mac-arm64" : "mac",
+    "Local Build Desk.app",
+  );
+function verifyApp(path) {
+  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", path]);
+  const signature = run("codesign", ["--display", "--verbose=4", path]);
+  if (
+    !signature.includes(`TeamIdentifier=${team}`) ||
+    !signature.includes("Developer ID Application:") ||
+    !signature.includes("(runtime)") ||
+    !signature.includes("Timestamp=")
+  )
+    throw new Error(
+      "App does not have the expected timestamped Developer ID signature and hardened runtime.",
+    );
+  const info = plist.parse(
+    readFileSync(join(path, "Contents", "Info.plist"), "utf8"),
+  );
+  if (
+    info.CFBundleIdentifier !== manifest.build.appId ||
+    info.CFBundleShortVersionString !== manifest.version
+  )
+    throw new Error("Signed app identity/version does not match this release.");
+  const actual = run("lipo", [
+    "-archs",
+    join(path, "Contents", "MacOS", info.CFBundleExecutable),
+  ]).trim();
+  if (actual !== (arch === "x64" ? "x86_64" : "arm64"))
+    throw new Error("App architecture does not match its release artifact.");
+  run("xcrun", ["stapler", "validate", path]);
+  run("spctl", ["--assess", "--type", "execute", "--verbose=2", path]);
+}
+verifyApp(app);
+const base = `Local-Build-Desk-${manifest.version}-${arch}`;
+const dmg = join(root, base + ".dmg"),
+  zip = join(root, base + ".zip");
+const auth = [
+  "--key",
+  process.env.APPLE_API_KEY,
+  "--key-id",
+  process.env.APPLE_API_KEY_ID,
+  "--issuer",
+  process.env.APPLE_API_ISSUER,
+];
+if (auth.some((value) => !value))
+  throw new Error(
+    "Notarization credentials are required to verify release containers.",
+  );
+const submitted = JSON.parse(
+  run("xcrun", [
+    "notarytool",
+    "submit",
+    dmg,
+    ...auth,
+    "--wait",
+    "--timeout",
+    "30m",
+    "--output-format",
+    "json",
+  ]),
+);
+if (submitted.status !== "Accepted")
+  throw new Error(
+    `Apple did not accept the DMG (request ${submitted.id ?? "unknown"}). No release will be published.`,
+  );
+run("xcrun", ["stapler", "staple", dmg]);
+run("xcrun", ["stapler", "validate", dmg]);
+const dmgSignature = run("codesign", ["--display", "--verbose=4", dmg]);
+if (!dmgSignature.includes(`TeamIdentifier=${team}`))
+  throw new Error("DMG was not signed by the configured team.");
+run("spctl", [
+  "--assess",
+  "--type",
+  "open",
+  "--context",
+  "context:primary-signature",
+  "--verbose=2",
+  dmg,
+]);
+const unpack = mkdtempSync(
+  join(process.env.RUNNER_TEMP || tmpdir(), "desk-verify-zip-"),
+);
+try {
+  run("ditto", ["-x", "-k", zip, unpack]);
+  verifyApp(join(unpack, "Local Build Desk.app"));
+} finally {
+  rmSync(unpack, { recursive: true, force: true });
+}
+const hashes = [dmg, zip].map(
+  (path) =>
+    `${createHash("sha256").update(readFileSync(path)).digest("hex")}  ${path.split("/").pop()}`,
+);
+writeFileSync(join(root, base + ".sha256"), hashes.join("\n") + "\n");
+console.log(
+  `Verified signed and notarized ${arch} app, DMG, ZIP, identity, architecture, version, and SHA-256 checksums.`,
+);
