@@ -22,6 +22,21 @@ export async function buildLocal(ctx: any) {
   ctx.log("fixture-token " + (env.TOKEN ?? "none"));
   ctx.stage("compile");
   ctx.log("fixture-active " + ctx.job.id);
+  if (env.FIXTURE_WAIT_FOR_SECOND === "true") {
+    const deadline = Date.now() + 20000;
+    while (
+      !ctx.store.list("jobs").some(
+        (job: any) =>
+          job.id !== ctx.job.id &&
+          job.status === "running" &&
+          job.stage === "compile",
+      )
+    ) {
+      if (Date.now() >= deadline)
+        throw new Error("Second fixture build did not enter compilation");
+      await wait(25, undefined, { signal: ctx.signal });
+    }
+  }
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
       resolve,
@@ -39,3 +54,4 @@ export async function buildLocal(ctx: any) {
   if (env.FIXTURE_FAIL === "true") throw new Error("fixture requested failure");
 }
 import { app } from "electron";
+import { setTimeout as wait } from "node:timers/promises";

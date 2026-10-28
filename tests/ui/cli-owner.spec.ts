@@ -203,6 +203,7 @@ test("parallel CI clients keep independent environments, outputs and exit codes 
       {
         IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
           FIXTURE_FAIL: "true",
+          FIXTURE_WAIT_FOR_SECOND: "true",
           TOKEN: "owner-private-token",
         }),
       },
