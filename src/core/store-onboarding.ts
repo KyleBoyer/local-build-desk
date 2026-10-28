@@ -127,14 +127,14 @@ export async function makeStoreSetup(
       version: artifact.version,
     };
     invariant(
-      !store
-        .list<Job>("jobs")
-        .some(
-          (job) =>
-            job.bundleId === identity &&
-            job.submission &&
-            ["uploaded", "accepted", "draft"].includes(job.submission.state),
-        ),
+      !store.list<Job>("jobs").some(
+        (job) =>
+          job.bundleId === identity &&
+          // iOS and Android often share one identifier; only Play uploads count.
+          job.platform === "android" &&
+          job.submission &&
+          ["uploaded", "accepted", "draft"].includes(job.submission.state),
+      ),
       "PLAY_ALREADY_UPLOADED",
       "This app already has a recorded Play upload. Use normal upload/reconcile rather than first-upload bootstrap.",
     );

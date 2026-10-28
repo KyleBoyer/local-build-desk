@@ -2311,6 +2311,23 @@ export class Engine extends EventEmitter {
       testFlightGroupId: group.id,
       testFlightGroupName: group.name,
     });
+    // Builds Apple already processed before the group existed join it now.
+    const updated = this.store.get<Project>("projects", projectId);
+    for (const job of this.store
+      .list<Job>("jobs")
+      .filter(
+        (j) =>
+          j.projectId === projectId &&
+          j.platform === "ios" &&
+          j.submission?.state === "accepted" &&
+          !j.submission.message?.includes(`internal group ${group.name}`),
+      )) {
+      // Best effort: the group itself is set up; the job keeps its old message.
+      try {
+        await this.finishTestFlight(job, updated);
+        this.saveJob(job);
+      } catch {}
+    }
     return group;
   }
   async testFlightGroups(projectId: string) {
