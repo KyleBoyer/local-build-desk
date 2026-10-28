@@ -23,6 +23,10 @@ export interface StoreProbe {
   appUrl?: string;
   internalUrl?: string;
   ready?: boolean;
+  /** Required provider choices the automation deliberately leaves to the person. */
+  missing?: string[];
+  /** The provider's submit control is present but still disabled. */
+  createDisabled?: boolean;
   created?: boolean;
   identityMatches?: boolean;
   fileInputs?: number;
@@ -265,9 +269,28 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
     return { phase: "unknown", error };
   }
   if (location.hostname === "appstoreconnect.apple.com") {
-    if (dialog && /New App/i.test(dialog.innerText))
+    if (dialog && /New App/i.test(dialog.innerText)) {
+      // User Access decides which team members can see the app, so it is the
+      // person's choice. Apple keeps Create disabled until it is made.
+      const access = [
+        ...dialog.querySelectorAll<HTMLInputElement>("input[type=radio]"),
+      ].filter(
+        (el) =>
+          /useraccess/i.test(el.name) ||
+          /^(?:Limited|Full) Access$/i.test(
+            norm([...(el.labels ?? [])].map((l) => l.textContent).join(" ")),
+          ),
+      );
+      const create = [...dialog.querySelectorAll<HTMLButtonElement>("button")]
+        .filter(visible)
+        .find((el) => /^Create$/i.test(label(el)));
       return {
         phase: "apple-form",
+        missing:
+          access.length && !access.some((el) => el.checked)
+            ? ["User Access"]
+            : [],
+        createDisabled: !!create && create.disabled,
         ready:
           value(/^name|app name/i, target.appName) &&
           value(/sku/i, target.sku || target.identity) &&
@@ -291,6 +314,7 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
           selected(/^iOS$/i),
         error,
       };
+    }
     if (appId) return { phase: "app", appId, created: true, error };
     if (/\/apps(?:\/|$)/.test(location.pathname))
       return { phase: "apple-list", error };
@@ -485,7 +509,12 @@ export function performStoreAction(
       return {
         done: false,
         detail:
-          "The expected enabled control was not unique. No action was taken.",
+          !hits.length &&
+          controls.some((el) => scope.contains(el) && rx.test(label(el)))
+            ? "The provider's button is still disabled. Complete the remaining required choices on the page. No action was taken."
+            : hits.length
+              ? "The expected enabled control was not unique. No action was taken."
+              : "The expected control was not found on the page. No action was taken.",
       };
     hits[0].click();
     return { done: true };

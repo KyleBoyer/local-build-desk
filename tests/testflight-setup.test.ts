@@ -41,6 +41,8 @@ function fixture(uncertain = false) {
         return { data: group };
       }
       if (path.startsWith("/betaTesters?")) return { data: testers };
+      if (path.includes("/relationships/betaTesters"))
+        throw Error("Apple 409: Tester(s) cannot be assigned");
       if (path.includes("/betaTesters?")) return { data: members };
       if (path === "/betaTesters" && method === "POST") {
         const t = { id: "tester", attributes: body.data.attributes };
@@ -93,4 +95,24 @@ it("does not repeat an uncertain creation after persistent journal recovery", as
     configureInternalTesting(h.api, "app", "Internal", [], journal),
   ).rejects.toThrow(/uncertain/);
   expect(h.requests.filter((r) => r.method === "POST")).toHaveLength(1);
+});
+it("adds a teammate who is already an external tester elsewhere as a new internal tester", async () => {
+  const h = fixture();
+  // Apple's email filter finds the external tester from another app's group.
+  await configureInternalTesting(h.api, "app", "Internal", []);
+  const external = {
+    id: "external",
+    attributes: { email: "owner@example.com", inviteType: "EMAIL" },
+  };
+  (h.api as any).request = (
+    (original) =>
+    async (path: string, method = "GET", body?: any) =>
+      path.startsWith("/betaTesters?")
+        ? { data: [external] }
+        : original(path, method, body)
+  )(h.api.request);
+  await configureInternalTesting(h.api, "app", "Internal", ["user"]);
+  const posts = h.requests.filter((r) => r.method === "POST");
+  expect(posts.map((r) => r.path)).toEqual(["/betaGroups", "/betaTesters"]);
+  expect(posts[1].body.data.relationships.betaGroups.data[0].id).toBe("group");
 });

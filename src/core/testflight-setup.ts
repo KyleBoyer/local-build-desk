@@ -141,63 +141,35 @@ export async function configureInternalTesting(
     );
     group = created.data;
   }
-  for (const user of users.filter((user) => userIds.includes(user.id))) {
-    const testers = await list(
-      api,
-      `/betaTesters?filter[email]=${encodeURIComponent(user.email)}&limit=200`,
-    );
-    invariant(
-      testers.length < 2,
-      "TESTFLIGHT_TESTER",
-      "Apple returned ambiguous tester records.",
-    );
-    if (testers[0]) {
-      const members = await list(
+  // An email can already belong to an external (email-invited) tester from
+  // another app, which Apple refuses to assign to an internal group. Creating the
+  // tester with the group relationship makes Apple link the team member instead.
+  const isMember = async (email: string) =>
+    (
+      await list(
         api,
         `/betaGroups/${encodeURIComponent(group.id)}/betaTesters?limit=200`,
-      );
-      if (!members.some((tester) => tester.id === testers[0].id))
-        await postOnce(
-          `member:${group.id}:${user.id}`,
-          `/betaGroups/${encodeURIComponent(group.id)}/relationships/betaTesters`,
-          { data: [{ type: "betaTesters", id: testers[0].id }] },
-          async () => {
-            const now = await list(
-              api,
-              `/betaGroups/${encodeURIComponent(group.id)}/betaTesters?limit=200`,
-            );
-            return now.some((item) => item.id === testers[0].id)
-              ? {}
-              : undefined;
-          },
-        );
-    } else {
-      await postOnce(
-        `tester:${group.id}:${user.id}`,
-        "/betaTesters",
-        {
-          data: {
-            type: "betaTesters",
-            attributes: { email: user.email },
-            relationships: {
-              betaGroups: { data: [{ type: "betaGroups", id: group.id }] },
-            },
+      )
+    ).some(
+      (tester) =>
+        tester.attributes.email?.toLowerCase() === email.toLowerCase(),
+    );
+  for (const user of users.filter((user) => userIds.includes(user.id))) {
+    if (await isMember(user.email)) continue;
+    await postOnce(
+      `tester:${group.id}:${user.id}`,
+      "/betaTesters",
+      {
+        data: {
+          type: "betaTesters",
+          attributes: { email: user.email },
+          relationships: {
+            betaGroups: { data: [{ type: "betaGroups", id: group.id }] },
           },
         },
-        async () => {
-          const now = await list(
-            api,
-            `/betaGroups/${encodeURIComponent(group.id)}/betaTesters?limit=200`,
-          );
-          return now.some(
-            (item) =>
-              item.attributes.email?.toLowerCase() === user.email.toLowerCase(),
-          )
-            ? {}
-            : undefined;
-        },
-      );
-    }
+      },
+      async () => ((await isMember(user.email)) ? {} : undefined),
+    );
   }
   return { id: group.id as string, name: group.attributes.name as string };
 }

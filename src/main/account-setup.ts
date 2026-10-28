@@ -2191,9 +2191,11 @@ export class AccountSetupManager {
       );
       return;
     }
+    // Before a new submit, any message on the create form is left over from the
+    // attempt the person already answered with a new name.
     if (
       probe.error &&
-      !(onCreateForm && !state.rejection && probe.error === state.staleError)
+      !(onCreateForm && !state.submitted.create && state.staleError)
     ) {
       this.prompt(
         account,
@@ -2348,6 +2350,20 @@ export class AccountSetupManager {
         }
         if (!probe.ready) {
           await this.storeAction(account, "fill-app");
+          return;
+        }
+        if (probe.missing?.includes("User Access")) {
+          this.prompt(
+            account,
+            "Choose User Access on the App Store Connect page: Full Access lets every team member with a role see this app; Limited Access only the people you pick. Approval appears once Apple enables Create.",
+          );
+          return;
+        }
+        if (probe.createDisabled) {
+          this.prompt(
+            account,
+            "Apple's Create button is still disabled. Complete the remaining required fields on the App Store Connect page.",
+          );
           return;
         }
         if (

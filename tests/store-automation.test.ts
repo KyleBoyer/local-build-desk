@@ -161,3 +161,15 @@ it("reports App Store Connect's unmarked form validation message instead of wait
     /^The app name you entered is already being used/,
   );
 });
+it("leaves Apple's User Access choice to the person and explains a disabled Create", () => {
+  const dom = page(
+    '<div role="dialog"><h2>New App</h2><label>iOS<input type=checkbox checked></label><label>Name<input name="name" value="Fixture"></label><label>Limited Access<input type=radio name=userAccess></label><label>Full Access<input type=radio name=userAccess></label><button disabled>Create</button></div>',
+  );
+  const result = probe(dom);
+  expect(result.missing).toEqual(["User Access"]);
+  expect(result.createDisabled).toBe(true);
+  expect(act(dom, "create-app").detail).toMatch(/still disabled/);
+  const radios = dom.window.document.querySelectorAll("input[type=radio]");
+  (radios[1] as HTMLInputElement).checked = true;
+  expect(probe(dom).missing).toEqual([]);
+});

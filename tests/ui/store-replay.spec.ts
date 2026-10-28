@@ -37,6 +37,27 @@ test("apple-taken: a taken name is reported, renamed, and created only after a n
     app = await h.launch(),
     page = await app.firstWindow();
   try {
+    // User Access is the person's choice; approval waits until it is made.
+    await expect(page.getByText(/Choose User Access/).first()).toBeVisible({
+      timeout: 25000,
+    });
+    await expect(
+      page.getByRole("button", { name: "Approve create app record" }),
+    ).toHaveCount(0);
+    const provider = await app.evaluate(
+      ({ webContents }) =>
+        webContents
+          .getAllWebContents()
+          .find((c) => c.getURL().endsWith("/apps"))?.id,
+    );
+    await app.evaluate(async ({ webContents }, id) => {
+      await webContents
+        .fromId(id!)!
+        .executeJavaScript(
+          "document.querySelectorAll('[name=userAccess]')[1].click()",
+          true,
+        );
+    }, provider);
     await page
       .getByRole("button", { name: "Approve create app record" })
       .click({ timeout: 25000 });
