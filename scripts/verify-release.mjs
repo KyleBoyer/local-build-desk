@@ -22,15 +22,17 @@ function run(command, args) {
     );
   return r.stdout + r.stderr;
 }
-// A ticket for an accepted submission can take a few minutes to become
-// available to stapler.
-function staple(path) {
+// stapler fetches tickets from Apple's CloudKit service, whose connections
+// from hosted runners sometimes drop mid-request.
+function stapler(action, path) {
   for (let attempt = 1; ; attempt++)
     try {
-      return run("xcrun", ["stapler", "staple", path]);
+      return run("xcrun", ["stapler", action, path]);
     } catch (error) {
       if (attempt === 6) throw error;
-      console.warn(`${error.message}\nRetrying staple in 30 seconds.`);
+      console.warn(
+        `${error.message}\nRetrying stapler ${action} in 30 seconds.`,
+      );
       spawnSync("sleep", ["30"]);
     }
 }
@@ -72,7 +74,7 @@ function verifyApp(path) {
   ]).trim();
   if (actual.split(/\s+/).sort().join(" ") !== "arm64 x86_64")
     throw new Error("App is not a universal arm64 and x86_64 build.");
-  run("xcrun", ["stapler", "validate", path]);
+  stapler("validate", path);
   run("spctl", ["--assess", "--type", "execute", "--verbose=2", path]);
 }
 verifyApp(app);
@@ -108,8 +110,8 @@ if (submitted.status !== "Accepted")
   throw new Error(
     `Apple did not accept the DMG (request ${submitted.id ?? "unknown"}). No release will be published.`,
   );
-staple(dmg);
-run("xcrun", ["stapler", "validate", dmg]);
+stapler("staple", dmg);
+stapler("validate", dmg);
 const dmgSignature = run("codesign", ["--display", "--verbose=4", dmg]);
 if (!dmgSignature.includes(`TeamIdentifier=${team}`))
   throw new Error("DMG was not signed by the configured team.");
