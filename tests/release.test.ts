@@ -75,6 +75,10 @@ it("release config fails closed without credentials and requires hardened signin
     ],
   });
   expect(config.dmg.sign).toBe(true);
+  // Targets named on the command line would replace the universal targets.
+  expect(require("../package.json").scripts["release:mac"]).toMatch(
+    /--mac --publish never$/,
+  );
   expect(config.publish).toEqual([
     expect.objectContaining({
       provider: "github",
