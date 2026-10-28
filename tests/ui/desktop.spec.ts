@@ -121,7 +121,11 @@ test("desktop import, profile selection, toolchain, migration, queue, and keyboa
     await expect(
       page.getByRole("heading", { name: "The local toolchain" }),
     ).toBeVisible();
-    await expect(page.getByText("Xcode", { exact: true })).toBeVisible();
+    // A fresh Mac runner can take the doctor's full 15s subprocess timeout
+    // while CoreSimulator starts. Wait for the real checks, not a UI placeholder.
+    await expect(page.getByText("Xcode", { exact: true })).toBeVisible({
+      timeout: 30000,
+    });
     await page.screenshot({ path: "test-results/desktop-toolchain.png" });
     await page.getByRole("button", { name: "Project", exact: true }).click();
     await page.getByRole("button", { name: "Build", exact: true }).click();
