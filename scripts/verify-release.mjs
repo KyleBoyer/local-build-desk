@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   readdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
   mkdtempSync,
   rmSync,
@@ -22,19 +23,20 @@ function run(command, args) {
     );
   return r.stdout + r.stderr;
 }
-// stapler fetches tickets from Apple's CloudKit service, whose connections
+// stapler and Gatekeeper reach Apple's ticket service, whose connections
 // from hosted runners sometimes drop mid-request.
-function stapler(action, path) {
+function retry(command, args) {
   for (let attempt = 1; ; attempt++)
     try {
-      return run("xcrun", ["stapler", action, path]);
+      return run(command, args);
     } catch (error) {
       if (attempt === 6) throw error;
-      console.warn(
-        `${error.message}\nRetrying stapler ${action} in 30 seconds.`,
-      );
+      console.warn(`${error.message}\nRetrying in 30 seconds.`);
       spawnSync("sleep", ["30"]);
     }
+}
+function stapler(action, path) {
+  return retry("xcrun", ["stapler", action, path]);
 }
 const team = process.env.MACOS_TEAM_ID;
 if (!/^[A-Z0-9]{10}$/.test(team ?? ""))
@@ -74,8 +76,20 @@ function verifyApp(path) {
   ]).trim();
   if (actual.split(/\s+/).sort().join(" ") !== "arm64 x86_64")
     throw new Error("App is not a universal arm64 and x86_64 build.");
-  stapler("validate", path);
-  run("spctl", ["--assess", "--type", "execute", "--verbose=2", path]);
+  // stapler validate looks the universal app's ticket up online and fails
+  // repeatedly from hosted runners. A stapled bundle carries its ticket in
+  // Contents/CodeResources, and Gatekeeper reports whether it accepts it.
+  if (!statSync(join(path, "Contents", "CodeResources")).size)
+    throw new Error("App has no stapled notarization ticket.");
+  const assessment = retry("spctl", [
+    "--assess",
+    "--type",
+    "execute",
+    "--verbose=4",
+    path,
+  ]);
+  if (!assessment.includes("source=Notarized Developer ID"))
+    throw new Error("Gatekeeper does not recognize the app as notarized.");
 }
 verifyApp(app);
 const base = `Local-Build-Desk-${manifest.version}-universal`;
