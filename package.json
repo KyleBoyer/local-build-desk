@@ -1,6 +1,6 @@
 {
   "name": "local-build-desk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Build and submit Expo apps from your Mac",
   "private": true,
   "type": "module",
@@ -22,6 +22,7 @@
   "dependencies": {
     "@fontsource/dm-sans": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.2.7",
+    "electron-updater": "^6.8.11",
     "jose": "^6.1.0",
     "lucide-react": "^0.577.0",
     "plist": "^3.1.0",
@@ -70,7 +71,15 @@
       "identity": null,
       "icon": "resources/icon.icns"
     },
-    "asar": true
+    "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "KyleBoyer",
+        "repo": "local-build-desk",
+        "releaseType": "release"
+      }
+    ]
   },
   "author": "Boyer Labs",
   "engines": {

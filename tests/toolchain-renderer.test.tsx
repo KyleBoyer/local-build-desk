@@ -12,6 +12,7 @@ it("keeps project SDK checks when the slower system-default check completes afte
   window.desk = {
     state: () => new Promise((resolve) => (resolveState = resolve)),
     onEvent: () => () => {},
+    updateStatus: async () => ({ state: "disabled", currentVersion: "0.1.0" }),
     inspect: () => new Promise(() => {}),
     xcodeInstallations: async () => [],
     doctor: (id?: string) =>

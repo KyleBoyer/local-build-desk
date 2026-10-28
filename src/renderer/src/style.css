@@ -374,6 +374,27 @@ main {
 .local-pill i {
   vertical-align: 1px;
 }
+.update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 8px var(--mono);
+  letter-spacing: 1.1px;
+  color: #96a4b0;
+  -webkit-app-region: no-drag;
+}
+.update-pill.ready {
+  font:
+    600 11px "DM Sans",
+    sans-serif;
+  letter-spacing: 0;
+  color: #0c1014;
+  background: var(--accent);
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
 .icon-button {
   display: inline-flex;
   align-items: center;

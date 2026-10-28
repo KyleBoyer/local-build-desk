@@ -236,10 +236,25 @@ export interface DeskState {
   artifacts: Artifact[];
   dataPath: string;
 }
+export interface UpdateStatus {
+  state:
+    | "disabled"
+    | "idle"
+    | "checking"
+    | "current"
+    | "downloading"
+    | "ready"
+    | "error";
+  currentVersion: string;
+  version?: string;
+  percent?: number;
+  error?: string;
+}
 export interface DeskEvent {
-  type: "state" | "log";
+  type: "state" | "log" | "update";
   jobId?: string;
   entry?: LogEntry;
+  update?: UpdateStatus;
 }
 export interface DesktopAPI {
   xcodeInstallations(
@@ -372,6 +387,9 @@ export interface DesktopAPI {
   completeAccountSetup(): Promise<void>;
   closeAccountSetup(): Promise<void>;
   openExternal(url: string): Promise<void>;
+  updateStatus(): Promise<UpdateStatus>;
+  checkForUpdates(): Promise<UpdateStatus>;
+  installUpdate(): Promise<void>;
   onEvent(listener: (event: DeskEvent) => void): () => void;
 }
 

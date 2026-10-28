@@ -241,5 +241,8 @@ export const methods = {
   completeAccountSetup: z.tuple([]),
   closeAccountSetup: z.tuple([]),
   openExternal: z.tuple([z.string().url()]),
+  updateStatus: z.tuple([]),
+  checkForUpdates: z.tuple([]),
+  installUpdate: z.tuple([]),
 };
 export type Method = keyof typeof methods;

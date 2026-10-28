@@ -3,12 +3,16 @@ import { createRequire } from "node:module";
 import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 const require = createRequire(import.meta.url);
 const metadata = await import(
   new URL("../scripts/release-meta.mjs", import.meta.url).href
 );
 const signing = await import(
   new URL("../scripts/ci-signing.mjs", import.meta.url).href
+);
+const manifest = await import(
+  new URL("../scripts/update-manifest.mjs", import.meta.url).href
 );
 const fake = {
   MACOS_CERTIFICATE_P12_BASE64: Buffer.from(
@@ -68,6 +72,13 @@ it("release config fails closed without credentials and requires hardened signin
     target: ["dmg", "zip"],
   });
   expect(config.dmg.sign).toBe(true);
+  expect(config.publish).toEqual([
+    expect.objectContaining({
+      provider: "github",
+      owner: "KyleBoyer",
+      repo: "local-build-desk",
+    }),
+  ]);
   expect(config.files.some((value: string) => value === "out/**/*")).toBe(
     false,
   );
@@ -154,7 +165,46 @@ it("release workflow isolates signing from PRs and publishes only verified archi
   ).toBe("always()");
   expect(workflow.jobs.publish.needs).toEqual(["validate", "sign"]);
   expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
+  const publish = workflow.jobs.publish.steps.at(-1).run;
+  expect(publish).toContain('update-manifest.mjs . "$RELEASE_TAG"');
+  expect(publish).toMatch(
+    /gh release create .*\*\.zip\.blockmap .*latest-mac\.yml/,
+  );
   for (const job of Object.values(workflow.jobs) as any[])
     for (const step of job.steps)
       if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
+});
+
+it("update manifest describes both architecture ZIPs for electron-updater", async () => {
+  const root = await mkdtemp(join(tmpdir(), "desk-update-manifest-"));
+  try {
+    await writeFile(join(root, "Local-Build-Desk-1.2.3-arm64.zip"), "arm");
+    await writeFile(join(root, "Local-Build-Desk-1.2.3-x64.zip"), "intel!");
+    const yaml = require("js-yaml");
+    const feed = yaml.load(
+      manifest.updateManifest(root, "v1.2.3", new Date(0)),
+    );
+    expect(feed).toEqual({
+      version: "1.2.3",
+      files: [
+        {
+          url: "Local-Build-Desk-1.2.3-arm64.zip",
+          sha512: createHash("sha512").update("arm").digest("base64"),
+          size: 3,
+        },
+        {
+          url: "Local-Build-Desk-1.2.3-x64.zip",
+          sha512: createHash("sha512").update("intel!").digest("base64"),
+          size: 6,
+        },
+      ],
+      path: "Local-Build-Desk-1.2.3-x64.zip",
+      sha512: createHash("sha512").update("intel!").digest("base64"),
+      releaseDate: "1970-01-01T00:00:00.000Z",
+    });
+    await rm(join(root, "Local-Build-Desk-1.2.3-x64.zip"));
+    expect(() => manifest.updateManifest(root, "v1.2.3")).toThrow(/ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -11,6 +11,7 @@ import {
 import {
   ArrowUpRight,
   ArrowRight,
+  ArrowDownToLine,
   Box,
   Check,
   CheckCircle2,
@@ -64,6 +65,7 @@ import type {
   Profile,
   Project,
   ProjectSettings,
+  UpdateStatus,
 } from "../../core/types";
 declare global {
   interface Window {
@@ -154,6 +156,73 @@ function Button({
       onClick={onClick}
     >
       {children}
+    </button>
+  );
+}
+function UpdateControl({
+  notify,
+}: {
+  notify: (text: string, error?: boolean) => void;
+}) {
+  const [update, setUpdate] = useState<UpdateStatus>();
+  useEffect(() => {
+    let active = true;
+    void api.updateStatus().then((status) => active && setUpdate(status));
+    const stop = api.onEvent((e) => {
+      if (e.type === "update" && e.update) setUpdate(e.update);
+    });
+    return () => {
+      active = false;
+      stop();
+    };
+  }, []);
+  if (!update || update.state === "disabled") return null;
+  if (update.state === "ready")
+    return (
+      <button
+        className="update-pill ready"
+        title={`Local Build Desk ${update.version} is ready to install`}
+        onClick={() =>
+          void api.installUpdate().catch((e) => notify(e.message, true))
+        }
+      >
+        <ArrowDownToLine size={13} />
+        Restart to update
+      </button>
+    );
+  if (update.state === "downloading")
+    return (
+      <span className="update-pill">
+        <LoaderCircle size={13} className="spin" />
+        UPDATING TO {update.version} · {update.percent ?? 0}%
+      </span>
+    );
+  const checking = update.state === "checking";
+  return (
+    <button
+      className="icon-button"
+      aria-label="Check for updates"
+      title={`Version ${update.currentVersion}. Check for updates`}
+      disabled={checking}
+      onClick={() =>
+        void api
+          .checkForUpdates()
+          .then((status) => {
+            if (status.state === "current")
+              notify(
+                `Local Build Desk ${status.currentVersion} is up to date.`,
+              );
+            else if (status.state === "error")
+              notify(`Could not check for updates: ${status.error}`, true);
+          })
+          .catch((e) => notify(e.message, true))
+      }
+    >
+      {checking ? (
+        <LoaderCircle size={16} className="spin" />
+      ) : (
+        <ArrowDownToLine size={16} />
+      )}
     </button>
   );
 }
@@ -542,6 +611,7 @@ export function App() {
             <span className="local-pill">
               <i /> ON YOUR MACHINE
             </span>
+            <UpdateControl notify={notify} />
             <button
               className="icon-button"
               aria-label="Refresh"

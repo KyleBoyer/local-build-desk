@@ -20,6 +20,7 @@ import { Engine } from "../core/engine";
 import { Store } from "../core/database";
 import { Vault, cleanupStaleSecrets } from "../core/vault";
 import { AccountSetupManager } from "./account-setup";
+import { Updater } from "./updater";
 import { methods, type Method } from "./validation";
 import { captureInvocationEnvironment } from "../cli/invocation";
 import { runCLI } from "../cli/commands";
@@ -73,6 +74,7 @@ if ((cliArgs || hideTestUI) && process.platform === "darwin")
   app.setActivationPolicy("accessory");
 let engine: Engine;
 let accountSetup: AccountSetupManager;
+let updater: Updater;
 let window: BrowserWindow | undefined;
 // Electron's single-instance lock can admit two processes that launch at the
 // same instant (parallel CI jobs), so an atomically created lock file holding
@@ -374,8 +376,22 @@ function startOwner() {
       accountSetup = new AccountSetupManager(engine, () => window, {
         hidden: hideTestUI,
       });
+      updater = new Updater(
+        (update) => {
+          if (window && !window.isDestroyed())
+            window.webContents.send("desk:event", { type: "update", update });
+        },
+        () =>
+          engine
+            .state()
+            .jobs.some((job) => ["queued", "running"].includes(job.status)),
+        app.isPackaged &&
+          !hideTestUI &&
+          !process.env.LOCAL_BUILD_DESK_DISABLE_UPDATES,
+      );
       registerIPC();
       await createWindow();
+      updater.start();
       app.on("activate", () => {
         if (!BrowserWindow.getAllWindows().length) void createWindow();
       });
@@ -383,6 +399,7 @@ function startOwner() {
       app.on("before-quit", (event) => {
         if (quitReady) return;
         event.preventDefault();
+        updater.stop();
         void engine.shutdown().finally(() => {
           server.close();
           try {
@@ -567,6 +584,14 @@ function registerIPC() {
             "Path is outside imported projects and build storage.",
           );
           shell.showItemInFolder(path);
+          return { ok: true };
+        }
+        if (method === "updateStatus")
+          return { ok: true, value: updater.status() };
+        if (method === "checkForUpdates")
+          return { ok: true, value: await updater.check() };
+        if (method === "installUpdate") {
+          updater.install();
           return { ok: true };
         }
         if (method === "openExternal") {

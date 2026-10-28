@@ -48,6 +48,9 @@ const names = [
   "completeAccountSetup",
   "closeAccountSetup",
   "openExternal",
+  "updateStatus",
+  "checkForUpdates",
+  "installUpdate",
 ] as const;
 const api: Record<string, unknown> = {};
 for (const name of names)

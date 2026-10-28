@@ -45,6 +45,12 @@ function verifyApp(path) {
     throw new Error(
       "App does not have the expected timestamped Developer ID signature and hardened runtime.",
     );
+  if (
+    !readFileSync(join(path, "Contents", "Resources", "app-update.yml"), "utf8")
+      .split("\n")
+      .includes("provider: github")
+  )
+    throw new Error("App is missing its GitHub update feed configuration.");
   const info = plist.parse(
     readFileSync(join(path, "Contents", "Info.plist"), "utf8"),
   );
