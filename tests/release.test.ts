@@ -70,12 +70,12 @@ it("release config fails closed without credentials and requires hardened signin
     notarize: true,
     hardenedRuntime: true,
     target: [
-      { target: "dmg", arch: ["universal"] },
-      { target: "zip", arch: ["universal"] },
+      { target: "dmg", arch: ["arm64"] },
+      { target: "zip", arch: ["arm64"] },
     ],
   });
   expect(config.dmg.sign).toBe(true);
-  // Targets named on the command line would replace the universal targets.
+  // Targets named on the command line would replace the ARM64 targets.
   expect(require("../package.json").scripts["release:mac"]).toMatch(
     /--mac --publish never$/,
   );
@@ -152,7 +152,7 @@ it("missing or malformed signing inputs fail before writing credentials or invok
     }),
   ).toThrow(/p8/);
 });
-it("release workflow isolates signing from PRs and publishes only the verified universal artifacts", async () => {
+it("release workflow isolates signing from PRs and publishes only the verified ARM64 artifacts", async () => {
   const yaml = require("js-yaml");
   const workflow = yaml.load(
     await readFile(resolve(".github/workflows/release.yml"), "utf8"),
@@ -162,6 +162,8 @@ it("release workflow isolates signing from PRs and publishes only the verified u
   expect(workflow.permissions).toEqual({ contents: "read" });
   expect(workflow.jobs.sign.environment).toBe("release");
   expect(workflow.jobs.sign.needs).toBe("validate");
+  expect(workflow.jobs.test.needs).toBe("validate");
+  expect(workflow.jobs.test.environment).toBeUndefined();
   expect(workflow.jobs.sign.strategy).toBeUndefined();
   expect(
     workflow.jobs.sign.steps.find(
@@ -173,7 +175,7 @@ it("release workflow isolates signing from PRs and publishes only the verified u
       (step: any) => step.name === "Remove credentials and temporary keychain",
     ).if,
   ).toBe("always()");
-  expect(workflow.jobs.publish.needs).toEqual(["validate", "sign"]);
+  expect(workflow.jobs.publish.needs).toEqual(["validate", "test", "sign"]);
   expect(workflow.jobs.publish.permissions).toEqual({ contents: "write" });
   const publish = workflow.jobs.publish.steps.at(-1).run;
   expect(publish).toContain('update-manifest.mjs . "$RELEASE_TAG"');
@@ -185,18 +187,18 @@ it("release workflow isolates signing from PRs and publishes only the verified u
       if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
 });
 
-it("update manifest describes the universal ZIP for electron-updater", async () => {
+it("update manifest describes the ARM64 ZIP for electron-updater", async () => {
   const root = await mkdtemp(join(tmpdir(), "desk-update-manifest-"));
   try {
-    const zip = "Local-Build-Desk-1.2.3-universal.zip";
-    await writeFile(join(root, zip), "universal");
-    const sha512 = createHash("sha512").update("universal").digest("base64");
+    const zip = "Local-Build-Desk-1.2.3-arm64.zip";
+    await writeFile(join(root, zip), "ARM64");
+    const sha512 = createHash("sha512").update("ARM64").digest("base64");
     const yaml = require("js-yaml");
     expect(
       yaml.load(manifest.updateManifest(root, "v1.2.3", new Date(0))),
     ).toEqual({
       version: "1.2.3",
-      files: [{ url: zip, sha512, size: 9 }],
+      files: [{ url: zip, sha512, size: 5 }],
       path: zip,
       sha512,
       releaseDate: "1970-01-01T00:00:00.000Z",

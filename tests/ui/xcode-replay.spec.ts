@@ -8,7 +8,7 @@ for (const scenario of ["xcode-success", "xcode-failure"]) {
   test(`${scenario}: download, explicit license approval, components, and retained recovery`, async () => {
     await build({
       entryPoints: ["tests/harness/account.ts"],
-      outfile: "out/tests/account-harness.cjs",
+      outfile: "out/tests/xcode-harness.cjs",
       bundle: true,
       platform: "node",
       format: "cjs",
@@ -27,7 +27,7 @@ for (const scenario of ["xcode-success", "xcode-failure"]) {
     ) as Record<string, string>;
     const launch = () =>
       electron.launch({
-        args: [resolve("out/tests/account-harness.cjs")],
+        args: [resolve("out/tests/xcode-harness.cjs")],
         env,
       });
     const calls = async () =>

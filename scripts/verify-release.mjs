@@ -43,7 +43,7 @@ if (!/^[A-Z0-9]{10}$/.test(team ?? ""))
   throw new Error("Expected Apple team is required.");
 const manifest = JSON.parse(readFileSync("package.json", "utf8"));
 const root = resolve("release-signed"),
-  app = join(root, "mac-universal", "Local Build Desk.app");
+  app = join(root, "mac-arm64", "Local Build Desk.app");
 function verifyApp(path) {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", path]);
   const signature = run("codesign", ["--display", "--verbose=4", path]);
@@ -74,9 +74,9 @@ function verifyApp(path) {
     "-archs",
     join(path, "Contents", "MacOS", info.CFBundleExecutable),
   ]).trim();
-  if (actual.split(/\s+/).sort().join(" ") !== "arm64 x86_64")
-    throw new Error("App is not a universal arm64 and x86_64 build.");
-  // stapler validate looks the universal app's ticket up online and fails
+  if (actual !== "arm64")
+    throw new Error("App is not an ARM64 build.");
+  // stapler validate looks the app's ticket up online and fails
   // repeatedly from hosted runners. A stapled bundle carries its ticket in
   // Contents/CodeResources, and Gatekeeper reports whether it accepts it.
   if (!statSync(join(path, "Contents", "CodeResources")).size)
@@ -92,7 +92,7 @@ function verifyApp(path) {
     throw new Error("Gatekeeper does not recognize the app as notarized.");
 }
 verifyApp(app);
-const base = `Local-Build-Desk-${manifest.version}-universal`;
+const base = `Local-Build-Desk-${manifest.version}-arm64`;
 const dmg = join(root, base + ".dmg"),
   zip = join(root, base + ".zip");
 const auth = [
@@ -153,5 +153,5 @@ const hashes = [dmg, zip].map(
 );
 writeFileSync(join(root, base + ".sha256"), hashes.join("\n") + "\n");
 console.log(
-  `Verified signed and notarized universal app, DMG, ZIP, identity, architecture, version, and SHA-256 checksums.`,
+  `Verified signed and notarized ARM64 app, DMG, ZIP, identity, architecture, version, and SHA-256 checksums.`,
 );

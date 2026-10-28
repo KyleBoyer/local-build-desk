@@ -23,11 +23,10 @@ module.exports = {
   mac: {
     ...manifest.build.mac,
     identity,
-    // One universal app serves Apple silicon and Intel Macs and keeps a
-    // single update feed entry.
+    // Current Xcode/iOS SDK builds require Apple silicon.
     target: [
-      { target: "dmg", arch: ["universal"] },
-      { target: "zip", arch: ["universal"] },
+      { target: "dmg", arch: ["arm64"] },
+      { target: "zip", arch: ["arm64"] },
     ],
     hardenedRuntime: true,
     entitlements: "resources/entitlements.mac.plist",

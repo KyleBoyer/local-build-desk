@@ -16,8 +16,8 @@ concurrency:
 jobs:
   validate:
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
-    runs-on: macos-15
-    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.metadata.outputs.tag }}
       sha: ${{ steps.metadata.outputs.sha }}
@@ -29,12 +29,31 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
       - id: metadata
         run: node scripts/release-meta.mjs
         env:
           RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  test:
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-tools-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-desktop-tools-
+      - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -58,6 +77,13 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-${{ runner.arch }}-desktop-tools-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-desktop-tools-
       - run: npm ci
       - name: Restore credentials to an ephemeral keychain
         run: node scripts/ci-signing.mjs
@@ -83,7 +109,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   publish:
-    needs: [validate, sign]
+    needs: [validate, test, sign]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

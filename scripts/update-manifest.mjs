@@ -4,11 +4,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // electron-builder's own latest-mac.yml also hashes the DMG, which changes
 // when verification staples it, so the feed is written from the final ZIP.
-// The universal ZIP has no "arm64" in its name, so electron-updater offers it
-// to Apple silicon and Intel Macs alike.
+// The arm64 name lets electron-updater select the Apple silicon package.
 export function updateManifest(directory, tag, releaseDate = new Date()) {
   const version = tag.replace(/^v/, "");
-  const url = `Local-Build-Desk-${version}-universal.zip`;
+  const url = `Local-Build-Desk-${version}-arm64.zip`;
   const path = join(directory, url);
   const sha512 = createHash("sha512")
     .update(readFileSync(path))
