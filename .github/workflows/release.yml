@@ -42,22 +42,13 @@ jobs:
   sign:
     needs: validate
     environment: release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            os: macos-15
-          - arch: x64
-            os: macos-15-intel
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     timeout-minutes: 90
     env:
       MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
       MACOS_TEAM_ID: ${{ vars.MACOS_TEAM_ID }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      RELEASE_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -75,7 +66,7 @@ jobs:
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
       - name: Build, sign and notarize app
-        run: npm run release:mac -- --${{ matrix.arch }}
+        run: npm run release:mac
       - name: Verify signatures, notarize DMG and verify ZIP
         run: node scripts/verify-release.mjs
       - name: Remove credentials and temporary keychain
@@ -83,7 +74,7 @@ jobs:
         run: node scripts/ci-signing.mjs cleanup
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: signed-macos-${{ matrix.arch }}
+          name: signed-macos
           path: |
             release-signed/*.dmg
             release-signed/*.zip
@@ -114,18 +105,17 @@ jobs:
           node-version-file: .nvmrc
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: signed-macos-*
+          name: signed-macos
           path: release-files
-          merge-multiple: true
       - name: Check all signed artifacts and publish
         shell: bash
         run: |
           set -euo pipefail
           cd release-files
-          test "$(find . -maxdepth 1 -name '*.dmg' | wc -l)" -eq 2
-          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 2
-          test "$(find . -maxdepth 1 -name '*.sha256' | wc -l)" -eq 2
-          test "$(find . -maxdepth 1 -name '*.zip.blockmap' | wc -l)" -eq 2
+          test "$(find . -maxdepth 1 -name '*.dmg' | wc -l)" -eq 1
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 1
+          test "$(find . -maxdepth 1 -name '*.sha256' | wc -l)" -eq 1
+          test "$(find . -maxdepth 1 -name '*.zip.blockmap' | wc -l)" -eq 1
           sha256sum --check --strict ./*.sha256
           node ../scripts/update-manifest.mjs . "$RELEASE_TAG"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

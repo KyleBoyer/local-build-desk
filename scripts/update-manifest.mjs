@@ -2,33 +2,25 @@ import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-// Each architecture is signed on its own runner, so neither electron-builder
-// run can describe both ZIPs. electron-updater's MacUpdater picks the file
-// whose name contains "arm64" on Apple silicon and any other ZIP on Intel.
+// electron-builder's own latest-mac.yml also hashes the DMG, which changes
+// when verification staples it, so the feed is written from the final ZIP.
+// The universal ZIP has no "arm64" in its name, so electron-updater offers it
+// to Apple silicon and Intel Macs alike.
 export function updateManifest(directory, tag, releaseDate = new Date()) {
   const version = tag.replace(/^v/, "");
-  const files = ["arm64", "x64"].map((arch) => {
-    const url = `Local-Build-Desk-${version}-${arch}.zip`;
-    const path = join(directory, url);
-    return {
-      url,
-      sha512: createHash("sha512").update(readFileSync(path)).digest("base64"),
-      size: statSync(path).size,
-    };
-  });
-  // Legacy single-file fields point at the Intel build, which also runs on
-  // Apple silicon through Rosetta.
-  const fallback = files[1];
+  const url = `Local-Build-Desk-${version}-universal.zip`;
+  const path = join(directory, url);
+  const sha512 = createHash("sha512")
+    .update(readFileSync(path))
+    .digest("base64");
   return [
     `version: ${version}`,
     "files:",
-    ...files.flatMap((file) => [
-      `  - url: ${file.url}`,
-      `    sha512: ${file.sha512}`,
-      `    size: ${file.size}`,
-    ]),
-    `path: ${fallback.url}`,
-    `sha512: ${fallback.sha512}`,
+    `  - url: ${url}`,
+    `    sha512: ${sha512}`,
+    `    size: ${statSync(path).size}`,
+    `path: ${url}`,
+    `sha512: ${sha512}`,
     `releaseDate: '${releaseDate.toISOString()}'`,
     "",
   ].join("\n");

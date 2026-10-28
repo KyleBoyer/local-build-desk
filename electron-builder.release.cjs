@@ -23,7 +23,12 @@ module.exports = {
   mac: {
     ...manifest.build.mac,
     identity,
-    target: ["dmg", "zip"],
+    // One universal app serves Apple silicon and Intel Macs and keeps a
+    // single update feed entry.
+    target: [
+      { target: "dmg", arch: ["universal"] },
+      { target: "zip", arch: ["universal"] },
+    ],
     hardenedRuntime: true,
     entitlements: "resources/entitlements.mac.plist",
     entitlementsInherit: "resources/entitlements.mac.plist",

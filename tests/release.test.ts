@@ -69,7 +69,10 @@ it("release config fails closed without credentials and requires hardened signin
     identity: fake.MACOS_SIGNING_IDENTITY,
     notarize: true,
     hardenedRuntime: true,
-    target: ["dmg", "zip"],
+    target: [
+      { target: "dmg", arch: ["universal"] },
+      { target: "zip", arch: ["universal"] },
+    ],
   });
   expect(config.dmg.sign).toBe(true);
   expect(config.publish).toEqual([
@@ -145,7 +148,7 @@ it("missing or malformed signing inputs fail before writing credentials or invok
     }),
   ).toThrow(/p8/);
 });
-it("release workflow isolates signing from PRs and publishes only verified architecture artifacts", async () => {
+it("release workflow isolates signing from PRs and publishes only the verified universal artifacts", async () => {
   const yaml = require("js-yaml");
   const workflow = yaml.load(
     await readFile(resolve(".github/workflows/release.yml"), "utf8"),
@@ -155,9 +158,12 @@ it("release workflow isolates signing from PRs and publishes only verified archi
   expect(workflow.permissions).toEqual({ contents: "read" });
   expect(workflow.jobs.sign.environment).toBe("release");
   expect(workflow.jobs.sign.needs).toBe("validate");
+  expect(workflow.jobs.sign.strategy).toBeUndefined();
   expect(
-    workflow.jobs.sign.strategy.matrix.include.map((item: any) => item.arch),
-  ).toEqual(["arm64", "x64"]);
+    workflow.jobs.sign.steps.find(
+      (step: any) => step.name === "Build, sign and notarize app",
+    ).run,
+  ).toBe("npm run release:mac");
   expect(
     workflow.jobs.sign.steps.find(
       (step: any) => step.name === "Remove credentials and temporary keychain",
@@ -175,34 +181,23 @@ it("release workflow isolates signing from PRs and publishes only verified archi
       if (step.uses) expect(step.uses).toMatch(/@[a-f0-9]{40}$/);
 });
 
-it("update manifest describes both architecture ZIPs for electron-updater", async () => {
+it("update manifest describes the universal ZIP for electron-updater", async () => {
   const root = await mkdtemp(join(tmpdir(), "desk-update-manifest-"));
   try {
-    await writeFile(join(root, "Local-Build-Desk-1.2.3-arm64.zip"), "arm");
-    await writeFile(join(root, "Local-Build-Desk-1.2.3-x64.zip"), "intel!");
+    const zip = "Local-Build-Desk-1.2.3-universal.zip";
+    await writeFile(join(root, zip), "universal");
+    const sha512 = createHash("sha512").update("universal").digest("base64");
     const yaml = require("js-yaml");
-    const feed = yaml.load(
-      manifest.updateManifest(root, "v1.2.3", new Date(0)),
-    );
-    expect(feed).toEqual({
+    expect(
+      yaml.load(manifest.updateManifest(root, "v1.2.3", new Date(0))),
+    ).toEqual({
       version: "1.2.3",
-      files: [
-        {
-          url: "Local-Build-Desk-1.2.3-arm64.zip",
-          sha512: createHash("sha512").update("arm").digest("base64"),
-          size: 3,
-        },
-        {
-          url: "Local-Build-Desk-1.2.3-x64.zip",
-          sha512: createHash("sha512").update("intel!").digest("base64"),
-          size: 6,
-        },
-      ],
-      path: "Local-Build-Desk-1.2.3-x64.zip",
-      sha512: createHash("sha512").update("intel!").digest("base64"),
+      files: [{ url: zip, sha512, size: 9 }],
+      path: zip,
+      sha512,
       releaseDate: "1970-01-01T00:00:00.000Z",
     });
-    await rm(join(root, "Local-Build-Desk-1.2.3-x64.zip"));
+    await rm(join(root, zip));
     expect(() => manifest.updateManifest(root, "v1.2.3")).toThrow(/ENOENT/);
   } finally {
     await rm(root, { recursive: true, force: true });

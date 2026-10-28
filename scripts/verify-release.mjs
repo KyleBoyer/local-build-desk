@@ -22,17 +22,12 @@ function run(command, args) {
     );
   return r.stdout + r.stderr;
 }
-const team = process.env.MACOS_TEAM_ID,
-  arch = process.env.RELEASE_ARCH;
-if (!/^[A-Z0-9]{10}$/.test(team ?? "") || !["arm64", "x64"].includes(arch))
-  throw new Error("Expected Apple team and release architecture are required.");
+const team = process.env.MACOS_TEAM_ID;
+if (!/^[A-Z0-9]{10}$/.test(team ?? ""))
+  throw new Error("Expected Apple team is required.");
 const manifest = JSON.parse(readFileSync("package.json", "utf8"));
 const root = resolve("release-signed"),
-  app = join(
-    root,
-    arch === "arm64" ? "mac-arm64" : "mac",
-    "Local Build Desk.app",
-  );
+  app = join(root, "mac-universal", "Local Build Desk.app");
 function verifyApp(path) {
   run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", path]);
   const signature = run("codesign", ["--display", "--verbose=4", path]);
@@ -63,13 +58,13 @@ function verifyApp(path) {
     "-archs",
     join(path, "Contents", "MacOS", info.CFBundleExecutable),
   ]).trim();
-  if (actual !== (arch === "x64" ? "x86_64" : "arm64"))
-    throw new Error("App architecture does not match its release artifact.");
+  if (actual.split(/\s+/).sort().join(" ") !== "arm64 x86_64")
+    throw new Error("App is not a universal arm64 and x86_64 build.");
   run("xcrun", ["stapler", "validate", path]);
   run("spctl", ["--assess", "--type", "execute", "--verbose=2", path]);
 }
 verifyApp(app);
-const base = `Local-Build-Desk-${manifest.version}-${arch}`;
+const base = `Local-Build-Desk-${manifest.version}-universal`;
 const dmg = join(root, base + ".dmg"),
   zip = join(root, base + ".zip");
 const auth = [
@@ -130,5 +125,5 @@ const hashes = [dmg, zip].map(
 );
 writeFileSync(join(root, base + ".sha256"), hashes.join("\n") + "\n");
 console.log(
-  `Verified signed and notarized ${arch} app, DMG, ZIP, identity, architecture, version, and SHA-256 checksums.`,
+  `Verified signed and notarized universal app, DMG, ZIP, identity, architecture, version, and SHA-256 checksums.`,
 );
