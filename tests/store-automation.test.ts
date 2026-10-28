@@ -190,3 +190,37 @@ it("finds Play's internal testing track from a generic Get started card link", (
     "https://play.google.com/console/developers/1/app/2/tracks/internal-testing?releaseType=defaultReleases",
   );
 });
+it("reads Play's current release editor: splash progress, OBB input, and editor heading", () => {
+  const google = {
+    ...target,
+    provider: "google" as const,
+    mode: "bootstrap" as const,
+    appId: "2",
+    developerId: "1",
+    artifact: {
+      id: "a",
+      name: "app.aab",
+      sha256: "x",
+      size: 1,
+      buildNumber: "7",
+      version: "1.0",
+    },
+  };
+  const editor = page(
+    '<div aria-hidden="true" role="progressbar"></div><h1>Create internal testing release</h1><input type=file accept=".aab" multiple><input type=file><button>Save as draft</button>',
+    "https://play.google.com/console/developers/1/app/2/tracks/470/releases/1/prepare",
+  );
+  expect(probe(editor, google)).toMatchObject({
+    phase: "release",
+    fileInputs: 1,
+    internalEditor: true,
+  });
+  const track = page(
+    "<h1>Internal testing</h1><button disabled>Create new release</button><button>Edit release</button>",
+    "https://play.google.com/console/developers/1/app/2/tracks/internal-testing",
+  );
+  expect(probe(track, google)).toMatchObject({
+    phase: "release",
+    draftEditable: true,
+  });
+});

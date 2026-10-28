@@ -2397,11 +2397,14 @@ export class AccountSetupManager {
         state.internalUrl = this.checkedStoreUrl(probe.internalUrl, "google");
         this.persist(account);
       }
+      // Play opens the editor under the track's numeric id, so the editor is
+      // recognized by its internal testing heading as well as by path.
       const onInternal =
-        !!state.internalUrl &&
-        new URL(account.state.url).pathname.startsWith(
-          new URL(state.internalUrl).pathname,
-        );
+        !!probe.internalEditor ||
+        (!!state.internalUrl &&
+          new URL(account.state.url).pathname.startsWith(
+            new URL(state.internalUrl).pathname,
+          ));
       if (!onInternal) {
         if (state.internalUrl)
           await account.view.webContents.loadURL(state.internalUrl);
@@ -2441,10 +2444,15 @@ export class AccountSetupManager {
         const debug = account.view.webContents.debugger;
         if (!debug.isAttached()) debug.attach("1.3");
         const root = await debug.sendCommand("DOM.getDocument");
-        const nodes = await debug.sendCommand("DOM.querySelectorAll", {
+        let nodes = await debug.sendCommand("DOM.querySelectorAll", {
           nodeId: root.root.nodeId,
-          selector: 'input[type="file"]',
+          selector: 'input[type="file"][accept*="aab" i]',
         });
+        if (!nodes.nodeIds.length)
+          nodes = await debug.sendCommand("DOM.querySelectorAll", {
+            nodeId: root.root.nodeId,
+            selector: 'input[type="file"]',
+          });
         invariant(
           nodes.nodeIds.length === 1,
           "STORE_FILE_INPUT",
@@ -2476,7 +2484,11 @@ export class AccountSetupManager {
         return;
       }
       if (probe.phase === "release") {
-        await this.storeAction(account, "new-release");
+        // Play now makes an empty draft as soon as a release is started; reopen it.
+        await this.storeAction(
+          account,
+          probe.draftEditable ? "edit-release" : "new-release",
+        );
         return;
       }
     }

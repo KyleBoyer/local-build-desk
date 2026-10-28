@@ -22,6 +22,10 @@ export interface StoreProbe {
   appId?: string;
   appUrl?: string;
   internalUrl?: string;
+  /** The page is Play's release editor for the internal testing track. */
+  internalEditor?: boolean;
+  /** An existing draft release can be reopened instead of creating one. */
+  draftEditable?: boolean;
   ready?: boolean;
   /** Required provider choices the automation deliberately leaves to the person. */
   missing?: string[];
@@ -47,6 +51,7 @@ export type StoreAction =
   | "open-app"
   | "open-internal"
   | "open-testing"
+  | "edit-release"
   | "new-release"
   | "save-draft"
   | "configure-capability"
@@ -388,10 +393,26 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
         identityMatches,
         error,
       };
+    // Play keeps an aria-hidden splash progress bar on every page; only count
+    // progress shown to people.
     const uploading =
       /uploading|processing.*(?:bundle|upload)|upload.*in progress/i.test(
         body,
-      ) || [...document.querySelectorAll("[role=progressbar]")].some(visible);
+      ) ||
+      [...document.querySelectorAll("[role=progressbar]")].some(
+        (el) => visible(el) && !el.closest("[aria-hidden=true]"),
+      );
+    const internalEditor = [
+      ...document.querySelectorAll<HTMLElement>("h1,h2,[role=heading]"),
+    ]
+      .filter(visible)
+      .some((el) => /internal testing release/i.test(el.textContent ?? ""));
+    const draftEditable = controls.some(
+      (el) =>
+        /^Edit release$/i.test(label(el)) &&
+        !el.hasAttribute("disabled") &&
+        el.getAttribute("aria-disabled") !== "true",
+    );
     const version = target.artifact?.buildNumber;
     const versionRx = version
       ? new RegExp("(^|[^0-9])" + version + "([^0-9]|$)")
@@ -415,19 +436,32 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
       rows.some(
         (row) => versionRx.test(row.innerText) && /Draft/i.test(row.innerText),
       );
-    const files = [
+    // The release editor also has an OBB expansion-file input without an
+    // accept list; when an input names .aab, only those count.
+    const fileInputs = [
       ...document.querySelectorAll<HTMLInputElement>("input[type=file]"),
-    ].filter(
-      (el) =>
-        !el.disabled && (!el.accept || /aab|octet-stream|zip/i.test(el.accept)),
-    );
+    ].filter((el) => !el.disabled);
+    const bundleInputs = fileInputs.filter((el) => /aab/i.test(el.accept));
+    const files = bundleInputs.length
+      ? bundleInputs
+      : fileInputs.filter(
+          (el) => !el.accept || /octet-stream|zip/i.test(el.accept),
+        );
     if (uploading)
-      return { phase: "uploading", developerId, appId, internalUrl, error };
+      return {
+        phase: "uploading",
+        developerId,
+        appId,
+        internalUrl,
+        internalEditor,
+        error,
+      };
     if (
       files.length ||
       has(
         /^Create new release$|^Create release$|^Save as draft$|^Save draft$/i,
       ) ||
+      draftEditable ||
       uploaded ||
       draftSaved
     )
@@ -436,6 +470,8 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
         developerId,
         appId,
         internalUrl,
+        internalEditor,
+        draftEditable,
         fileInputs: files.length,
         uploaded,
         draftSaved,
@@ -664,8 +700,19 @@ export function performStoreAction(
       return click(/^Internal testing$/i);
     case "open-testing":
       return click(/^Test and release$|^Testing$/i);
-    case "new-release":
+    case "new-release": {
+      // The header button and the empty-state link do the same thing.
+      const header = document.querySelector<HTMLElement>(
+        "[debug-id=create-android-release-button]:not([disabled])",
+      );
+      if (header && visible(header)) {
+        header.click();
+        return { done: true };
+      }
       return click(/^Create new release$|^Create release$/i);
+    }
+    case "edit-release":
+      return click(/^Edit release$/i);
     case "save-draft":
       return click(/^Save as draft$|^Save draft$|^Save$/i);
     case "configure-capability": {
