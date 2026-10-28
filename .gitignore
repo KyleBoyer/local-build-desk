@@ -1,0 +1,54 @@
+# Dependencies and generated output
+node_modules/
+out/
+release/
+release-*/
+dist/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
+.DS_Store
+
+# Machine-local state, account sessions and acceptance evidence
+.local-build-desk/
+.local-build-data/
+.browser-info/
+.browser-*/
+.codex*
+artifacts/
+android-auto-roll-plan.md
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Local configuration and credentials
+.env*
+/ios-submit.json
+/ios-submit.local.json
+credentials.json
+credentials.local.json
+service-account*.json
+*service_account*.json
+AuthKey_*
+*.p8
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.keystore
+*.jks
+*.key
+*.pem
+
+# App artifacts and downloaded toolchains
+*.ipa
+*.aab
+*.apk
+*.xcarchive/
+*.dSYM/
+*.xip
+*.dmg
+*.app/

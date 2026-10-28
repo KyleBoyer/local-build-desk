@@ -1,0 +1,1706 @@
+import { withLock } from "./locks";
+import { makeStoreSetup, verifyBootstrapArtifact } from "./store-onboarding";
+import {
+  internalTeamUsers,
+  configureInternalTesting,
+} from "./testflight-setup";
+import type { StoreSetupRequest, StoreSetupState } from "./types";
+import { EventEmitter } from "node:events";
+import { realpath, readFile, mkdir, readdir } from "node:fs/promises";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  readdirSync,
+  mkdirSync as requireMkdir,
+} from "node:fs";
+import { resolve, join, dirname, extname } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { Store, id, now } from "./database";
+import { Vault, importCredential, privateDirectory } from "./vault";
+import {
+  inspectProject,
+  resolveProfile,
+  parseEnv,
+  hasFile,
+  readJSON,
+  toolEnvironment,
+} from "./config";
+import { Redactor, run } from "./process";
+import { DeskError, invariant, messageOf } from "./errors";
+import { buildLocal, hashArtifact } from "./build";
+import {
+  AppleAPI,
+  GoogleAPI,
+  uploadApple,
+  appleBuildState,
+  googleRollout,
+} from "./stores";
+import {
+  createDistributionCertificate,
+  certificateId,
+  decodeProfile,
+} from "./signing";
+import {
+  prepareApple,
+  prepareAndroid,
+  installTool,
+  createGoogleServiceAccount,
+} from "./setup";
+import { doctor } from "./doctor";
+import { discoverXcodes, installXcodeArchive } from "./xcode-toolchain";
+import type {
+  Artifact,
+  BuildRequest,
+  CredentialSummary,
+  DeskEvent,
+  DeskState,
+  Job,
+  LogEntry,
+  Platform,
+  Project,
+  ProjectSettings,
+  Stage,
+  SetupRequest,
+  ProgressUpdate,
+} from "./types";
+import {
+  RunVault,
+  invocationStore,
+  credentialSecrets,
+  type BuildInvocation,
+  type RuntimeContext,
+} from "./runtime-context";
+export class Engine extends EventEmitter {
+  private contexts = new Map<string, RuntimeContext>();
+  projectFor(job: Job): Project {
+    return (
+      job.projectSnapshot ?? this.store.get<Project>("projects", job.projectId)
+    );
+  }
+  vaultFor(job: Job): Vault {
+    const context = this.contexts.get(job.id);
+    invariant(
+      !job.requiresInvocationCredentials || context,
+      "CI_CREDENTIALS_REQUIRED",
+      "Reprovide invocation credentials for this job after restarting; no Keychain access was attempted.",
+    );
+    return context ? new RunVault(this.store, this.vault, context) : this.vault;
+  }
+  attachInvocation(jobId: string, invocation: BuildInvocation) {
+    const job = this.store.get<Job>("jobs", jobId);
+    const original = this.projectFor(job);
+    job.projectSnapshot = {
+      ...original,
+      settings: invocation.project.settings,
+    };
+    job.requiresInvocationCredentials =
+      invocation.context.noKeychain ||
+      Object.keys(invocation.context.credentials).length > 0;
+    this.contexts.set(jobId, invocation.context);
+    this.saveJob(job);
+  }
+  private pumping = false;
+  private closing = false;
+  private polling = false;
+  private pollTimer?: NodeJS.Timeout;
+  private pollErrors = new Map<string, string>();
+  private reconciliations = new Map<string, Promise<void>>();
+  private controllers = new Map<string, AbortController>();
+  private toolchainControllers = new Map<string, AbortController>();
+  private toolchainOperations = new Map<
+    string,
+    Promise<import("./xcode-toolchain").XcodeInstallResult>
+  >();
+  private toolInstalls = new Map<string, Promise<void>>();
+  constructor(
+    public store: Store,
+    public vault: Vault,
+  ) {
+    super();
+  }
+  start() {
+    this.store.recover();
+    void this.pump();
+    this.pollTimer = setInterval(() => void this.pollProcessing(), 30000);
+    this.pollTimer.unref();
+  }
+  state(): DeskState {
+    return {
+      projects: this.store.list<Project>("projects"),
+      jobs: this.store
+        .list<Job>("jobs")
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+      artifacts: this.store.list<Artifact>("artifacts"),
+      credentials: this.store.credentialSummaries(),
+      dataPath: this.store.root,
+      concurrency: { ...this.limits },
+    };
+  }
+  changed() {
+    this.emit("event", { type: "state" } satisfies DeskEvent);
+  }
+  async importProject(path: string) {
+    path = await realpath(resolve(path));
+    const existing = this.store
+      .list<Project>("projects")
+      .find((p) => p.path === path);
+    if (existing) return existing;
+    const info = await inspectProject(path);
+    const project: Project = {
+      id: id(),
+      path,
+      name: info.name,
+      bundleId: info.bundleId,
+      packageName: info.packageName,
+      version: info.version,
+      sdk: info.sdk,
+      profiles: info.profiles,
+      createdAt: now(),
+      settings: { track: "internal" },
+    };
+    this.store.putProject(project);
+    this.changed();
+    return project;
+  }
+  async inspect(
+    projectId: string,
+    profile?: string,
+    platform: Platform = "ios",
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    let env: Record<string, string> = {};
+    if (project.settings.envCredentialId)
+      env = (
+        await this.vault.get(project.settings.envCredentialId, "environment")
+      ).values;
+    let inspection = await inspectProject(project.path, project.settings, env);
+    const resolved = profile
+      ? resolveProfile(inspection.eas, profile, platform)
+      : undefined;
+    if (resolved)
+      inspection = await inspectProject(project.path, project.settings, {
+        ...env,
+        ...resolved.env,
+      });
+    project.name = inspection.name;
+    project.bundleId = inspection.bundleId;
+    project.packageName = inspection.packageName;
+    project.version = inspection.version;
+    project.sdk = inspection.sdk;
+    project.profiles = inspection.profiles;
+    this.store.putProject(project);
+    return { inspection, profile: resolved };
+  }
+  saveSettings(projectId: string, settings: ProjectSettings) {
+    const project = this.store.get<Project>("projects", projectId);
+    if (settings.buildDirectory) {
+      settings.buildDirectory = resolve(settings.buildDirectory);
+      invariant(
+        settings.buildDirectory !== resolve(project.path) &&
+          !settings.buildDirectory.startsWith(resolve(project.path) + "/"),
+        "BUILD_STORAGE",
+        "Choose build storage outside the imported project so snapshots cannot include generated builds.",
+      );
+    }
+    project.settings = settings;
+    this.store.putProject(project);
+    this.changed();
+  }
+  doctor(projectId?: string) {
+    return doctor(
+      projectId ? this.store.get<Project>("projects", projectId).settings : {},
+    );
+  }
+  xcodeInstallations(projectId: string) {
+    return discoverXcodes(
+      this.store.get<Project>("projects", projectId).settings,
+    );
+  }
+  installXcode(projectId: string, archive: string, acceptLicense = false) {
+    const existing = this.toolchainOperations.get(projectId);
+    if (existing) return existing;
+    const controller = new AbortController();
+    this.toolchainControllers.set(projectId, controller);
+    const operation = this.installXcodeOperation(
+      projectId,
+      archive,
+      acceptLicense,
+      controller.signal,
+    ).finally(() => {
+      this.toolchainControllers.delete(projectId);
+      this.toolchainOperations.delete(projectId);
+    });
+    this.toolchainOperations.set(projectId, operation);
+    return operation;
+  }
+  private async installXcodeOperation(
+    projectId: string,
+    archive: string,
+    acceptLicense: boolean,
+    signal: AbortSignal,
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    const result = await installXcodeArchive(
+      archive,
+      project.settings,
+      acceptLicense,
+      {
+        log: this.setupLogger(projectId),
+        signal,
+        onPrepared: (installation) => {
+          const latest = this.store.get<Project>("projects", projectId);
+          this.saveSettings(projectId, {
+            ...latest.settings,
+            pendingXcodePath: installation.developerDirectory,
+          });
+        },
+      },
+    );
+    if (!result.requiresLicense) {
+      this.saveSettings(projectId, {
+        ...this.store.get<Project>("projects", projectId).settings,
+        xcodePath: result.installation.developerDirectory,
+        pendingXcodePath: undefined,
+        iosSdk: result.installation.iosSdks
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+          .at(-1),
+      });
+    }
+    return result;
+  }
+  async build(
+    request: BuildRequest,
+    invocation?: BuildInvocation,
+  ): Promise<Job[]> {
+    const project =
+      invocation?.project ??
+      this.store.get<Project>("projects", request.projectId);
+    if (invocation?.concurrency)
+      this.configureConcurrency(invocation.concurrency);
+    const jobs: Job[] = [];
+    for (const platform of request.platform === "all"
+      ? (["ios", "android"] as const)
+      : [request.platform]) {
+      const job: Job = {
+        id: id(),
+        projectId: project.id,
+        projectName: project.name,
+        platform,
+        profile: request.profile,
+        status: "queued",
+        stage: "queued",
+        createdAt: now(),
+        autoSubmit: request.autoSubmit ?? false,
+        clean: request.clean ?? false,
+        kind: "build",
+        projectSnapshot: invocation ? structuredClone(project) : undefined,
+        requiresInvocationCredentials: invocation
+          ? invocation.context.noKeychain ||
+            Object.keys(invocation.context.credentials).length > 0
+          : undefined,
+        requestedBuildNumber: invocation?.buildNumber,
+      };
+      if (invocation) this.contexts.set(job.id, invocation.context);
+      this.store.putJob(job);
+      jobs.push(job);
+    }
+    this.changed();
+    void this.pump();
+    return jobs;
+  }
+  private limits: Record<Platform, number> = { ios: 1, android: 1 };
+  configureConcurrency(limits: Partial<Record<Platform, number>>) {
+    for (const platform of ["ios", "android"] as const) {
+      const value = limits[platform];
+      if (value !== undefined) {
+        invariant(
+          Number.isInteger(value) && value >= 1 && value <= 8,
+          "CONCURRENCY",
+          "Concurrency must be an integer between 1 and 8 per platform.",
+        );
+        this.limits[platform] = value;
+      }
+    }
+    void this.pump();
+    return { ...this.limits };
+  }
+  async pump() {
+    if (this.pumping || this.closing) return;
+    this.pumping = true;
+    try {
+      const jobs = this.store.list<Job>("jobs");
+      const counts = { ios: 0, android: 0 };
+      for (const job of jobs)
+        if (this.controllers.has(job.id)) counts[job.platform]++;
+      for (const job of jobs
+        .filter((item) => item.status === "queued")
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+        if (this.closing || counts[job.platform] >= this.limits[job.platform])
+          continue;
+        counts[job.platform]++;
+        void this.runJob(job)
+          .catch((error) => {
+            job.status = "failed";
+            job.error = messageOf(error);
+            job.finishedAt = now();
+            this.controllers.delete(job.id);
+            this.saveJob(job);
+            this.emit("settled");
+          })
+          .finally(() => {
+            void this.pump();
+          });
+      }
+    } finally {
+      this.pumping = false;
+    }
+  }
+  private async runJob(job: Job) {
+    const controller = new AbortController();
+    this.controllers.set(job.id, controller);
+    job.status = "running";
+    job.startedAt = now();
+    job.stageStartedAt = now();
+    this.saveJob(job);
+    const project = this.projectFor(job);
+    await mkdir(join(this.store.root, "jobs", job.id), { recursive: true });
+    const redactor = new Redactor();
+    redactor.add(
+      ...credentialSecrets(this.contexts.get(job.id)?.credentials ?? {}),
+    );
+    const log = (text: string) => this.log(job, redactor.redact(text));
+    const stage = (stage: Stage) => {
+      if (controller.signal.aborted)
+        throw new DeskError("CANCELLED", "Operation cancelled.");
+      if (
+        stage === "upload" &&
+        job.versionReservation &&
+        job.bundleId &&
+        job.buildNumber
+      ) {
+        this.store.commitNumber(
+          `${job.platform}:${job.bundleId}`,
+          job.parentJobId ?? job.id,
+          Number(job.buildNumber),
+        );
+        job.versionReservation = "committed";
+      }
+      job.stage = stage;
+      job.stageStartedAt = now();
+      job.progress = undefined;
+      this.saveJob(job);
+      log(`→ ${stage}`);
+    };
+    try {
+      const vault = this.vaultFor(job);
+      const store =
+        vault instanceof RunVault
+          ? invocationStore(this.store, vault, project, (value) => {
+              job.projectSnapshot = value;
+              this.saveJob(job);
+            })
+          : this.store;
+      let googleEmail: string | undefined;
+      if (job.platform === "android" && project.settings.googleConnectionId) {
+        const email = (
+          await vault.get(project.settings.googleConnectionId, "google")
+        ).serviceAccount.client_email;
+        googleEmail = email;
+        job.connectionFingerprint = createHash("sha256")
+          .update(email)
+          .digest("hex");
+        this.saveJob(job);
+        this.assertGoogleIdle(email, job.id);
+      }
+      if (project.settings.envCredentialId)
+        redactor.add(
+          ...Object.values(
+            (await vault.get(project.settings.envCredentialId, "environment"))
+              .values,
+          ),
+        );
+      const eas = await readJSON(join(project.path, "eas.json"), {
+        build: { production: {} },
+      });
+      if (eas.build?.[job.profile])
+        redactor.add(
+          ...Object.values(resolveProfile(eas, job.profile, job.platform).env),
+        );
+      if (job.kind === "build")
+        await buildLocal({
+          store,
+          vault,
+          job,
+          project,
+          signal: controller.signal,
+          log,
+          stage,
+          save: () => this.saveJob(job),
+          progress: (update) => this.recordProgress(job, update),
+          googleGuard: () => {
+            if (googleEmail) this.assertGoogleIdle(googleEmail, job.id);
+          },
+        });
+      if (controller.signal.aborted)
+        throw new DeskError("CANCELLED", "Operation cancelled.");
+      if (job.autoSubmit || job.kind === "submit")
+        await this.upload(job, project, controller.signal, log, stage);
+      job.status =
+        job.submission?.state === "rejected"
+          ? "failed"
+          : job.submission?.state === "processing" ||
+              job.submission?.state === "uncertain"
+            ? "needs-attention"
+            : "succeeded";
+      if (job.submission?.state === "rejected")
+        job.error =
+          job.submission.message ??
+          "Apple rejected this build during processing.";
+      if (job.submission?.state === "processing") {
+        job.stage = "processing";
+        job.stageStartedAt = now();
+        job.progress = undefined;
+        log(
+          "Apple processing is pending. Status is checked automatically while the app runs.",
+        );
+      } else {
+        job.stage = "complete";
+      }
+    } catch (error) {
+      const uncertain =
+        job.submission &&
+        ["uploading", "processing"].includes(job.submission.state);
+      if (uncertain) {
+        job.submission!.state = "uncertain";
+        job.status = "needs-attention";
+      } else job.status = controller.signal.aborted ? "cancelled" : "failed";
+      job.error = redactor.redact(messageOf(error));
+      log(`ERROR: ${job.error}`);
+    } finally {
+      if (
+        job.kind === "build" &&
+        ["failed", "cancelled", "interrupted"].includes(job.status) &&
+        this.store.releaseNumber(job.id)
+      )
+        job.versionReservation = "released";
+      job.finishedAt = now();
+      this.saveJob(job);
+      this.controllers.delete(job.id);
+      this.emit("settled");
+    }
+  }
+  private saveJob(job: Job) {
+    this.store.putJob(job);
+    this.changed();
+  }
+  private log(job: Job, text: string) {
+    const entry: LogEntry = { time: now(), stage: job.stage, text };
+    const folder = join(this.store.root, "jobs", job.id);
+    if (!existsSync(folder)) return;
+    appendFileSync(join(folder, "logs.jsonl"), JSON.stringify(entry) + "\n", {
+      mode: 0o600,
+    });
+    this.emit("event", {
+      type: "log",
+      jobId: job.id,
+      entry,
+    } satisfies DeskEvent);
+  }
+  logs(jobId: string): LogEntry[] {
+    this.store.get<Job>("jobs", jobId);
+    const path = join(this.store.root, "jobs", jobId, "logs.jsonl");
+    return existsSync(path)
+      ? readFileSync(path, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .flatMap((line) => {
+            try {
+              return [JSON.parse(line)];
+            } catch {
+              return [];
+            }
+          })
+      : [];
+  }
+  cancel(jobId: string) {
+    const job = this.store.get<Job>("jobs", jobId);
+    if (job.status === "queued") {
+      job.status = "cancelled";
+      job.finishedAt = now();
+      this.saveJob(job);
+      this.contexts.delete(jobId);
+    }
+    this.controllers.get(jobId)?.abort();
+  }
+  async retry(jobId: string) {
+    const job = this.store.get<Job>("jobs", jobId);
+    invariant(
+      ["failed", "cancelled", "interrupted"].includes(job.status),
+      "RETRY_STATE",
+      "Only failed, cancelled, or interrupted jobs can be retried. Reconcile uncertain uploads first.",
+    );
+    invariant(
+      !job.submission || ["rejected"].includes(job.submission.state),
+      "UPLOAD_RETRY",
+      "This artifact may already be uploaded. Check store status before retrying.",
+    );
+    if (job.requiresInvocationCredentials) this.vaultFor(job);
+    if (job.kind === "submit") return [await this.submit(job.artifactId!)];
+    return this.build(
+      {
+        projectId: job.projectId,
+        platform: job.platform,
+        profile: job.profile,
+        autoSubmit: job.autoSubmit,
+        clean: job.clean,
+      },
+      job.projectSnapshot
+        ? {
+            project: this.projectFor(job),
+            context: this.contexts.get(job.id) ?? {
+              credentials: {},
+              noKeychain: false,
+            },
+            buildNumber: job.requestedBuildNumber,
+          }
+        : undefined,
+    );
+  }
+  async submit(artifactId: string, invocation?: BuildInvocation): Promise<Job> {
+    const artifact = this.store.get<Artifact>("artifacts", artifactId);
+    const source = this.store.get<Job>("jobs", artifact.jobId);
+    invariant(
+      ["ipa", "aab"].includes(artifact.kind) && source.storeEligible,
+      "ARTIFACT_TYPE",
+      "Only artifacts built with a store distribution profile can be uploaded.",
+    );
+    const other = this.store
+      .list<Job>("jobs")
+      .find(
+        (j) =>
+          j.artifactId === artifactId &&
+          (j.submission || j.kind === "submit") &&
+          !["failed", "cancelled"].includes(j.status),
+      );
+    invariant(
+      !other,
+      "ALREADY_SUBMITTED",
+      "This artifact has an existing submission. Check its store status rather than uploading it again.",
+    );
+    const job: Job = {
+      ...source,
+      id: id(),
+      kind: "submit",
+      parentJobId: source.id,
+      status: "queued",
+      stage: "queued",
+      createdAt: now(),
+      startedAt: undefined,
+      stageStartedAt: undefined,
+      progress: undefined,
+      finishedAt: undefined,
+      error: undefined,
+      autoSubmit: true,
+      submission: undefined,
+    };
+    if (invocation) {
+      job.projectSnapshot = {
+        ...this.projectFor(source),
+        settings: invocation.project.settings,
+      };
+      job.requiresInvocationCredentials =
+        invocation.context.noKeychain ||
+        Object.keys(invocation.context.credentials).length > 0;
+      this.contexts.set(job.id, invocation.context);
+    } else if (this.contexts.has(source.id))
+      this.contexts.set(job.id, this.contexts.get(source.id)!);
+    this.store.putJob(job);
+    this.changed();
+    void this.pump();
+    return job;
+  }
+  private async upload(
+    job: Job,
+    project: Project,
+    signal: AbortSignal,
+    log: (line: string) => void,
+    stage: (stage: Stage) => void,
+  ) {
+    invariant(
+      job.artifactId,
+      "NO_ARTIFACT",
+      "No successful build artifact is available.",
+    );
+    const artifact = this.store.get<Artifact>("artifacts", job.artifactId);
+    stage("verify");
+    const digest = await hashArtifact(artifact.path);
+    invariant(
+      digest.sha256 === artifact.sha256,
+      "ARTIFACT_CHANGED",
+      "The artifact changed since it was built. Rebuild before uploading.",
+    );
+    invariant(
+      ["ipa", "aab"].includes(artifact.kind),
+      "ARTIFACT_TYPE",
+      "Only store IPA/AAB artifacts can be uploaded.",
+    );
+    const redactor = new Redactor();
+    stage("upload");
+    if (job.platform === "ios") {
+      const credential = await this.vaultFor(job).get(
+        project.settings.appleConnectionId,
+        "apple",
+      );
+      redactor.add(credential.privateKey, credential.keyId);
+      const api = new AppleAPI(credential);
+      const existing = await api.build(
+        artifact.bundleId,
+        artifact.buildNumber,
+        artifact.version,
+      );
+      invariant(
+        !existing.length,
+        "APPLE_DUPLICATE",
+        "Apple already has this build number. Reconcile that build or build a new version.",
+      );
+      job.submission = {
+        state: "uploading",
+        destination: "App Store Connect / TestFlight",
+      };
+      this.saveJob(job);
+      job.submission = await privateDirectory((root) =>
+        uploadApple(credential, artifact, root, {
+          signal,
+          env: toolEnvironment(project.settings),
+          log: (line) => log(redactor.redact(line)),
+          secrets: redactor,
+          progress: (update) => this.recordProgress(job, update),
+        }),
+      );
+      this.saveJob(job);
+      const result = await api
+        .build(artifact.bundleId, artifact.buildNumber, artifact.version)
+        .catch(() => []);
+      job.submission =
+        appleBuildState(result, artifact.version) ?? job.submission;
+      await this.finishTestFlight(job, project);
+      this.saveJob(job);
+    } else {
+      const credential = await this.vaultFor(job).get(
+        project.settings.googleConnectionId,
+        "google",
+      );
+      const api = new GoogleAPI(credential, fetch, signal, () =>
+        this.assertGoogleIdle(credential.serviceAccount.client_email, job.id),
+      );
+      this.assertGoogleIdle(credential.serviceAccount.client_email, job.id);
+      const versions = await api.versions(artifact.bundleId);
+      invariant(
+        !versions.includes(Number(artifact.buildNumber)),
+        "GOOGLE_DUPLICATE",
+        "Google Play already has this version code. Reconcile before uploading.",
+      );
+      const track = project.settings.track ?? "internal";
+      const rollout = googleRollout(project.settings, track);
+      if (
+        rollout &&
+        project.settings.playAutoRollout === undefined &&
+        !this.store
+          .list<Job>("jobs")
+          .some(
+            (other) =>
+              other.id !== job.id &&
+              other.projectId === job.projectId &&
+              other.submission?.rollout !== undefined,
+          )
+      )
+        log(
+          "Internal-track uploads now roll out to testers automatically. Set playAutoRollout=false to keep uploading drafts.",
+        );
+      job.submission = {
+        state: "uploading",
+        destination: `Google Play · ${track} · ${rollout ? "rollout" : "draft"}`,
+        rollout,
+      };
+      this.saveJob(job);
+      const uploaded = new Set(
+        this.store
+          .list<Job>("jobs")
+          .filter((other) => other.artifactId && other.submission)
+          .map((other) => other.artifactId!),
+      );
+      job.submission = {
+        ...(await api
+          .upload(
+            artifact,
+            track,
+            (editId, baselineReleases, supersededVersionCodes) => {
+              job.submission!.externalId = editId;
+              if (baselineReleases)
+                job.submission!.baselineReleases = baselineReleases;
+              if (supersededVersionCodes)
+                job.submission!.supersededVersionCodes = supersededVersionCodes;
+              this.saveJob(job);
+            },
+            signal,
+            (update) => this.recordProgress(job, update),
+            {
+              rollout,
+              log,
+              releaseNotes: project.settings.playReleaseNotes?.trim()
+                ? [
+                    {
+                      language:
+                        project.settings.playReleaseNotesLanguage ?? "en-US",
+                      text: project.settings.playReleaseNotes.trim(),
+                    },
+                  ]
+                : undefined,
+              uploadedByDesk: (versionCode) =>
+                this.store
+                  .list<Artifact>("artifacts")
+                  .some(
+                    (item) =>
+                      item.platform === "android" &&
+                      item.bundleId === artifact.bundleId &&
+                      item.buildNumber === versionCode &&
+                      uploaded.has(item.id),
+                  ),
+            },
+          )
+          .catch((error) => {
+            if (error?.code === "GOOGLE_DRAFT_EXISTS")
+              job.submission = undefined;
+            throw error;
+          })),
+        rollout,
+        supersededVersionCodes: job.submission.supersededVersionCodes,
+      };
+      this.saveJob(job);
+    }
+  }
+  reconcile(jobId: string): Promise<void> {
+    const existing = this.reconciliations.get(jobId);
+    if (existing) return existing;
+    const pending = this.reconcileJob(jobId).finally(() =>
+      this.reconciliations.delete(jobId),
+    );
+    this.reconciliations.set(jobId, pending);
+    return pending;
+  }
+  private async reconcileJob(jobId: string) {
+    const job = this.store.get<Job>("jobs", jobId);
+    invariant(
+      job.status !== "running",
+      "UPLOAD_ACTIVE",
+      "This upload is still active. Wait for it to finish or cancel before reconciling its store state.",
+    );
+    invariant(
+      job.artifactId && job.submission,
+      "NO_SUBMISSION",
+      "No submission to reconcile.",
+    );
+    const artifact = this.store.get<Artifact>("artifacts", job.artifactId);
+    const project = this.projectFor(job);
+    const googleCredential =
+      job.platform === "android"
+        ? await this.vaultFor(job).get(
+            project.settings.googleConnectionId,
+            "google",
+          )
+        : undefined;
+    if (googleCredential)
+      this.assertGoogleIdle(
+        googleCredential.serviceAccount.client_email,
+        job.id,
+      );
+    if (job.platform === "ios") {
+      const api = new AppleAPI(
+        await this.vaultFor(job).get(
+          project.settings.appleConnectionId,
+          "apple",
+        ),
+      );
+      const builds = await api.build(
+        artifact.bundleId,
+        artifact.buildNumber,
+        artifact.version,
+      );
+      const state = appleBuildState(builds, artifact.version);
+      if (!state && job.submission!.state === "processing") {
+        job.submission!.lastCheckedAt = now();
+        job.submission!.message =
+          "Upload accepted; Apple has not exposed this build in its processing API yet. Check status again or use --wait; do not upload it again.";
+        this.saveJob(job);
+        return;
+      }
+      invariant(
+        state,
+        "APPLE_PROCESSING",
+        "This build is not visible yet. Apple may still be processing it. Check again later; do not upload it again.",
+      );
+      job.submission = { ...job.submission, ...state, lastCheckedAt: now() };
+    } else
+      job.submission = {
+        ...(await new GoogleAPI(googleCredential!, fetch, undefined, () =>
+          this.assertGoogleIdle(
+            googleCredential!.serviceAccount.client_email,
+            job.id,
+          ),
+        ).reconcile(
+          artifact,
+          project.settings.track ?? "internal",
+          job.submission.externalId,
+          job.submission.baselineReleases,
+          {
+            rollout: job.submission.rollout,
+            supersededVersionCodes: job.submission.supersededVersionCodes,
+          },
+        )),
+        rollout: job.submission.rollout,
+        supersededVersionCodes: job.submission.supersededVersionCodes,
+        lastCheckedAt: now(),
+      };
+    await this.finishTestFlight(job, project);
+    job.status =
+      job.submission.state === "rejected"
+        ? "failed"
+        : ["accepted", "draft"].includes(job.submission.state)
+          ? "succeeded"
+          : "needs-attention";
+    job.stage = job.status === "succeeded" ? "complete" : "processing";
+    job.error = undefined;
+    this.saveJob(job);
+  }
+  private async finishTestFlight(job: Job, project: Project) {
+    if (
+      job.platform !== "ios" ||
+      job.submission?.state !== "accepted" ||
+      !project.settings.testFlightGroupId ||
+      !job.submission.externalId
+    )
+      return;
+    const api = new AppleAPI(
+      await this.vaultFor(job).get(project.settings.appleConnectionId, "apple"),
+    );
+    const group = (
+      await api.request(`/betaGroups/${project.settings.testFlightGroupId}`)
+    ).data;
+    invariant(
+      group.attributes.isInternalGroup,
+      "INTERNAL_GROUP_REQUIRED",
+      "Automatic distribution supports internal TestFlight groups only.",
+    );
+    await api.request(`/betaGroups/${group.id}/relationships/builds`, "POST", {
+      data: [{ type: "builds", id: job.submission.externalId }],
+    });
+    job.submission.message = `Processed by Apple and available to internal group ${group.attributes.name}.`;
+  }
+  private async pollProcessing() {
+    if (this.polling || this.closing) return;
+    this.polling = true;
+    try {
+      for (const job of this.store
+        .list<Job>("jobs")
+        .filter(
+          (j) => j.submission?.state === "processing" && j.status !== "running",
+        )) {
+        try {
+          await this.reconcile(job.id);
+          this.pollErrors.delete(job.id);
+        } catch (error) {
+          const message = messageOf(error);
+          if (this.pollErrors.get(job.id) !== message) {
+            this.log(job, "Waiting for Apple: " + message);
+            this.pollErrors.set(job.id, message);
+          }
+        }
+      }
+    } finally {
+      this.polling = false;
+    }
+  }
+  async saveCredential(input: Record<string, unknown>) {
+    const credential = await importCredential(input);
+    const value = await this.vault.put(credential);
+    this.changed();
+    return value;
+  }
+  async importGoogleConnection(projectId: string, keyPath: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const credential = await importCredential({
+      kind: "google",
+      label: `${project.name} · Google Play`,
+      keyPath,
+    });
+    invariant(
+      credential.kind === "google",
+      "CONNECTION_TYPE",
+      "Choose a Google service-account key.",
+    );
+    this.assertGoogleIdle(credential.serviceAccount.client_email);
+    const validation = await new GoogleAPI(credential, fetch, undefined, () =>
+      this.assertGoogleIdle(credential.serviceAccount.client_email),
+    ).validate(project.packageName);
+    const saved = await this.vault.put(credential);
+    this.saveSettings(projectId, {
+      ...this.store.get<Project>("projects", projectId).settings,
+      googleConnectionId: saved.id,
+    });
+    return {
+      connectionId: saved.id,
+      validation,
+      packageName: project.packageName,
+    };
+  }
+  removeCredential(id: string) {
+    for (const p of this.store.list<Project>("projects"))
+      invariant(
+        !Object.values(p.settings).includes(id),
+        "CREDENTIAL_IN_USE",
+        `Remove this credential from ${p.name} settings first.`,
+      );
+    this.vault.remove(id);
+    this.changed();
+  }
+  async validateConnection(id: string, projectId?: string) {
+    const credential = await this.vault.get(id);
+    if (credential.kind === "apple") return new AppleAPI(credential).validate();
+    if (credential.kind === "google") {
+      this.assertGoogleIdle(credential.serviceAccount.client_email);
+      const p = projectId
+        ? this.store.get<Project>("projects", projectId)
+        : this.store
+            .list<Project>("projects")
+            .find((p) => p.settings.googleConnectionId === id);
+      invariant(
+        !projectId || p?.packageName,
+        "ANDROID_PACKAGE",
+        "Set android.package before verifying this app’s Google Play permissions.",
+      );
+      return new GoogleAPI(credential, fetch, undefined, () =>
+        this.assertGoogleIdle(credential.serviceAccount.client_email),
+      ).validate(p?.packageName);
+    }
+    throw new DeskError(
+      "CONNECTION_TYPE",
+      "Choose an Apple or Google connection.",
+    );
+  }
+  async seedCounter(projectId: string, platform: Platform, lastUsed: number) {
+    const project = this.store.get<Project>("projects", projectId);
+    const identity =
+      platform === "ios" ? project.bundleId : project.packageName;
+    invariant(identity, "APP_ID_REQUIRED", "Configure the app identity first.");
+    this.store.seed(`${platform}:${identity}`, lastUsed);
+    this.changed();
+  }
+  async migrate(
+    projectId: string,
+    input: {
+      credentialsPath?: string;
+      environmentPaths?: string[];
+      iosBuildNumber?: number;
+      androidBuildNumber?: number;
+    },
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    const results: string[] = [];
+    if (input.credentialsPath) {
+      const file = resolve(input.credentialsPath);
+      const config = JSON.parse(await readFile(file, "utf8"));
+      const base = dirname(file);
+      if (config.ios) {
+        const targets = config.ios.distributionCertificate
+          ? [config.ios]
+          : Object.values<any>(config.ios);
+        const first = targets[0];
+        invariant(
+          first?.distributionCertificate,
+          "EAS_CREDENTIALS",
+          "No iOS distribution certificate in credentials.json.",
+        );
+        const cert = await readFile(
+          resolve(base, first.distributionCertificate.path),
+        );
+        for (const target of targets) {
+          const other = await readFile(
+            resolve(base, target.distributionCertificate.path),
+          );
+          invariant(
+            cert.equals(other),
+            "MULTIPLE_CERTIFICATES",
+            "All targets must use the same imported signing certificate.",
+          );
+        }
+        const profiles = await Promise.all(
+          targets.map(async (t) =>
+            (await readFile(resolve(base, t.provisioningProfilePath))).toString(
+              "base64",
+            ),
+          ),
+        );
+        const saved = await this.vault.put({
+          kind: "ios",
+          label: `${project.name} · imported iOS`,
+          p12: cert.toString("base64"),
+          password: first.distributionCertificate.password,
+          profiles,
+        });
+        project.settings.iosSigningId = saved.id;
+        results.push("Imported iOS certificate and profiles.");
+      }
+      if (config.android?.keystore) {
+        const k = config.android.keystore;
+        const saved = await this.vault.put({
+          kind: "android",
+          label: `${project.name} · upload key`,
+          keystore: (await readFile(resolve(base, k.keystorePath))).toString(
+            "base64",
+          ),
+          storePassword: k.keystorePassword,
+          alias: k.keyAlias,
+          keyPassword: k.keyPassword,
+        });
+        project.settings.androidSigningId = saved.id;
+        results.push("Imported the existing Android upload key.");
+      }
+    }
+    if (input.environmentPaths?.length) {
+      let values: Record<string, string> = {};
+      if (project.settings.envCredentialId)
+        values = (
+          await this.vault.get(project.settings.envCredentialId, "environment")
+        ).values;
+      for (const path of input.environmentPaths) {
+        const content = await readFile(path, "utf8");
+        Object.assign(
+          values,
+          extname(path) === ".json" ? JSON.parse(content) : parseEnv(content),
+        );
+      }
+      invariant(
+        Object.values(values).every((v) => typeof v === "string"),
+        "ENV_VALUES",
+        "Environment values must be strings.",
+      );
+      const saved = await this.vault.put(
+        { kind: "environment", label: `${project.name} · environment`, values },
+        project.settings.envCredentialId,
+      );
+      project.settings.envCredentialId = saved.id;
+      results.push(
+        `Imported ${Object.keys(values).length} environment values.`,
+      );
+    }
+    if (input.iosBuildNumber !== undefined) {
+      await this.seedCounter(projectId, "ios", input.iosBuildNumber);
+      results.push("Seeded iOS counter.");
+    }
+    if (input.androidBuildNumber !== undefined) {
+      await this.seedCounter(projectId, "android", input.androidBuildNumber);
+      results.push("Seeded Android counter.");
+    }
+    this.store.putProject(project);
+    this.changed();
+    return results;
+  }
+  async createCertificate(connectionId: string, label: string) {
+    const credential = await this.vault.get(connectionId, "apple");
+    const result = await privateDirectory((root) =>
+      createDistributionCertificate(credential, label, root),
+    );
+    const saved = await this.vault.put(result);
+    this.changed();
+    return saved;
+  }
+  async registerDevice(connectionId: string, name: string, udid: string) {
+    const api = new AppleAPI(await this.vault.get(connectionId, "apple"));
+    const device = await api.request("/devices", "POST", {
+      data: { type: "devices", attributes: { name, udid, platform: "IOS" } },
+    });
+    return `Registered ${device.data.attributes.name}. Regenerate ad hoc/development profiles to include it.`;
+  }
+  async createProfile(
+    connectionId: string,
+    signingId: string,
+    bundleId: string,
+    type: "IOS_APP_STORE" | "IOS_APP_ADHOC" | "IOS_APP_DEVELOPMENT",
+  ) {
+    const api = new AppleAPI(await this.vault.get(connectionId, "apple"));
+    const signing = await this.vault.get(signingId, "ios");
+    return privateDirectory(async (root) => {
+      const certId = await certificateId(api, signing, root);
+      const profile = await api.profile(
+        bundleId,
+        `Local Build Desk ${bundleId} ${Date.now()}`,
+        type,
+        certId,
+      );
+      const content = profile.attributes.profileContent;
+      const decoded = await decodeProfile(content, root);
+      const old = await Promise.all(
+        signing.profiles.map((p) => decodeProfile(p, root)),
+      );
+      signing.profiles = signing.profiles.filter(
+        (_, i) =>
+          old[i].Entitlements["application-identifier"] !==
+            decoded.Entitlements["application-identifier"] ||
+          Boolean(old[i].ProvisionedDevices) !==
+            Boolean(decoded.ProvisionedDevices),
+      );
+      signing.profiles.push(content);
+      await this.vault.put(signing, signingId);
+      this.changed();
+      return `Created ${decoded.Name}.`;
+    });
+  }
+  async generateKeystore(
+    projectId: string,
+    label: string,
+    alias: string,
+    password: string,
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    invariant(
+      !project.settings.androidSigningId,
+      "KEY_EXISTS",
+      "This project already has an Android signing key.",
+    );
+    invariant(
+      password.length >= 6,
+      "KEY_PASSWORD",
+      "Use a password of at least six characters.",
+    );
+    const saved = await privateDirectory(async (root) => {
+      const key = join(root, "upload.jks");
+      await run(
+        "keytool",
+        [
+          "-genkeypair",
+          "-keystore",
+          key,
+          "-storetype",
+          "JKS",
+          "-alias",
+          alias,
+          "-keyalg",
+          "RSA",
+          "-keysize",
+          "2048",
+          "-validity",
+          "10000",
+          "-dname",
+          "CN=Local Build Desk",
+          "-storepass:env",
+          "DESK_PASSWORD",
+          "-keypass:env",
+          "DESK_PASSWORD",
+        ],
+        {
+          env: {
+            ...toolEnvironment(project.settings),
+            DESK_PASSWORD: password,
+          },
+        },
+      );
+      return this.vault.put({
+        kind: "android",
+        label,
+        keystore: (await readFile(key)).toString("base64"),
+        alias,
+        storePassword: password,
+        keyPassword: password,
+      });
+    });
+    project.settings.androidSigningId = saved.id;
+    this.store.putProject(project);
+    this.changed();
+    return saved;
+  }
+  private setupLogger(projectId: string) {
+    const folder = join(this.store.root, "setup");
+    if (!existsSync(folder)) requireMkdir(folder);
+    return (text: string) => {
+      const entry: LogEntry = { time: now(), stage: "configure", text };
+      appendFileSync(
+        join(folder, projectId + ".jsonl"),
+        JSON.stringify(entry) + "\n",
+        { mode: 0o600 },
+      );
+      this.emit("event", {
+        type: "log",
+        jobId: "setup:" + projectId,
+        entry,
+      } satisfies DeskEvent);
+    };
+  }
+  private recordProgress(job: Job, update: ProgressUpdate) {
+    const time = now();
+    job.progress = {
+      ...update,
+      startedAt:
+        job.progress?.label === update.label ? job.progress.startedAt : time,
+      updatedAt: time,
+    };
+    this.saveJob(job);
+  }
+  private assertGoogleIdle(email: string, exceptJobId?: string) {
+    const connections = new Set(
+      this.store
+        .credentialSummaries()
+        .filter((item) => item.kind === "google" && item.detail === email)
+        .map((item) => item.id),
+    );
+    const projects = new Set(
+      this.store
+        .list<Project>("projects")
+        .filter((item) =>
+          connections.has(item.settings.googleConnectionId ?? ""),
+        )
+        .map((item) => item.id),
+    );
+    const accountRoot = join(this.store.root, "accounts");
+    if (existsSync(accountRoot)) {
+      for (const entry of readdirSync(accountRoot) as string[]) {
+        if (!entry.endsWith("-google-store-bootstrap.json")) continue;
+        let state: StoreSetupState | undefined;
+        try {
+          state = JSON.parse(
+            readFileSync(join(accountRoot, entry), "utf8"),
+          ).storeSetup;
+        } catch {
+          continue;
+        }
+        if (
+          (state?.submitted.upload || state?.consoleEditActive) &&
+          !["verifying", "complete"].includes(state.stage)
+        )
+          invariant(
+            !connections.has(state!.connectionId ?? "") &&
+              !this.store
+                .list<Project>("projects")
+                .some(
+                  (p) =>
+                    projects.has(p.id) && p.packageName === state!.identity,
+                ),
+            "GOOGLE_CONSOLE_BUSY",
+            "A first-upload console session has a staged or uncertain AAB. Resume it and save the draft before opening an API edit.",
+          );
+      }
+    }
+
+    const pending = this.store
+      .list<Job>("jobs")
+      .find(
+        (item) =>
+          item.id !== exceptJobId &&
+          (projects.has(item.projectId) ||
+            item.connectionFingerprint ===
+              createHash("sha256").update(email).digest("hex")) &&
+          item.platform === "android" &&
+          ((item.status === "running" && item.stage === "upload") ||
+            item.submission?.state === "uncertain"),
+      );
+    invariant(
+      !pending,
+      "GOOGLE_EDIT_BUSY",
+      `Finish or reconcile Google upload ${pending?.id} before checking this connection or opening another edit. This preserves its staged AAB.`,
+    );
+  }
+  setupLogs(projectId: string): LogEntry[] {
+    this.store.get<Project>("projects", projectId);
+    const path = join(this.store.root, "setup", projectId + ".jsonl");
+    return existsSync(path)
+      ? readFileSync(path, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+      : [];
+  }
+  async prepareProject(projectId: string, request: SetupRequest) {
+    const project = this.store.get<Project>("projects", projectId);
+    const log = this.setupLogger(projectId);
+    if (request.platform === "android" && project.settings.googleConnectionId)
+      this.assertGoogleIdle(
+        (await this.vault.get(project.settings.googleConnectionId, "google"))
+          .serviceAccount.client_email,
+      );
+    try {
+      const result = await (
+        request.platform === "ios" ? prepareApple : prepareAndroid
+      )(this.store, this.vault, project, request, log);
+      this.changed();
+      return result;
+    } catch (error) {
+      log("Setup paused: " + messageOf(error));
+      this.changed();
+      throw error;
+    }
+  }
+  installTool(
+    projectId: string,
+    tool: "node" | "cocoapods" | "android" | "gcloud" | "ios-platform",
+    acceptAndroidLicense: boolean,
+  ) {
+    const key = `${projectId}:${tool}`;
+    const existing = this.toolInstalls.get(key);
+    if (existing) return existing;
+    const controller = new AbortController();
+    this.toolchainControllers.set(key, controller);
+    const operation = this.installToolOperation(
+      projectId,
+      tool,
+      acceptAndroidLicense,
+      controller.signal,
+    ).finally(() => {
+      this.toolchainControllers.delete(key);
+      this.toolInstalls.delete(key);
+    });
+    this.toolInstalls.set(key, operation);
+    return operation;
+  }
+  private async installToolOperation(
+    projectId: string,
+    tool: "node" | "cocoapods" | "android" | "gcloud" | "ios-platform",
+    acceptAndroidLicense: boolean,
+    signal: AbortSignal,
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    const settings = await installTool(
+      tool,
+      acceptAndroidLicense,
+      this.setupLogger(projectId),
+      project.path,
+      project.settings,
+      signal,
+    );
+    project.settings = {
+      ...this.store.get<Project>("projects", projectId).settings,
+      ...settings,
+    };
+    this.store.putProject(project);
+    this.changed();
+  }
+  async googleCredentialDetails(id: string, verifyToken = true) {
+    const credential = await this.vault.get(id, "google");
+    if (verifyToken) await new GoogleAPI(credential).token();
+    return {
+      email: credential.serviceAccount.client_email as string,
+      cloudProject: credential.serviceAccount.project_id as string,
+    };
+  }
+  async googleLogin(projectId: string) {
+    await run("gcloud", ["auth", "login", "--quiet"], {
+      env: toolEnvironment(),
+      log: this.setupLogger(projectId),
+    });
+  }
+  async createGoogleConnection(projectId: string, cloudProject: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const result = await createGoogleServiceAccount(
+      this.vault,
+      cloudProject,
+      this.setupLogger(projectId),
+    );
+    let ready = false;
+    let message: string | undefined;
+    try {
+      await this.validateConnection(result.credential.id, project.id);
+      const latest = this.store.get<Project>("projects", project.id);
+      this.saveSettings(project.id, {
+        ...latest.settings,
+        googleConnectionId: result.credential.id,
+      });
+      ready = true;
+    } catch (error) {
+      message = messageOf(error);
+    }
+    this.changed();
+    return {
+      email: result.email,
+      connectionId: result.credential.id,
+      ready,
+      message,
+    };
+  }
+  async storeSetupContext(projectId: string, request: StoreSetupRequest) {
+    const state = await makeStoreSetup(this.store, projectId, request);
+    const project = this.store.get<Project>("projects", projectId);
+    if (request.provider === "apple" && project.settings.appleConnectionId) {
+      const api = new AppleAPI(
+        await this.vault.get(project.settings.appleConnectionId, "apple"),
+      );
+      if (request.mode === "record") {
+        const existing = await api.apps(state.identity);
+        if (existing.length) {
+          state.appId = existing[0].id;
+          state.stage = "complete";
+          this.saveSettings(projectId, {
+            ...project.settings,
+            ascAppId: state.appId,
+          });
+        }
+      } else if (request.mode === "capabilities") {
+        const bundles = (
+          await api.request(
+            `/bundleIds?filter[identifier]=${encodeURIComponent(state.identity)}&limit=200`,
+          )
+        ).data;
+        invariant(
+          bundles.length === 1,
+          "STORE_BUNDLE",
+          "Run signing setup to register this exact bundle ID before assigning capabilities.",
+        );
+        state.appId = bundles[0].id;
+      }
+    }
+    if (request.provider === "google") {
+      try {
+        const previous = JSON.parse(
+          readFileSync(
+            join(this.store.root, "accounts", `${projectId}-google.json`),
+            "utf8",
+          ),
+        );
+        state.developerId = previous.google?.developerId;
+        if (request.mode === "bootstrap")
+          state.connectionId = previous.google?.pendingCredentialId;
+      } catch {}
+      if (request.mode === "bootstrap") {
+        state.connectionId ||= project.settings.googleConnectionId;
+        invariant(
+          state.connectionId,
+          "GOOGLE_CONNECTION",
+          "Set up a Google service-account key and prepare app permissions before the first console upload. A pending encrypted key is supported.",
+        );
+        await this.googleCredentialDetails(state.connectionId);
+        try {
+          const previous = JSON.parse(
+            readFileSync(
+              join(
+                this.store.root,
+                "accounts",
+                `${projectId}-google-store-record.json`,
+              ),
+              "utf8",
+            ),
+          );
+          if (previous.storeSetup?.identity === state.identity) {
+            state.appId = previous.storeSetup.appId;
+            state.developerId =
+              previous.storeSetup.developerId || state.developerId;
+          }
+        } catch {}
+      }
+    }
+    return state;
+  }
+  async bootstrapFile(projectId: string, artifactId: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const artifact = await verifyBootstrapArtifact(
+      this.store,
+      project,
+      artifactId,
+    );
+    const job = this.store.get<Job>("jobs", artifact.jobId);
+    this.store.commitNumber(
+      `android:${artifact.bundleId}`,
+      job.parentJobId ?? job.id,
+      Number(artifact.buildNumber),
+    );
+    job.versionReservation = "committed";
+    this.store.putJob(job);
+    return artifact.path;
+  }
+  async finishStoreSetup(projectId: string, state: StoreSetupState) {
+    const project = this.store.get<Project>("projects", projectId);
+    if (state.mode === "record" && state.provider === "apple") {
+      const api = new AppleAPI(
+        await this.vault.get(project.settings.appleConnectionId, "apple"),
+      );
+      const apps = await api.apps(state.identity);
+      invariant(
+        apps.length === 1,
+        "STORE_APP_PENDING",
+        "Apple has not exposed this bundle ID's app record yet. Retry verification; another app record will not be created.",
+      );
+      this.saveSettings(projectId, {
+        ...project.settings,
+        ascAppId: apps[0].id,
+      });
+      return "Apple app record verified for " + state.identity;
+    }
+    if (state.mode === "capabilities") {
+      invariant(
+        project.settings.iosSigningId,
+        "IOS_SIGNING",
+        "Run signing setup before repairing capability assignments.",
+      );
+      const api = new AppleAPI(
+        await this.vault.get(project.settings.appleConnectionId, "apple"),
+      );
+      const signing = await this.vault.get(
+        project.settings.iosSigningId,
+        "ios",
+      );
+      await privateDirectory((root) => certificateId(api, signing, root, true));
+      const report = await this.prepareProject(projectId, {
+        platform: "ios",
+        newApp: false,
+        renewProfiles: false,
+      });
+      invariant(
+        report.ready,
+        "CAPABILITY_REPAIR",
+        report.handoffs.map((item) => item.detail).join("\n") ||
+          "Signing still needs attention.",
+      );
+      return "Capabilities and regenerated provisioning profiles verified.";
+    }
+    if (state.mode === "bootstrap") {
+      const artifact = await verifyBootstrapArtifact(
+        this.store,
+        project,
+        state.artifactId!,
+      );
+      const credential = await this.vault.get(
+        state.connectionId || project.settings.googleConnectionId,
+        "google",
+      );
+      this.assertGoogleIdle(credential.serviceAccount.client_email);
+      await new GoogleAPI(credential).verifySavedBundle(artifact, "internal");
+      const job = this.store.get<Job>("jobs", artifact.jobId);
+      job.submission = {
+        state: "draft",
+        destination: "Google Play · internal",
+        message:
+          "First console upload verified as the exact selected AAB in an internal draft.",
+        uploadedAt: now(),
+      };
+      this.store.putJob(job);
+      if (state.connectionId)
+        this.saveSettings(projectId, {
+          ...this.store.get<Project>("projects", projectId).settings,
+          googleConnectionId: state.connectionId,
+        });
+      this.changed();
+      return "Exact AAB verified in the internal draft. API uploads are ready.";
+    }
+    return state.newApp
+      ? "Google Play app record is ready. Continue with signing and the first AAB upload."
+      : "Existing Google Play app record associated. Continue with normal build and upload.";
+  }
+  async testFlightUsers(projectId: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const api = new AppleAPI(
+      await this.vault.get(project.settings.appleConnectionId, "apple"),
+    );
+    const app = await api.app(project.bundleId!);
+    return internalTeamUsers(api, app.id);
+  }
+  async configureTestFlight(
+    projectId: string,
+    request: { name: string; userIds: string[] },
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    const api = new AppleAPI(
+      await this.vault.get(project.settings.appleConnectionId, "apple"),
+    );
+    const app = await api.app(project.bundleId!);
+    const journalPath = join(this.store.root, "testflight-requests.json");
+    const group = await withLock(journalPath, undefined, async () => {
+      let requests: Record<string, boolean> = {};
+      if (existsSync(journalPath))
+        requests = JSON.parse(readFileSync(journalPath, "utf8"));
+      const key = (value: string) =>
+        createHash("sha256").update(value).digest("hex");
+      return configureInternalTesting(
+        api,
+        app.id,
+        request.name,
+        request.userIds,
+        {
+          has: (value) => !!requests[key(value)],
+          mark: (value) => {
+            requests[key(value)] = true;
+            writeFileSync(journalPath, JSON.stringify(requests), {
+              mode: 0o600,
+            });
+          },
+        },
+      );
+    });
+    this.saveSettings(projectId, {
+      ...this.store.get<Project>("projects", projectId).settings,
+      testFlightGroupId: group.id,
+      testFlightGroupName: group.name,
+    });
+    return group;
+  }
+  async testFlightGroups(projectId: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const api = new AppleAPI(
+      await this.vault.get(project.settings.appleConnectionId, "apple"),
+    );
+    const app = await api.app(project.bundleId!);
+    const groups = (
+      await api.request(`/betaGroups?filter[app]=${app.id}&limit=200`)
+    ).data;
+    return groups
+      .filter((g: any) => g.attributes.isInternalGroup)
+      .map((g: any) => ({ id: g.id, name: g.attributes.name }));
+  }
+  async idle() {
+    if (
+      !this.store
+        .list<Job>("jobs")
+        .some((job) => ["queued", "running"].includes(job.status))
+    )
+      return;
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (
+          !this.store
+            .list<Job>("jobs")
+            .some((job) => ["queued", "running"].includes(job.status))
+        ) {
+          this.off("event", check);
+          resolve();
+        }
+      };
+      this.on("event", check);
+      check();
+    });
+  }
+  async shutdown() {
+    this.closing = true;
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    for (const controller of this.toolchainControllers.values())
+      controller.abort();
+    await Promise.allSettled([
+      ...this.toolchainOperations.values(),
+      ...this.toolInstalls.values(),
+    ]);
+    for (const controller of this.controllers.values()) controller.abort();
+    if (this.controllers.size)
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (!this.controllers.size) {
+            this.off("settled", check);
+            clearTimeout(timeout);
+            resolve();
+          }
+        };
+        const timeout = setTimeout(() => {
+          this.off("settled", check);
+          resolve();
+        }, 10000);
+        this.on("settled", check);
+        check();
+      });
+    this.contexts.clear();
+  }
+}
