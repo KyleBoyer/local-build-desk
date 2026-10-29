@@ -1104,23 +1104,35 @@ export async function applyListing(
       })
     ).data;
   const items = open
-    ? await all(api, `/reviewSubmissions/${submission.id}/items?limit=50`)
+    ? // Relationship ids only come back when the related items are included.
+      await all(
+        api,
+        `/reviewSubmissions/${submission.id}/items?include=appStoreVersion,inAppPurchaseVersion&limit=50`,
+      )
     : [];
+  // Adds an item to the draft; one an earlier run already added is fine.
+  const addItem = async (relationship: Record<string, unknown>) => {
+    try {
+      await api.request("/reviewSubmissionItems", "POST", {
+        data: {
+          type: "reviewSubmissionItems",
+          relationships: {
+            reviewSubmission: {
+              data: { type: "reviewSubmissions", id: submission.id },
+            },
+            ...relationship,
+          },
+        },
+      });
+    } catch (error) {
+      if (!/already added/i.test((error as Error).message)) throw error;
+    }
+  };
   if (
     !items.some((i) => i.relationships?.appStoreVersion?.data?.id === versionId)
   )
-    await api.request("/reviewSubmissionItems", "POST", {
-      data: {
-        type: "reviewSubmissionItems",
-        relationships: {
-          reviewSubmission: {
-            data: { type: "reviewSubmissions", id: submission.id },
-          },
-          appStoreVersion: {
-            data: { type: "appStoreVersions", id: versionId },
-          },
-        },
-      },
+    await addItem({
+      appStoreVersion: { data: { type: "appStoreVersions", id: versionId } },
     });
   // In-app purchases go into the same review submission as the version:
   // Apple requires an app's first purchases to be reviewed together with a
@@ -1161,17 +1173,9 @@ export async function applyListing(
     );
     if (version) {
       if (!inSubmission.has(version.id))
-        await api.request("/reviewSubmissionItems", "POST", {
-          data: {
-            type: "reviewSubmissionItems",
-            relationships: {
-              reviewSubmission: {
-                data: { type: "reviewSubmissions", id: submission.id },
-              },
-              inAppPurchaseVersion: {
-                data: { type: "inAppPurchaseVersions", id: version.id },
-              },
-            },
+        await addItem({
+          inAppPurchaseVersion: {
+            data: { type: "inAppPurchaseVersions", id: version.id },
           },
         });
     } else {

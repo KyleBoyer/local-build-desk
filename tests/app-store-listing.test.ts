@@ -429,3 +429,63 @@ it("keeps working on a version already in an unsent review submission", async ()
   expect(plan.versionId).toBe("version");
   expect(plan.versionState).toBe("READY_FOR_REVIEW");
 });
+
+it("finishes a submission an earlier run left as a draft", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes, request } = apple({
+    screenshots: [a, b],
+    contact: true,
+    versionState: "READY_FOR_REVIEW",
+  });
+  const fallback = request.getMockImplementation()!;
+  request.mockImplementation(
+    async (path: string, method = "GET", body?: any) => {
+      if (method === "GET" && path.startsWith("/reviewSubmissions?"))
+        return {
+          data: [{ id: "draft", attributes: { state: "READY_FOR_REVIEW" } }],
+        };
+      if (
+        method === "GET" &&
+        path.startsWith("/reviewSubmissions/draft/items")
+      ) {
+        // Without include=, Apple returns relationship links but no ids.
+        expect(path).toContain("include=appStoreVersion,inAppPurchaseVersion");
+        return {
+          data: [
+            {
+              id: "item",
+              relationships: { appStoreVersion: { data: { id: "version" } } },
+            },
+          ],
+        };
+      }
+      if (method === "POST" && path === "/reviewSubmissionItems") {
+        writes.push({ method, path, body });
+        if (body.data.relationships.inAppPurchaseVersion)
+          throw new Error(
+            "Apple 409: inAppPurchaseVersion was already added to this reviewSubmission.",
+          );
+        return { data: { id: "item2" } };
+      }
+      return fallback(path, method, body);
+    },
+  );
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  const result = await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => undefined,
+  });
+  expect(result.submitted).toBe(true);
+  const calls = writes.map((w) => `${w.method} ${w.path}`);
+  // No new draft, no second copy of the version, and the purchase that was
+  // already in it doesn't stop the submission.
+  expect(calls.filter((c) => c === "POST /reviewSubmissions")).toEqual([]);
+  expect(calls.slice(-2)).toEqual([
+    "POST /reviewSubmissionItems",
+    "PATCH /reviewSubmissions/draft",
+  ]);
+});
