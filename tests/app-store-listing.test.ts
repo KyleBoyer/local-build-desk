@@ -47,13 +47,15 @@ function listing(extra: Record<string, unknown> = {}) {
 }
 
 /** An in-memory App Store Connect with a first version in draft. */
-function apple(options: { screenshots?: string[]; contact?: boolean } = {}) {
+function apple(
+  options: { screenshots?: string[]; contact?: boolean; state?: string } = {},
+) {
   const writes: { method: string; path: string; body?: any }[] = [];
   const shots = (options.screenshots ?? []).map((checksum, i) => ({
     id: `shot${i}`,
     attributes: {
       sourceFileChecksum: checksum,
-      assetDeliveryState: { state: "COMPLETE" },
+      assetDeliveryState: { state: options.state ?? "COMPLETE" },
     },
   }));
   let uploaded: any[] = [];
@@ -92,7 +94,7 @@ function apple(options: { screenshots?: string[]; contact?: boolean } = {}) {
         }
         if (path === "/reviewSubmissions")
           return { data: { id: "submission" } };
-        return { data: { id: "created" } };
+        return { data: { id: "created", attributes: {} } };
       }
       const route = path.split("?")[0];
       if (route === "/apps") return { data: [{ id: "app", attributes: {} }] };
@@ -173,6 +175,15 @@ function apple(options: { screenshots?: string[]; contact?: boolean } = {}) {
           ],
         };
       if (route.startsWith("/appInfos/info/")) return { data: null };
+      if (route === "/v2/inAppPurchases/created/pricePoints")
+        return {
+          data: [
+            { id: "p1", attributes: { customerPrice: "0.99" } },
+            { id: "p2", attributes: { customerPrice: "1.99" } },
+          ],
+        };
+      if (route === "/territories")
+        return { data: [{ id: "USA" }, { id: "CAN" }] };
       throw new Error(`unexpected ${path}`);
     },
   );
@@ -302,4 +313,82 @@ it("submits the version and its in-app purchases for review", async () => {
     "PATCH /reviewSubmissions/submission",
   ]);
   expect(writes.at(-1)!.body.data.attributes).toEqual({ submitted: true });
+});
+
+it("doesn't resend screenshots Apple is still processing, and waits for them", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes } = apple({
+    screenshots: [a, b],
+    state: "UPLOAD_COMPLETE",
+  });
+  const loaded = await loadListing(listing());
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.screenshots).toMatchObject({
+    keep: true,
+    processing: true,
+    upload: [],
+  });
+  expect(plan.blockers).toContainEqual(expect.stringMatching(/processing/));
+  const log = vi.fn();
+  const wait = vi.fn(async () => undefined);
+  await applyListing(api, plan, loaded, { log, wait });
+  expect(writes.some((w) => w.path.includes("appScreenshot"))).toBe(false);
+  expect(wait).toHaveBeenCalledTimes(100);
+  expect(log).toHaveBeenCalledWith(expect.stringMatching(/still processing/));
+});
+
+it("creates a missing in-app purchase from its product file", async () => {
+  png("a.png", 1320, 2868, 1);
+  png("b.png", 1320, 2868, 2);
+  png("iap.png", 1320, 2868, 3);
+  writeFileSync(
+    join(dir, "hints.json"),
+    JSON.stringify({
+      productId: "com.example.hints",
+      type: "CONSUMABLE",
+      appleReferenceName: "10 Hints",
+      displayName: "10 Hints",
+      appleDescription: "Ten more hints.",
+      applePrice: "0.99",
+      appleReviewScreenshot: "iap.png",
+      googleDescription: "ignored here",
+    }),
+  );
+  const { api, writes } = apple();
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full", "hints.json"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.inAppPurchases).toEqual([
+    { productId: "com.example.full", id: "iap", state: "READY_TO_SUBMIT" },
+    { productId: "com.example.hints", create: true },
+  ]);
+  expect(plan.blockers.some((b) => b.includes("com.example.hints"))).toBe(
+    false,
+  );
+  const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+  await applyListing(api, plan, loaded, {
+    fetcher: fetcher as any,
+    wait: async () => undefined,
+  });
+  const created = writes.filter((w) => /inAppPurchase|^\/v2\//.test(w.path));
+  expect(created.map((w) => `${w.method} ${w.path}`)).toEqual([
+    "POST /v2/inAppPurchases",
+    "POST /inAppPurchaseLocalizations",
+    "POST /inAppPurchasePriceSchedules",
+    "POST /inAppPurchaseAvailabilities",
+    "POST /inAppPurchaseAppStoreReviewScreenshots",
+    "PATCH /inAppPurchaseAppStoreReviewScreenshots/created",
+  ]);
+  expect(created[0]!.body.data.attributes).toMatchObject({
+    productId: "com.example.hints",
+    inAppPurchaseType: "CONSUMABLE",
+  });
+  expect(
+    created[2]!.body.included[0].relationships.inAppPurchasePricePoint.data.id,
+  ).toBe("p1");
+  expect(
+    created[3]!.body.data.relationships.availableTerritories.data,
+  ).toHaveLength(2);
 });

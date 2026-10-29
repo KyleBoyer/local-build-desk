@@ -63,7 +63,8 @@ export class AppleAPI {
       let networkError: unknown;
       try {
         response = await this.fetcher(
-          `https://api.appstoreconnect.apple.com/v1${path}`,
+          // Most resources are v1; a few (in-app purchases) live under /v2/.
+          `https://api.appstoreconnect.apple.com${path.startsWith("/v2/") ? "" : "/v1"}${path}`,
           {
             method,
             headers: {

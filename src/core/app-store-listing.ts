@@ -45,11 +45,34 @@ export const listingSchema = z
         notes: text(4000),
       })
       .optional(),
-    /** In-app purchase product IDs to send to review with this version. */
+    /**
+     * In-app purchases to send to review with this version: product IDs, or
+     * product JSON files (relative to the listing) that can create them.
+     */
     inAppPurchases: z.array(z.string()).optional(),
   })
   .loose();
 export type Listing = z.infer<typeof listingSchema>;
+
+/** An in-app purchase definition, enough to create it in App Store Connect. */
+export const productSchema = z
+  .object({
+    productId: z.string(),
+    type: z.enum(["CONSUMABLE", "NON_CONSUMABLE"]),
+    appleReferenceName: z.string().max(64),
+    displayName: z.string().max(30),
+    appleDescription: z.string().max(45),
+    appleReviewNotes: text(4000),
+    /** US price in dollars, such as "0.99"; other territories follow Apple's equalization. */
+    applePrice: z.string().regex(/^\d+\.\d\d$/),
+    /** PNG of the purchase in the app, for App Review (relative to the product file). */
+    appleReviewScreenshot: z.string(),
+    familySharable: z.boolean().optional(),
+  })
+  .loose();
+export type Product = z.infer<typeof productSchema> & {
+  screenshot: { path: string; name: string; size: number; checksum: string };
+};
 
 export interface Screenshot {
   path: string;
@@ -148,7 +171,37 @@ export async function loadListing(path: string) {
     "SCREENSHOT_SIZE",
     "Use one screenshot size per listing.",
   );
-  return { listing, screenshots };
+  const products: Product[] = [];
+  const productIds: string[] = [];
+  for (const entry of listing.inAppPurchases ?? []) {
+    if (!entry.endsWith(".json")) {
+      productIds.push(entry);
+      continue;
+    }
+    const file = resolve(dirname(path), entry);
+    const parsed = productSchema.safeParse(
+      JSON.parse(await readFile(file, "utf8")),
+    );
+    invariant(
+      parsed.success,
+      "PRODUCT_INVALID",
+      `Product ${entry}: ${parsed.error?.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; ")}`,
+    );
+    const shot = resolve(dirname(file), parsed.data.appleReviewScreenshot);
+    const data = await readFile(shot);
+    pngSize(data);
+    products.push({
+      ...parsed.data,
+      screenshot: {
+        path: shot,
+        name: shot.split("/").pop()!,
+        size: data.length,
+        checksum: createHash("md5").update(data).digest("hex"),
+      },
+    });
+    productIds.push(parsed.data.productId);
+  }
+  return { listing, screenshots, products, productIds };
 }
 
 async function all(api: AppleAPI, path: string) {
@@ -161,11 +214,14 @@ async function all(api: AppleAPI, path: string) {
     const url = new URL(next);
     invariant(
       url.origin === "https://api.appstoreconnect.apple.com" &&
-        url.pathname.startsWith("/v1/"),
+        /^\/v[12]\//.test(url.pathname),
       "APPLE_PAGE",
       "Invalid Apple pagination link.",
     );
-    path = url.pathname.slice(3) + url.search;
+    // AppleAPI adds /v1 itself; /v2/ paths are passed whole.
+    path = url.pathname.startsWith("/v1/")
+      ? url.pathname.slice(3) + url.search
+      : url.pathname + url.search;
   }
   return items;
 }
@@ -201,12 +257,21 @@ export interface ListingPlan {
   contentRights?: string;
   screenshots: {
     displayType?: string;
+    setId?: string;
+    /** Uploaded and matching, but Apple hasn't finished processing them. */
+    processing: boolean;
     keep: boolean;
     current: number;
     upload: string[];
   };
   build?: { id: string; number: string; attached: boolean };
-  inAppPurchases: { productId: string; id?: string; state?: string }[];
+  inAppPurchases: {
+    productId: string;
+    id?: string;
+    state?: string;
+    /** Missing, and the listing defines it: `--apply` creates it. */
+    create?: boolean;
+  }[];
   /** Things App Review will refuse; an API key can't fix some of them. */
   blockers: string[];
   /** Things to check by hand in App Store Connect. */
@@ -218,7 +283,12 @@ export async function listingPlan(
   api: AppleAPI,
   bundleId: string,
   version: string,
-  { listing, screenshots }: Awaited<ReturnType<typeof loadListing>>,
+  {
+    listing,
+    screenshots,
+    products,
+    productIds,
+  }: Awaited<ReturnType<typeof loadListing>>,
   buildNumber?: string,
 ): Promise<ListingPlan> {
   const app = await api.app(bundleId);
@@ -367,6 +437,7 @@ export async function listingPlan(
 
   // Screenshots: replaced as a set, and only if anything differs.
   const displayType = screenshots[0]?.displayType;
+  let setId: string | undefined;
   if (versionLocalization && displayType) {
     const set = (
       await all(
@@ -374,19 +445,24 @@ export async function listingPlan(
         `/appStoreVersionLocalizations/${versionLocalization.id}/appScreenshotSets?limit=50`,
       )
     ).find((s) => s.attributes.screenshotDisplayType === displayType);
+    setId = set?.id;
     if (set)
       currentShots = await all(
         api,
         `/appScreenshotSets/${set.id}/appScreenshots?limit=50`,
       );
   }
+  const shotState = (s: any) => s.attributes.assetDeliveryState?.state;
+  // Matching uploads still being processed count as done; a rerun shouldn't resend them.
   const keep =
     currentShots.length === screenshots.length &&
     currentShots.every(
       (s, i) =>
         s.attributes.sourceFileChecksum === screenshots[i]!.checksum &&
-        s.attributes.assetDeliveryState?.state === "COMPLETE",
+        shotState(s) !== "FAILED",
     );
+  const processing =
+    keep && currentShots.some((s) => shotState(s) !== "COMPLETE");
 
   // The build: the one asked for, or the newest processed build of this version.
   let build: ListingPlan["build"];
@@ -406,12 +482,17 @@ export async function listingPlan(
     };
 
   // In-app purchases to review alongside.
-  const iaps = listing.inAppPurchases?.length
+  const iaps = productIds.length
     ? await all(api, `/apps/${app.id}/inAppPurchasesV2?limit=200`)
     : [];
-  const inAppPurchases = (listing.inAppPurchases ?? []).map((productId) => {
+  const inAppPurchases = productIds.map((productId) => {
     const found = iaps.find((p) => p.attributes.productId === productId);
-    return { productId, id: found?.id, state: found?.attributes.state };
+    if (!found)
+      return {
+        productId,
+        create: products.some((p) => p.productId === productId),
+      };
+    return { productId, id: found.id, state: found.attributes.state };
   });
 
   const blockers: string[] = [];
@@ -423,6 +504,7 @@ export async function listingPlan(
     );
   if (!screenshots.length && !currentShots.length)
     blockers.push("No iPhone screenshots.");
+  if (processing) blockers.push("Apple is still processing the screenshots.");
   const after = (scope: string, field: string, current: any) =>
     changes.find((c) => c.scope === scope && c.field === field)?.after ??
     current;
@@ -460,9 +542,10 @@ export async function listingPlan(
       "App Review contact details are incomplete (review.contactEmail, review.contactPhone).",
     );
   for (const iap of inAppPurchases) {
+    if (iap.create) continue;
     if (!iap.id)
       blockers.push(
-        `In-app purchase ${iap.productId} doesn't exist in App Store Connect.`,
+        `In-app purchase ${iap.productId} doesn't exist in App Store Connect; add a product JSON to create it.`,
       );
     else if (
       ![
@@ -492,6 +575,8 @@ export async function listingPlan(
     contentRights,
     screenshots: {
       displayType,
+      setId,
+      processing,
       keep: keep || !screenshots.length,
       current: currentShots.length,
       upload: keep ? [] : screenshots.map((s) => s.name),
@@ -508,11 +593,158 @@ export async function listingPlan(
   };
 }
 
+/** Sends a file to the upload operations Apple handed back for a reserved asset. */
+async function uploadParts(
+  fetcher: typeof fetch,
+  operations: any[] | undefined,
+  file: { path: string; name: string },
+) {
+  const data = await readFile(file.path);
+  for (const op of operations ?? []) {
+    const response = await fetcher(op.url, {
+      method: op.method,
+      headers: Object.fromEntries(
+        (op.requestHeaders ?? []).map((h: any) => [h.name, h.value]),
+      ),
+      body: data.subarray(op.offset, op.offset + op.length),
+    });
+    invariant(
+      response.ok,
+      "SCREENSHOT_UPLOAD",
+      `Uploading ${file.name} failed (${response.status}).`,
+    );
+  }
+}
+
+/**
+ * Creates an in-app purchase with everything App Review needs: a localization,
+ * a US price (other territories equalized by Apple), availability everywhere
+ * the app is, and the review screenshot.
+ */
+export async function createInAppPurchase(
+  api: AppleAPI,
+  appId: string,
+  product: Product,
+  locale: string,
+  fetcher: typeof fetch = fetch,
+) {
+  const id = (
+    await api.request("/v2/inAppPurchases", "POST", {
+      data: {
+        type: "inAppPurchases",
+        attributes: {
+          name: product.appleReferenceName,
+          productId: product.productId,
+          inAppPurchaseType: product.type,
+          reviewNote: product.appleReviewNotes,
+          familySharable: product.familySharable ?? false,
+        },
+        relationships: { app: { data: { type: "apps", id: appId } } },
+      },
+    })
+  ).data.id as string;
+  await api.request("/inAppPurchaseLocalizations", "POST", {
+    data: {
+      type: "inAppPurchaseLocalizations",
+      attributes: {
+        locale,
+        name: product.displayName,
+        description: product.appleDescription,
+      },
+      relationships: {
+        inAppPurchaseV2: { data: { type: "inAppPurchases", id } },
+      },
+    },
+  });
+  const point = (
+    await all(
+      api,
+      `/v2/inAppPurchases/${id}/pricePoints?filter[territory]=USA&limit=200`,
+    )
+  ).find((p) => p.attributes.customerPrice === product.applePrice);
+  invariant(
+    point,
+    "IAP_PRICE",
+    `Apple has no US price point of $${product.applePrice} for ${product.productId}.`,
+  );
+  await api.request("/inAppPurchasePriceSchedules", "POST", {
+    data: {
+      type: "inAppPurchasePriceSchedules",
+      relationships: {
+        inAppPurchase: { data: { type: "inAppPurchases", id } },
+        baseTerritory: { data: { type: "territories", id: "USA" } },
+        manualPrices: {
+          data: [{ type: "inAppPurchasePrices", id: "${price}" }],
+        },
+      },
+    },
+    included: [
+      {
+        type: "inAppPurchasePrices",
+        id: "${price}",
+        attributes: { startDate: null },
+        relationships: {
+          inAppPurchasePricePoint: {
+            data: { type: "inAppPurchasePricePoints", id: point.id },
+          },
+        },
+      },
+    ],
+  });
+  const territories = await all(api, "/territories?limit=200");
+  await api.request("/inAppPurchaseAvailabilities", "POST", {
+    data: {
+      type: "inAppPurchaseAvailabilities",
+      attributes: { availableInNewTerritories: true },
+      relationships: {
+        inAppPurchase: { data: { type: "inAppPurchases", id } },
+        availableTerritories: {
+          data: territories.map((t) => ({ type: "territories", id: t.id })),
+        },
+      },
+    },
+  });
+  const reserved = (
+    await api.request("/inAppPurchaseAppStoreReviewScreenshots", "POST", {
+      data: {
+        type: "inAppPurchaseAppStoreReviewScreenshots",
+        attributes: {
+          fileName: product.screenshot.name,
+          fileSize: product.screenshot.size,
+        },
+        relationships: {
+          inAppPurchaseV2: { data: { type: "inAppPurchases", id } },
+        },
+      },
+    })
+  ).data;
+  await uploadParts(
+    fetcher,
+    reserved.attributes.uploadOperations,
+    product.screenshot,
+  );
+  await api.request(
+    `/inAppPurchaseAppStoreReviewScreenshots/${reserved.id}`,
+    "PATCH",
+    {
+      data: {
+        type: "inAppPurchaseAppStoreReviewScreenshots",
+        id: reserved.id,
+        attributes: {
+          uploaded: true,
+          sourceFileChecksum: product.screenshot.checksum,
+        },
+      },
+    },
+  );
+  return id;
+}
+
 /** Writes a plan from `listingPlan`. Submits for review only when asked. */
 export async function applyListing(
   api: AppleAPI,
   plan: ListingPlan,
-  { screenshots }: Awaited<ReturnType<typeof loadListing>>,
+  { screenshots, products }: Awaited<ReturnType<typeof loadListing>>,
   options: {
     submit?: boolean;
     fetcher?: typeof fetch;
@@ -698,6 +930,7 @@ export async function applyListing(
   }
 
   // Screenshots.
+  let setId = plan.screenshots.processing ? plan.screenshots.setId : undefined;
   if (!plan.screenshots.keep && screenshots.length) {
     const displayType = plan.screenshots.displayType!;
     let set = (
@@ -743,21 +976,7 @@ export async function applyListing(
           },
         })
       ).data;
-      const data = await readFile(shot.path);
-      for (const op of reserved.attributes.uploadOperations ?? []) {
-        const response = await fetcher(op.url, {
-          method: op.method,
-          headers: Object.fromEntries(
-            (op.requestHeaders ?? []).map((h: any) => [h.name, h.value]),
-          ),
-          body: data.subarray(op.offset, op.offset + op.length),
-        });
-        invariant(
-          response.ok,
-          "SCREENSHOT_UPLOAD",
-          `Uploading ${shot.name} failed (${response.status}).`,
-        );
-      }
+      await uploadParts(fetcher, reserved.attributes.uploadOperations, shot);
       await api.request(`/appScreenshots/${reserved.id}`, "PATCH", {
         data: {
           type: "appScreenshots",
@@ -767,25 +986,25 @@ export async function applyListing(
       });
       log(`Screenshot ${shot.name}`);
     }
-    // Apple processes uploads asynchronously; review needs them complete.
-    for (let tries = 0; ; tries++) {
-      const states = (
-        await all(api, `/appScreenshotSets/${set.id}/appScreenshots?limit=50`)
-      ).map((s) => s.attributes.assetDeliveryState?.state);
-      invariant(
-        !states.includes("FAILED"),
-        "SCREENSHOT_PROCESSING",
-        "Apple couldn't process a screenshot.",
-      );
-      if (states.every((s) => s === "COMPLETE")) break;
-      invariant(
-        tries < 60,
-        "SCREENSHOT_PROCESSING",
-        "Screenshots are still processing at Apple. Run again shortly.",
-      );
-      await wait(3000);
-    }
+    setId = set.id;
   }
+
+  // Apple processes uploads asynchronously; review needs them complete.
+  let processed = !setId;
+  for (let tries = 0; setId && tries < 100; tries++) {
+    const states = (
+      await all(api, `/appScreenshotSets/${setId}/appScreenshots?limit=50`)
+    ).map((s) => s.attributes.assetDeliveryState?.state);
+    invariant(
+      !states.includes("FAILED"),
+      "SCREENSHOT_PROCESSING",
+      "Apple couldn't process a screenshot.",
+    );
+    if ((processed = states.every((s) => s === "COMPLETE"))) break;
+    await wait(3000);
+  }
+  if (!processed)
+    log("Apple is still processing the screenshots; run again to finish.");
 
   // The build.
   if (plan.build && !plan.build.attached) {
@@ -799,16 +1018,50 @@ export async function applyListing(
     log(`Build ${plan.build.number} attached`);
   }
 
+  // In-app purchases the listing defines but Apple doesn't have yet.
+  for (const iap of plan.inAppPurchases) {
+    if (!iap.create) continue;
+    const product = products.find((p) => p.productId === iap.productId)!;
+    await createInAppPurchase(api, plan.appId, product, plan.locale, fetcher);
+    log(`Created in-app purchase ${iap.productId} at $${product.applePrice}`);
+  }
+
   if (!options.submit) return { versionId, submitted: false };
 
   invariant(
-    !plan.blockers.length,
-    "LISTING_BLOCKED",
-    `Not submitting for review: ${plan.blockers.join(" ")}`,
+    processed,
+    "SCREENSHOT_PROCESSING",
+    "Not submitting for review: Apple is still processing the screenshots. Run again shortly.",
   );
-  // In-app purchases ride along with the version's submission.
-  for (const iap of plan.inAppPurchases) {
-    if (iap.state !== "READY_TO_SUBMIT") continue;
+  const blockers = plan.blockers.filter(
+    (b) => !b.includes("processing the screenshots"),
+  );
+  invariant(
+    !blockers.length,
+    "LISTING_BLOCKED",
+    `Not submitting for review: ${blockers.join(" ")}`,
+  );
+  // In-app purchases ride along with the version's submission. Ones created
+  // just now need a fresh look at their state.
+  const iaps = plan.inAppPurchases.length
+    ? await all(api, `/apps/${plan.appId}/inAppPurchasesV2?limit=200`)
+    : [];
+  for (const { productId } of plan.inAppPurchases) {
+    const iap = iaps.find((p) => p.attributes.productId === productId);
+    invariant(
+      iap,
+      "IAP_MISSING",
+      `In-app purchase ${productId} isn't in App Store Connect.`,
+    );
+    const state = iap.attributes.state;
+    if (state !== "READY_TO_SUBMIT") {
+      invariant(
+        ["WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED"].includes(state),
+        "IAP_NOT_READY",
+        `Not submitting for review: in-app purchase ${productId} is ${state}.`,
+      );
+      continue;
+    }
     await api.request("/inAppPurchaseSubmissions", "POST", {
       data: {
         type: "inAppPurchaseSubmissions",
@@ -817,7 +1070,7 @@ export async function applyListing(
         },
       },
     });
-    log(`In-app purchase ${iap.productId} added to review`);
+    log(`In-app purchase ${productId} added to review`);
   }
   const open = (
     await all(
