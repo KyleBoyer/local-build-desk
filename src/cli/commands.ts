@@ -609,6 +609,11 @@ export async function runCLI(
         submit: v["submit-for-review"],
         log: (line) => write(line + "\n"),
       });
+      // A submitted version is no longer editable, so there's nothing left to check.
+      if (result.submitted) {
+        output(result);
+        return 0;
+      }
       const after = await listingPlan(
         api,
         bundleId,
