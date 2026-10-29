@@ -169,7 +169,7 @@ it("release workflow isolates signing from PRs and publishes only the verified A
     workflow.jobs.sign.steps.find(
       (step: any) => step.name === "Build, sign and notarize app",
     ).run,
-  ).toBe("npm run release:mac");
+  ).toBe("npm run release:mac || (sleep 60 && npm run release:mac)");
   expect(
     workflow.jobs.sign.steps.find(
       (step: any) => step.name === "Remove credentials and temporary keychain",
