@@ -352,3 +352,29 @@ test("interrupting the owning command cancels its job while another client finis
     await h.cleanup();
   }
 });
+
+test("closing a temporary account window does not terminate the active CLI owner", async () => {
+  const h = await harness();
+  try {
+    const owner = h.launch(
+      ["build", "--project", join(h.root, "first"), "--platform", "ios"],
+      {
+        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+          FIXTURE_CLOSE_AUX_WINDOW: "true",
+        }),
+      },
+    );
+    expect(await owner.exit).toBe(0);
+    expect(owner.output()).toContain("fixture-auxiliary-closed");
+    const store = new Store(join(h.root, "data"));
+    try {
+      expect(store.list<Job>("jobs").map((job) => job.status)).toEqual([
+        "succeeded",
+      ]);
+    } finally {
+      store.close();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});

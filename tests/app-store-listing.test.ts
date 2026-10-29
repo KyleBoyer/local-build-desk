@@ -489,3 +489,259 @@ it("finishes a submission an earlier run left as a draft", async () => {
     "PATCH /reviewSubmissions/draft",
   ]);
 });
+
+it("groups iPhone and iPad screenshots, including landscape sizes", async () => {
+  png("a.png", 1320, 2868);
+  png("tablet.png", 2752, 2064);
+  const loaded = await loadListing(
+    listing({ screenshots: ["a.png", "tablet.png"] }),
+  );
+  expect(loaded.screenshots.map((s) => s.displayType)).toEqual([
+    "APP_IPHONE_67",
+    "APP_IPAD_PRO_3GEN_129",
+  ]);
+  expect(displayTypeFor(2048, 2732)).toBe("APP_IPAD_PRO_3GEN_129");
+  const { api } = apple();
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.screenshots.sets?.map((s) => s.upload)).toEqual([
+    ["a.png"],
+    ["tablet.png"],
+  ]);
+  expect(plan.blockers).not.toContain("No iPhone screenshots.");
+});
+
+it("keeps matching iPhone images while replacing only the iPad set", async () => {
+  const phone = png("a.png", 1320, 2868);
+  const tablet = png("tablet.png", 2064, 2752);
+  const { api, writes } = apple({ screenshots: [phone] });
+  const original = api.request.bind(api);
+  api.request = vi.fn(
+    async (path: string, method = "GET", body?: any): Promise<any> => {
+      if (method === "GET" && path.includes("/appScreenshotSets?"))
+        return {
+          data: [
+            {
+              id: "set",
+              attributes: { screenshotDisplayType: "APP_IPHONE_67" },
+            },
+            {
+              id: "tablet",
+              attributes: { screenshotDisplayType: "APP_IPAD_PRO_3GEN_129" },
+            },
+          ],
+        };
+      if (method === "GET" && path.startsWith("/appScreenshotSets/tablet/"))
+        return {
+          data: [
+            {
+              id: "oldTablet",
+              attributes: {
+                sourceFileChecksum: writes.some(
+                  (w) => w.method === "POST" && w.path === "/appScreenshots",
+                )
+                  ? tablet
+                  : "old",
+                assetDeliveryState: { state: "COMPLETE" },
+              },
+            },
+          ],
+        };
+      return original(path, method, body);
+    },
+  ) as any;
+  const loaded = await loadListing(
+    listing({ screenshots: ["a.png", "tablet.png"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.screenshots.sets?.map((s) => s.keep)).toEqual([true, false]);
+  await applyListing(api, plan, loaded, {
+    fetcher: (async () => new Response(null)) as any,
+    wait: async () => undefined,
+  });
+  expect(
+    writes.filter((w) => w.method === "DELETE").map((w) => w.path),
+  ).toEqual(["/appScreenshots/oldTablet"]);
+  const uploaded = writes.filter(
+    (w) => w.method === "POST" && w.path === "/appScreenshots",
+  );
+  expect(uploaded).toHaveLength(1);
+  expect(uploaded[0]!.body.data.relationships.appScreenshotSet.data.id).toBe(
+    "tablet",
+  );
+});
+
+it("caps screenshots per display type and does not mistake iPad for iPhone", async () => {
+  png("tablet.png", 2064, 2752);
+  await expect(
+    loadListing(listing({ screenshots: Array(11).fill("tablet.png") })),
+  ).rejects.toThrow(/at most 10/);
+  const { api } = apple();
+  const loaded = await loadListing(listing({ screenshots: ["tablet.png"] }));
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.blockers).toContain("No iPhone screenshots.");
+});
+
+it("reuses existing phone screenshots when the listing only updates tablet images", async () => {
+  png("tablet.png", 2064, 2752);
+  const { api } = apple({ screenshots: ["existing-phone"] });
+  const plan = await listingPlan(
+    api,
+    "com.example.app",
+    "1.0",
+    await loadListing(listing({ screenshots: ["tablet.png"] })),
+  );
+  expect(plan.blockers).not.toContain("No iPhone screenshots.");
+});
+
+it("waits for a matching in-flight iPad set without resending either family", async () => {
+  const phone = png("a.png", 1320, 2868);
+  const tablet = png("tablet.png", 2064, 2752);
+  const { api, writes } = apple({ screenshots: [phone], contact: true });
+  const original = api.request.bind(api);
+  let ready = false;
+  api.request = vi.fn(
+    async (path: string, method = "GET", body?: any): Promise<any> => {
+      if (method === "GET" && path.includes("/appScreenshotSets?"))
+        return {
+          data: [
+            {
+              id: "set",
+              attributes: { screenshotDisplayType: "APP_IPHONE_67" },
+            },
+            {
+              id: "tablet",
+              attributes: { screenshotDisplayType: "APP_IPAD_PRO_3GEN_129" },
+            },
+          ],
+        };
+      if (method === "GET" && path.startsWith("/appScreenshotSets/tablet/"))
+        return {
+          data: [
+            {
+              id: "tabletShot",
+              attributes: {
+                sourceFileChecksum: tablet,
+                assetDeliveryState: {
+                  state: ready ? "COMPLETE" : "UPLOAD_COMPLETE",
+                },
+              },
+            },
+          ],
+        };
+      return original(path, method, body);
+    },
+  ) as any;
+  const loaded = await loadListing(
+    listing({ screenshots: ["a.png", "tablet.png"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.screenshots.keep).toBe(true);
+  expect(plan.screenshots.processing).toBe(true);
+  const result = await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => {
+      ready = true;
+    },
+  });
+  expect(result.submitted).toBe(true);
+  expect(
+    writes.some((w) => w.path === "/appScreenshots" || w.method === "DELETE"),
+  ).toBe(false);
+});
+
+it("does not treat an empty eventually-consistent screenshot response as processed", async () => {
+  png("a.png", 1320, 2868);
+  png("b.png", 1320, 2868);
+  const { api, writes } = apple({ contact: true });
+  const original = api.request.bind(api);
+  let ready = false;
+  api.request = vi.fn(
+    async (path: string, method = "GET", body?: any): Promise<any> => {
+      if (
+        method === "GET" &&
+        path.startsWith("/appScreenshotSets/set/appScreenshots") &&
+        !ready &&
+        writes.some((w) => w.path === "/appScreenshots")
+      )
+        return { data: [] };
+      return original(path, method, body);
+    },
+  ) as any;
+  const loaded = await loadListing(listing());
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  const wait = vi.fn(async () => {
+    ready = true;
+  });
+  await applyListing(api, plan, loaded, {
+    submit: true,
+    wait,
+    fetcher: (async () => new Response(null)) as any,
+  });
+  expect(wait).toHaveBeenCalledTimes(1);
+});
+
+it("waits for Apple's missing in-flight checksum, then verifies the selected bytes", async () => {
+  const checksum = png("a.png", 1320, 2868);
+  const { api, writes } = apple({ contact: true });
+  const original = api.request.bind(api);
+  let ready = false;
+  api.request = vi.fn(
+    async (path: string, method = "GET", body?: any): Promise<any> => {
+      if (
+        method === "GET" &&
+        path.startsWith("/appScreenshotSets/set/appScreenshots")
+      )
+        return {
+          data: [
+            {
+              id: "pending",
+              attributes: {
+                fileName: "a.png",
+                fileSize: 64,
+                sourceFileChecksum: ready ? checksum : null,
+                assetDeliveryState: {
+                  state: ready ? "COMPLETE" : "UPLOAD_COMPLETE",
+                },
+              },
+            },
+          ],
+        };
+      return original(path, method, body);
+    },
+  ) as any;
+  const loaded = await loadListing(listing({ screenshots: ["a.png"] }));
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.screenshots.keep).toBe(true);
+  expect(plan.screenshots.processing).toBe(true);
+  await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => {
+      ready = true;
+    },
+  });
+  expect(
+    writes.some((w) => w.path === "/appScreenshots" || w.method === "DELETE"),
+  ).toBe(false);
+});
+
+it("does not overwrite a different set while Apple is processing it", async () => {
+  png("a.png", 1320, 2868);
+  const { api, writes } = apple({
+    screenshots: ["different-content"],
+    state: "UPLOAD_COMPLETE",
+    contact: true,
+  });
+  const loaded = await loadListing(listing({ screenshots: ["a.png"] }));
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  await expect(
+    applyListing(api, plan, loaded, { submit: true }),
+  ).rejects.toThrow(/pending uploads will not be deleted/);
+  expect(
+    writes.some(
+      (w) =>
+        w.path === "/appScreenshots" ||
+        w.method === "DELETE" ||
+        w.path === "/reviewSubmissions",
+    ),
+  ).toBe(false);
+});

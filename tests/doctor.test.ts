@@ -5,6 +5,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { iosPlatformCheck, doctor } from "../src/core/doctor";
 
+// Keep this platform-filter test independent of the host's available disk space.
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+  statfs: vi.fn(async () => ({ bavail: 100 * 1024 ** 2, bsize: 1024 })),
+}));
+
 it("distinguishes an installed SDK from an available matching iOS platform", () => {
   expect(iosPlatformCheck(undefined, []).status).toBe("error");
   expect(iosPlatformCheck("26.5", []).status).toBe("warning");

@@ -22,6 +22,15 @@ export async function buildLocal(ctx: any) {
   ctx.log("fixture-token " + (env.TOKEN ?? "none"));
   ctx.stage("compile");
   ctx.log("fixture-active " + ctx.job.id);
+  if (env.FIXTURE_CLOSE_AUX_WINDOW === "true") {
+    const auxiliary = new BrowserWindow({ show: false });
+    await auxiliary.loadURL(
+      "data:text/html,<title>Temporary account session</title>",
+    );
+    auxiliary.close();
+    await wait(50, undefined, { signal: ctx.signal });
+    ctx.log("fixture-auxiliary-closed");
+  }
   const waitForQueued = env.FIXTURE_WAIT_FOR_QUEUED === "true";
   if (env.FIXTURE_WAIT_FOR_SECOND === "true" || waitForQueued) {
     const deadline = Date.now() + 20000;
@@ -56,5 +65,5 @@ export async function buildLocal(ctx: any) {
   });
   if (env.FIXTURE_FAIL === "true") throw new Error("fixture requested failure");
 }
-import { app } from "electron";
+import { app, BrowserWindow } from "electron";
 import { setTimeout as wait } from "node:timers/promises";

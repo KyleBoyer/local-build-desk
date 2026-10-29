@@ -456,7 +456,10 @@ function startOwner() {
       app.exit(1);
     });
   app.on("window-all-closed", () => {
-    app.quit();
+    // CLI lifetime belongs to runCLI/finish, not its temporary sign-in pages.
+    // The Apple session's idle close must not terminate screenshot processing
+    // or other in-flight work with a misleading successful exit.
+    if (!cliArgs) app.quit();
   });
 }
 async function openBuild(jobId: string) {

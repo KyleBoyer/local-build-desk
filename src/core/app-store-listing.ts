@@ -43,8 +43,8 @@ export const listingSchema = z
     marketingUrl: z.url().optional(),
     whatsNew: text(4000),
     copyright: z.string().optional(),
-    /** iPhone screenshots, in order, relative to the listing file. */
-    screenshots: z.array(z.string()).max(10).optional(),
+    /** iPhone and iPad screenshots, ordered within each display type, relative to this file. */
+    screenshots: z.array(z.string()).max(100).optional(),
     review: z
       .object({
         contactFirstName: z.string().optional(),
@@ -132,6 +132,20 @@ const DISPLAY_TYPES: [string, [number, number][]][] = [
     ],
   ],
   ["APP_IPHONE_55", [[1242, 2208]]],
+  [
+    "APP_IPAD_PRO_3GEN_129",
+    [
+      [2064, 2752],
+      [2048, 2732],
+    ],
+  ],
+  [
+    "APP_IPAD_PRO_3GEN_11",
+    [
+      [1668, 2388],
+      [1668, 2420],
+    ],
+  ],
 ];
 
 export function displayTypeFor(width: number, height: number) {
@@ -168,7 +182,7 @@ export async function loadListing(path: string) {
     invariant(
       displayType,
       "SCREENSHOT_SIZE",
-      `${file} is ${width}×${height}, which isn't an App Store iPhone screenshot size. Use 1320×2868 for 6.9-inch displays.`,
+      `${file} is ${width}×${height}, which isn't a supported App Store screenshot size. Use 1320×2868 for iPhone or 2064×2752 for iPad.`,
     );
     screenshots.push({
       path: full,
@@ -180,12 +194,13 @@ export async function loadListing(path: string) {
       displayType,
     });
   }
-  const types = new Set(screenshots.map((s) => s.displayType));
-  invariant(
-    types.size <= 1,
-    "SCREENSHOT_SIZE",
-    "Use one screenshot size per listing.",
-  );
+  for (const type of new Set(screenshots.map((s) => s.displayType))) {
+    invariant(
+      screenshots.filter((s) => s.displayType === type).length <= 10,
+      "SCREENSHOT_SIZE",
+      `Use at most 10 screenshots per display type (${type}).`,
+    );
+  }
   const products: Product[] = [];
   const productIds: string[] = [];
   for (const entry of listing.inAppPurchases ?? []) {
@@ -259,6 +274,21 @@ export interface FieldChange {
   after: string;
 }
 
+export interface ScreenshotSetPlan {
+  existing?: {
+    name: string;
+    size?: number;
+    checksum?: string | null;
+    state?: string;
+  }[];
+  displayType: string;
+  setId?: string;
+  processing: boolean;
+  keep: boolean;
+  current: number;
+  upload: string[];
+}
+
 export interface ListingPlan {
   appId: string;
   version: string;
@@ -273,6 +303,7 @@ export interface ListingPlan {
   categories: Record<string, string>;
   contentRights?: string;
   screenshots: {
+    sets?: ScreenshotSetPlan[];
     displayType?: string;
     setId?: string;
     /** Uploaded and matching, but Apple hasn't finished processing them. */
@@ -416,7 +447,6 @@ export async function listingPlan(
   let versionLocalization: any;
   let reviewDetail: any;
   let attachedBuild: string | undefined;
-  let currentShots: any[] = [];
   if (target) {
     versionLocalization = (
       await all(
@@ -455,34 +485,74 @@ export async function listingPlan(
     diff("review", reviewDetail?.attributes, { ...contact, notes });
   }
 
-  // Screenshots: replaced as a set, and only if anything differs.
-  const displayType = screenshots[0]?.displayType;
-  let setId: string | undefined;
-  if (versionLocalization && displayType) {
-    const set = (
-      await all(
+  // Compare each display type independently. Never erase the iPhone set
+  // while replacing iPad images, or resend matching in-flight uploads.
+  const remoteSets = versionLocalization
+    ? await all(
         api,
         `/appStoreVersionLocalizations/${versionLocalization.id}/appScreenshotSets?limit=50`,
       )
-    ).find((s) => s.attributes.screenshotDisplayType === displayType);
-    setId = set?.id;
-    if (set)
-      currentShots = await all(
-        api,
-        `/appScreenshotSets/${set.id}/appScreenshots?limit=50`,
-      );
-  }
-  const shotState = (s: any) => s.attributes.assetDeliveryState?.state;
-  // Matching uploads still being processed count as done; a rerun shouldn't resend them.
-  const keep =
-    currentShots.length === screenshots.length &&
-    currentShots.every(
-      (s, i) =>
-        s.attributes.sourceFileChecksum === screenshots[i]!.checksum &&
-        shotState(s) !== "FAILED",
+    : [];
+  const screenshotSets: ScreenshotSetPlan[] = [];
+  for (const displayType of new Set(screenshots.map((s) => s.displayType))) {
+    const wanted = screenshots.filter((s) => s.displayType === displayType);
+    const set = remoteSets.find(
+      (s) => s.attributes.screenshotDisplayType === displayType,
     );
-  const processing =
-    keep && currentShots.some((s) => shotState(s) !== "COMPLETE");
+    const current = set
+      ? await all(api, `/appScreenshotSets/${set.id}/appScreenshots?limit=50`)
+      : [];
+    const state = (s: any) => s.attributes.assetDeliveryState?.state;
+    const pending = (s: any) => !["COMPLETE", "FAILED"].includes(state(s));
+    const keep =
+      current.length === wanted.length &&
+      current.every((s, i) => {
+        const expected = wanted[i]!;
+        return (
+          state(s) !== "FAILED" &&
+          (s.attributes.sourceFileChecksum === expected.checksum ||
+            // Apple may not expose the committed MD5 until processing finishes.
+            // Wait provisionally, then verify the final checksum before submission.
+            (!s.attributes.sourceFileChecksum &&
+              pending(s) &&
+              s.attributes.fileName === expected.name &&
+              Number(s.attributes.fileSize) === expected.size))
+        );
+      });
+    screenshotSets.push({
+      displayType,
+      setId: set?.id,
+      existing: current.map((s) => ({
+        name: s.attributes.fileName,
+        size: s.attributes.fileSize,
+        checksum: s.attributes.sourceFileChecksum,
+        state: s.attributes.assetDeliveryState?.state,
+      })),
+      keep,
+      processing: current.some(pending),
+      current: current.length,
+      upload: keep ? [] : wanted.map((s) => s.name),
+    });
+  }
+  const processing = screenshotSets.some((s) => s.processing);
+  const keep = screenshotSets.every((s) => s.keep);
+  const primarySet = screenshotSets[0];
+  let hasPhoneScreenshots = screenshots.some((s) =>
+    s.displayType.startsWith("APP_IPHONE_"),
+  );
+  if (!hasPhoneScreenshots) {
+    for (const set of remoteSets.filter((s) =>
+      s.attributes.screenshotDisplayType.startsWith("APP_IPHONE_"),
+    )) {
+      if (
+        (await all(api, `/appScreenshotSets/${set.id}/appScreenshots?limit=50`))
+          .length
+      ) {
+        hasPhoneScreenshots = true;
+        break;
+      }
+    }
+  }
 
   // The build: the one asked for, or the newest processed build of this version.
   let build: ListingPlan["build"];
@@ -522,8 +592,7 @@ export async function listingPlan(
         ? `Build ${buildNumber} of ${version} isn't processed in App Store Connect.`
         : `No processed build of ${version} in App Store Connect yet.`,
     );
-  if (!screenshots.length && !currentShots.length)
-    blockers.push("No iPhone screenshots.");
+  if (!hasPhoneScreenshots) blockers.push("No iPhone screenshots.");
   if (processing) blockers.push("Apple is still processing the screenshots.");
   const after = (scope: string, field: string, current: any) =>
     changes.find((c) => c.scope === scope && c.field === field)?.after ??
@@ -604,12 +673,13 @@ export async function listingPlan(
     categories,
     contentRights,
     screenshots: {
-      displayType,
-      setId,
+      sets: screenshotSets,
+      displayType: primarySet?.displayType,
+      setId: primarySet?.setId,
       processing,
-      keep: keep || !screenshots.length,
-      current: currentShots.length,
-      upload: keep ? [] : screenshots.map((s) => s.name),
+      keep,
+      current: screenshotSets.reduce((n, s) => n + s.current, 0),
+      upload: screenshotSets.flatMap((s) => s.upload),
     },
     build,
     inAppPurchases,
@@ -963,79 +1033,122 @@ export async function applyListing(
     log(`Review details: ${Object.keys(review).join(", ")}`);
   }
 
-  // Screenshots.
-  let setId = plan.screenshots.processing ? plan.screenshots.setId : undefined;
-  if (!plan.screenshots.keep && screenshots.length) {
-    const displayType = plan.screenshots.displayType!;
-    let set = (
-      await all(
-        api,
-        `/appStoreVersionLocalizations/${localizationId}/appScreenshotSets?limit=50`,
-      )
-    ).find((s) => s.attributes.screenshotDisplayType === displayType);
-    if (set)
-      for (const old of await all(
-        api,
-        `/appScreenshotSets/${set.id}/appScreenshots?limit=50`,
-      ))
-        await api.request(`/appScreenshots/${old.id}`, "DELETE");
-    else
-      set = (
-        await api.request("/appScreenshotSets", "POST", {
-          data: {
-            type: "appScreenshotSets",
-            attributes: { screenshotDisplayType: displayType },
-            relationships: {
-              appStoreVersionLocalization: {
-                data: {
-                  type: "appStoreVersionLocalizations",
-                  id: localizationId,
+  // Upload and wait for each family independently; leave unrelated sets alone.
+  let processed = true;
+  const sets =
+    plan.screenshots.sets ??
+    (plan.screenshots.displayType
+      ? [{ ...plan.screenshots, displayType: plan.screenshots.displayType }]
+      : []);
+  for (const planned of sets) {
+    const shots = screenshots.filter(
+      (s) => s.displayType === planned.displayType,
+    );
+    invariant(
+      !planned.processing || planned.keep,
+      "SCREENSHOT_PENDING",
+      "Apple is still processing an existing screenshot set that differs from this listing. Wait for it to finish, then preview again; pending uploads will not be deleted.",
+    );
+    let setId = planned.processing ? planned.setId : undefined;
+    if (!planned.keep && shots.length) {
+      const displayType = planned.displayType;
+      let set = (
+        await all(
+          api,
+          `/appStoreVersionLocalizations/${localizationId}/appScreenshotSets?limit=50`,
+        )
+      ).find((s) => s.attributes.screenshotDisplayType === displayType);
+      if (set)
+        for (const old of await all(
+          api,
+          `/appScreenshotSets/${set.id}/appScreenshots?limit=50`,
+        ))
+          await api.request(`/appScreenshots/${old.id}`, "DELETE");
+      else
+        set = (
+          await api.request("/appScreenshotSets", "POST", {
+            data: {
+              type: "appScreenshotSets",
+              attributes: { screenshotDisplayType: displayType },
+              relationships: {
+                appStoreVersionLocalization: {
+                  data: {
+                    type: "appStoreVersionLocalizations",
+                    id: localizationId,
+                  },
                 },
               },
             },
-          },
-        })
-      ).data;
-    for (const shot of screenshots) {
-      const reserved = (
-        await api.request("/appScreenshots", "POST", {
-          data: {
-            type: "appScreenshots",
-            attributes: { fileName: shot.name, fileSize: shot.size },
-            relationships: {
-              appScreenshotSet: {
-                data: { type: "appScreenshotSets", id: set.id },
+          })
+        ).data;
+      for (const shot of shots) {
+        const reserved = (
+          await api.request("/appScreenshots", "POST", {
+            data: {
+              type: "appScreenshots",
+              attributes: { fileName: shot.name, fileSize: shot.size },
+              relationships: {
+                appScreenshotSet: {
+                  data: { type: "appScreenshotSets", id: set.id },
+                },
               },
             },
+          })
+        ).data;
+        await uploadParts(fetcher, reserved.attributes.uploadOperations, shot);
+        await api.request(`/appScreenshots/${reserved.id}`, "PATCH", {
+          data: {
+            type: "appScreenshots",
+            id: reserved.id,
+            attributes: { uploaded: true, sourceFileChecksum: shot.checksum },
           },
-        })
-      ).data;
-      await uploadParts(fetcher, reserved.attributes.uploadOperations, shot);
-      await api.request(`/appScreenshots/${reserved.id}`, "PATCH", {
-        data: {
-          type: "appScreenshots",
-          id: reserved.id,
-          attributes: { uploaded: true, sourceFileChecksum: shot.checksum },
-        },
-      });
-      log(`Screenshot ${shot.name}`);
+        });
+        log(`Screenshot ${shot.name}`);
+      }
+      setId = set.id;
     }
-    setId = set.id;
-  }
 
-  // Apple processes uploads asynchronously; review needs them complete.
-  let processed = !setId;
-  for (let tries = 0; setId && tries < 100; tries++) {
-    const states = (
-      await all(api, `/appScreenshotSets/${setId}/appScreenshots?limit=50`)
-    ).map((s) => s.attributes.assetDeliveryState?.state);
-    invariant(
-      !states.includes("FAILED"),
-      "SCREENSHOT_PROCESSING",
-      "Apple couldn't process a screenshot.",
-    );
-    if ((processed = states.every((s) => s === "COMPLETE"))) break;
-    await wait(3000);
+    // Apple processes uploads asynchronously; review needs them complete.
+    let setProcessed = !setId;
+    const processingStarted = Date.now();
+    let lastProgress = "";
+    for (let tries = 0; setId && tries < 100; tries++) {
+      const delivered = await all(
+        api,
+        `/appScreenshotSets/${setId}/appScreenshots?limit=50`,
+      );
+      const states = delivered.map(
+        (s) => s.attributes.assetDeliveryState?.state,
+      );
+      invariant(
+        !states.includes("FAILED"),
+        "SCREENSHOT_PROCESSING",
+        "Apple couldn't process a screenshot.",
+      );
+      const complete = states.filter((s) => s === "COMPLETE").length;
+      if (
+        (setProcessed =
+          states.length === shots.length && complete === shots.length)
+      ) {
+        invariant(
+          delivered.every(
+            (s, i) => s.attributes.sourceFileChecksum === shots[i]!.checksum,
+          ),
+          "SCREENSHOT_CHANGED",
+          "Processed screenshots differ from the selected files. Preview again before submitting; no review request was sent.",
+        );
+        break;
+      }
+      const progress = `${complete}/${shots.length}`;
+      if (progress !== lastProgress || tries % 10 === 0) {
+        log(
+          `Apple screenshots (${planned.displayType}): ${progress} processed; ${Math.round((Date.now() - processingStarted) / 1000)}s elapsed. This can take a few minutes.`,
+        );
+        lastProgress = progress;
+      }
+      await wait(3000);
+    }
+    processed = processed && setProcessed;
   }
   if (!processed)
     log("Apple is still processing the screenshots; run again to finish.");
