@@ -1120,12 +1120,17 @@ export async function applyListing(
         },
       },
     });
-  // In-app purchases join the draft submission once the version is in it:
-  // Apple reviews an app's first purchases together with a version. Ones
+  // In-app purchases go into the same review submission as the version:
+  // Apple requires an app's first purchases to be reviewed together with a
+  // version. Each purchase's editable version becomes a submission item;
+  // purchases without versions fall back to a standalone submission. Ones
   // created just now need a fresh look at their state.
   const iaps = plan.inAppPurchases.length
     ? await all(api, `/apps/${plan.appId}/inAppPurchasesV2?limit=200`)
     : [];
+  const inSubmission = new Set(
+    items.map((i) => i.relationships?.inAppPurchaseVersion?.data?.id),
+  );
   for (const { productId } of plan.inAppPurchases) {
     const iap = iaps.find((p) => p.attributes.productId === productId);
     invariant(
@@ -1142,14 +1147,41 @@ export async function applyListing(
       );
       continue;
     }
-    await api.request("/inAppPurchaseSubmissions", "POST", {
-      data: {
-        type: "inAppPurchaseSubmissions",
-        relationships: {
-          inAppPurchaseV2: { data: { type: "inAppPurchases", id: iap.id } },
+    const version = (
+      await all(api, `/v2/inAppPurchases/${iap.id}/versions?limit=50`)
+    ).find((v) =>
+      [
+        "PREPARE_FOR_SUBMISSION",
+        "READY_FOR_REVIEW",
+        "REJECTED",
+        "DEVELOPER_REJECTED",
+      ].includes(v.attributes?.state),
+    );
+    if (version) {
+      if (!inSubmission.has(version.id))
+        await api.request("/reviewSubmissionItems", "POST", {
+          data: {
+            type: "reviewSubmissionItems",
+            relationships: {
+              reviewSubmission: {
+                data: { type: "reviewSubmissions", id: submission.id },
+              },
+              inAppPurchaseVersion: {
+                data: { type: "inAppPurchaseVersions", id: version.id },
+              },
+            },
+          },
+        });
+    } else {
+      await api.request("/inAppPurchaseSubmissions", "POST", {
+        data: {
+          type: "inAppPurchaseSubmissions",
+          relationships: {
+            inAppPurchaseV2: { data: { type: "inAppPurchases", id: iap.id } },
+          },
         },
-      },
-    });
+      });
+    }
     log(`In-app purchase ${productId} added to review`);
   }
   await api.request(`/reviewSubmissions/${submission.id}`, "PATCH", {

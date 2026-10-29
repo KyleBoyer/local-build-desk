@@ -182,6 +182,12 @@ function apple(
             { id: "p2", attributes: { customerPrice: "1.99" } },
           ],
         };
+      if (route === "/v2/inAppPurchases/iap/versions")
+        return {
+          data: [
+            { id: "iapv", attributes: { state: "PREPARE_FOR_SUBMISSION" } },
+          ],
+        };
       if (route === "/territories")
         return { data: [{ id: "USA" }, { id: "CAN" }] };
       throw new Error(`unexpected ${path}`);
@@ -309,9 +315,17 @@ it("submits the version and its in-app purchases for review", async () => {
   expect(calls.slice(-4)).toEqual([
     "POST /reviewSubmissions",
     "POST /reviewSubmissionItems",
-    "POST /inAppPurchaseSubmissions",
+    "POST /reviewSubmissionItems",
     "PATCH /reviewSubmissions/submission",
   ]);
+  // The purchase rides in the same submission as the version.
+  const purchaseItem = writes.at(-2)!.body.data.relationships;
+  expect(purchaseItem).toEqual({
+    reviewSubmission: { data: { type: "reviewSubmissions", id: "submission" } },
+    inAppPurchaseVersion: {
+      data: { type: "inAppPurchaseVersions", id: "iapv" },
+    },
+  });
   expect(writes.at(-1)!.body.data.attributes).toEqual({ submitted: true });
 });
 
