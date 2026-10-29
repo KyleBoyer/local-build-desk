@@ -19,6 +19,11 @@ import type { Job, Platform, Project, ToolName } from "../core/types";
 import { privateDirectory } from "../core/vault";
 import { decodeProfile } from "../core/signing";
 import { AppleAPI } from "../core/stores";
+import {
+  applyListing,
+  listingPlan,
+  loadListing,
+} from "../core/app-store-listing";
 import { setTimeout as sleep } from "node:timers/promises";
 import { transferVersionCounter } from "../core/versions";
 export const CLI_EXIT = { success: 0, failure: 1, processing: 2 } as const;
@@ -113,6 +118,9 @@ export const help = `Local Build Desk — compile and upload from this Mac
   ios-submit logs --job JOB_ID
   ios-submit cancel --job JOB_ID
   ios-submit reconcile --job JOB_ID
+  ios-submit listing --project PATH --listing FILE [--version X.Y] [--build-number N] [--apply] [--submit-for-review]
+    shows what the App Store listing would change; --apply writes text, screenshots and the build;
+    --submit-for-review also sends the version (and its in-app purchases) to App Review
   ios-submit migrate --project PATH [--credentials FILE] [--env FILE] [--ios-last-used N] [--android-last-used N]
 
 Project selection: --project-type expo|capacitor|native-ios (omit for auto-detection), --app-directory PATH,
@@ -198,6 +206,10 @@ export async function runCLI(
         help: { type: "boolean" },
         wait: { type: "boolean" },
         timeout: { type: "string" },
+        listing: { type: "string" },
+        version: { type: "string" },
+        apply: { type: "boolean" },
+        "submit-for-review": { type: "boolean" },
       },
     });
     const command = parsed.positionals[0],
@@ -214,6 +226,7 @@ export async function runCLI(
       "android-sdk",
       "key",
       "credentials",
+      "listing",
     ] as const)
       if (v[key]) v[key] = resolve(cwd, v[key]!);
     for (const key of ["project", "settings-from"] as const)
@@ -517,6 +530,70 @@ export async function runCLI(
       );
       output(checks);
       return checks.some((c) => c.status === "error") ? 1 : 0;
+    }
+    if (command === "listing") {
+      projectId();
+      invariant(
+        v.listing,
+        "LISTING_REQUIRED",
+        "Pass --listing with the App Store listing JSON.",
+      );
+      invariant(
+        project!.settings.appleConnectionId,
+        "APPLE_CONNECTION",
+        "Connect an App Store Connect API key to this project first.",
+      );
+      const connection = await engine.vault.get(
+        project!.settings.appleConnectionId,
+        "apple",
+      );
+      const api = new AppleAPI(connection);
+      let version = v.version;
+      let bundleId = project!.bundleId;
+      if (!version || !bundleId) {
+        const inspection = await inspectProject(
+          project!.path,
+          project!.settings,
+          {},
+        );
+        version ??= inspection.version;
+        bundleId ??= inspection.bundleId;
+      }
+      invariant(
+        bundleId && version,
+        "APP_IDENTITY",
+        "Couldn't read the bundle ID and version; pass --version.",
+      );
+      const loaded = await loadListing(v.listing);
+      const plan = await listingPlan(
+        api,
+        bundleId,
+        version,
+        loaded,
+        v["build-number"],
+      );
+      if (!v.apply && !v["submit-for-review"]) {
+        output({ dryRun: true, ...plan });
+        return plan.blockers.length ? CLI_EXIT.failure : CLI_EXIT.success;
+      }
+      const result = await applyListing(api, plan, loaded, {
+        submit: v["submit-for-review"],
+        log: (line) => write(line + "\n"),
+      });
+      const after = await listingPlan(
+        api,
+        bundleId,
+        version,
+        loaded,
+        v["build-number"],
+      );
+      output({
+        ...result,
+        remaining: after.changes,
+        blockers: after.blockers,
+        manual: after.manual,
+      });
+      return 0;
     }
     if (command === "inspect") {
       const platform = v.platform ?? "ios";
