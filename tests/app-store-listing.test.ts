@@ -307,9 +307,9 @@ it("submits the version and its in-app purchases for review", async () => {
   expect(result.submitted).toBe(true);
   const calls = writes.map((w) => `${w.method} ${w.path}`);
   expect(calls.slice(-4)).toEqual([
-    "POST /inAppPurchaseSubmissions",
     "POST /reviewSubmissions",
     "POST /reviewSubmissionItems",
+    "POST /inAppPurchaseSubmissions",
     "PATCH /reviewSubmissions/submission",
   ]);
   expect(writes.at(-1)!.body.data.attributes).toEqual({ submitted: true });

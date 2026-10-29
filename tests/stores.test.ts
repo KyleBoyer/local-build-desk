@@ -509,3 +509,38 @@ it("verifies a console bootstrap's exact checksum and internal draft without upl
   ).toBe(false);
   expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(2);
 });
+it("includes Apple's associated errors, and routes /v2/ paths", async () => {
+  const fetcher = vi.fn(async () =>
+    json(
+      {
+        errors: [
+          {
+            detail:
+              "This in-app purchase cannot be reviewed, please check associated errors.",
+            meta: {
+              associatedErrors: {
+                "/v2/inAppPurchases/1": [
+                  {
+                    detail:
+                      "The first in-app purchase must be submitted with a new app version.",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      409,
+    ),
+  );
+  await expect(
+    new AppleAPI(apple, fetcher as any).request("/v2/inAppPurchases", "POST", {
+      data: {},
+    }),
+  ).rejects.toThrow(
+    /cannot be reviewed, please check associated errors\. \(The first in-app purchase must be submitted with a new app version\.\)/,
+  );
+  expect((fetcher.mock.calls[0] as any)[0]).toBe(
+    "https://api.appstoreconnect.apple.com/v2/inAppPurchases",
+  );
+});

@@ -25,6 +25,19 @@ export interface AppleRequestOptions {
   wait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
 }
+/**
+ * One Apple API error, with the "associated errors" Apple nests under `meta`
+ * (for example, why an item can't be submitted for review).
+ */
+function appleErrorText(error: any): string {
+  const text = error.detail ?? error.title ?? error.code;
+  const associated = Object.values(error.meta?.associatedErrors ?? {})
+    .flat()
+    .map((e: any) => e.detail ?? e.title ?? e.code)
+    .filter(Boolean);
+  return associated.length ? `${text} (${associated.join("; ")})` : text;
+}
+
 export class AppleAPI {
   constructor(
     private credential: AppleCredential,
@@ -134,7 +147,7 @@ export class AppleAPI {
         const data = await response.json().catch(() => ({}));
         throw new DeskError(
           `APPLE_${response.status}`,
-          `Apple ${response.status} (${method} ${path.split("?")[0]}): ${data.errors?.map((e: any) => e.detail ?? e.title).join("; ") ?? response.statusText}`,
+          `Apple ${response.status} (${method} ${path.split("?")[0]}): ${data.errors?.map(appleErrorText).join("; ") ?? response.statusText}`,
         );
       }
       if (response.status === 204) return {};

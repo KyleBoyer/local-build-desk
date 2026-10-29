@@ -1041,37 +1041,6 @@ export async function applyListing(
     "LISTING_BLOCKED",
     `Not submitting for review: ${blockers.join(" ")}`,
   );
-  // In-app purchases ride along with the version's submission. Ones created
-  // just now need a fresh look at their state.
-  const iaps = plan.inAppPurchases.length
-    ? await all(api, `/apps/${plan.appId}/inAppPurchasesV2?limit=200`)
-    : [];
-  for (const { productId } of plan.inAppPurchases) {
-    const iap = iaps.find((p) => p.attributes.productId === productId);
-    invariant(
-      iap,
-      "IAP_MISSING",
-      `In-app purchase ${productId} isn't in App Store Connect.`,
-    );
-    const state = iap.attributes.state;
-    if (state !== "READY_TO_SUBMIT") {
-      invariant(
-        ["WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED"].includes(state),
-        "IAP_NOT_READY",
-        `Not submitting for review: in-app purchase ${productId} is ${state}.`,
-      );
-      continue;
-    }
-    await api.request("/inAppPurchaseSubmissions", "POST", {
-      data: {
-        type: "inAppPurchaseSubmissions",
-        relationships: {
-          inAppPurchaseV2: { data: { type: "inAppPurchases", id: iap.id } },
-        },
-      },
-    });
-    log(`In-app purchase ${productId} added to review`);
-  }
   const open = (
     await all(
       api,
@@ -1108,6 +1077,38 @@ export async function applyListing(
         },
       },
     });
+  // In-app purchases join the draft submission once the version is in it:
+  // Apple reviews an app's first purchases together with a version. Ones
+  // created just now need a fresh look at their state.
+  const iaps = plan.inAppPurchases.length
+    ? await all(api, `/apps/${plan.appId}/inAppPurchasesV2?limit=200`)
+    : [];
+  for (const { productId } of plan.inAppPurchases) {
+    const iap = iaps.find((p) => p.attributes.productId === productId);
+    invariant(
+      iap,
+      "IAP_MISSING",
+      `In-app purchase ${productId} isn't in App Store Connect.`,
+    );
+    const state = iap.attributes.state;
+    if (state !== "READY_TO_SUBMIT") {
+      invariant(
+        ["WAITING_FOR_REVIEW", "IN_REVIEW", "APPROVED"].includes(state),
+        "IAP_NOT_READY",
+        `Not submitting for review: in-app purchase ${productId} is ${state}.`,
+      );
+      continue;
+    }
+    await api.request("/inAppPurchaseSubmissions", "POST", {
+      data: {
+        type: "inAppPurchaseSubmissions",
+        relationships: {
+          inAppPurchaseV2: { data: { type: "inAppPurchases", id: iap.id } },
+        },
+      },
+    });
+    log(`In-app purchase ${productId} added to review`);
+  }
   await api.request(`/reviewSubmissions/${submission.id}`, "PATCH", {
     data: {
       type: "reviewSubmissions",
