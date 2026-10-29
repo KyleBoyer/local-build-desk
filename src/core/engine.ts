@@ -4,7 +4,7 @@ import { snapshot } from "./snapshot";
 import { validateProvision } from "./signing";
 import { assertUploadChecks, simulatorCatalog } from "./release-validation";
 import { checkpoint, finishCheckpoint } from "./checkpoints";
-import { inside } from "./xcode-project";
+import { inside, forgetDerivedData } from "./xcode-project";
 import { projectApplications, projectSettings } from "./project-discovery";
 import { settingsSchema } from "./settings-schema";
 import { defaultLocalProfiles } from "./project-adapters";
@@ -1599,6 +1599,15 @@ export class Engine extends EventEmitter {
           ? "interrupted"
           : job.status === "succeeded",
       );
+      if (job.kind !== "submit")
+        await forgetDerivedData(
+          join(
+            resolve(project.settings.buildDirectory ?? this.store.root),
+            "jobs",
+            job.id,
+            "source",
+          ),
+        ).catch(() => undefined);
       job.finishedAt = now();
       this.saveJob(job);
       this.controllers.delete(job.id);

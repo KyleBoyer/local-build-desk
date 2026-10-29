@@ -1,4 +1,6 @@
 import { realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import xcode from "xcode";
 import { readdir, readFile, rm } from "node:fs/promises";
 import {
@@ -92,6 +94,45 @@ export async function xcodeContainers(root: string): Promise<XcodeContainer[]> {
     return true;
   });
   return found.sort((a, b) => a.path.localeCompare(b.path));
+}
+/** Xcode's default DerivedData folder name for a container: its base name and
+ * a base-26 MD5 of the path Xcode opened (with /private/tmp shortened to /tmp). */
+export function defaultDerivedDataName(container: string) {
+  const digest = createHash("md5").update(container).digest();
+  let suffix = "";
+  for (const offset of [0, 8]) {
+    let n = digest.readBigUInt64BE(offset),
+      part = "";
+    for (let i = 0; i < 14; i++) {
+      part = String.fromCharCode(97 + Number(n % 26n)) + part;
+      n /= 26n;
+    }
+    suffix += part;
+  }
+  return `${basename(container).replace(/\.(xcodeproj|xcworkspace)$/, "")}-${suffix}`;
+}
+/** Metadata commands such as `xcodebuild -list` take no -derivedDataPath, so
+ * each disposable snapshot leaves a default DerivedData folder behind. Remove
+ * exactly those folders; nothing else in DerivedData is touched. */
+export async function forgetDerivedData(root: string, home = homedir()) {
+  const base = join(home, "Library/Developer/Xcode/DerivedData");
+  let real: string;
+  try {
+    real = realpathSync(root);
+  } catch {
+    return;
+  }
+  for (const container of await xcodeContainers(real).catch(() => [])) {
+    const full = join(real, container.path);
+    for (const path of new Set([
+      full,
+      full.replace(/^\/private(?=\/(?:tmp|var)\/)/, ""),
+    ]))
+      await rm(join(base, defaultDerivedDataName(path)), {
+        recursive: true,
+        force: true,
+      });
+  }
 }
 // XcodeGen specs whose Xcode project is not committed. A tracked .xcodeproj next to
 // the spec wins; otherwise the project is generated inside each disposable snapshot.

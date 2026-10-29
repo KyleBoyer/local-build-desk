@@ -19,6 +19,7 @@ import {
   xcodeContainers,
   xcodegenSpecs,
   generateXcodeProjects,
+  forgetDerivedData,
 } from "./xcode-project";
 import { DeskError } from "./errors";
 import type {
@@ -267,6 +268,7 @@ export async function withInspectionSnapshot<T>(
     }
     return await operation(await realpath(copy));
   } finally {
+    await forgetDerivedData(copy).catch(() => undefined);
     await rm(temp, { recursive: true, force: true });
   }
 }

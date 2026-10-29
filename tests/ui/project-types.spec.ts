@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createNativeFixture } from "../fixtures/native/create";
+import { forgetDerivedData } from "../../src/core/xcode-project";
 test("selects a native app inside a repository, edits profiles, exports portable settings", async () => {
   test.setTimeout(120000);
   const root = await mkdtemp(join(tmpdir(), "desk-project-types-ui-")),
@@ -149,6 +150,7 @@ test("selects a native app inside a repository, edits profiles, exports portable
     expect(errors).toEqual([]);
   } finally {
     await app.close();
+    await forgetDerivedData(root);
     await rm(root, { recursive: true, force: true });
   }
 });

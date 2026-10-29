@@ -257,3 +257,34 @@ it("generates XcodeGen projects only where no .xcodeproj is committed", async ()
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it("removes only the default DerivedData folders a snapshot's containers created", async () => {
+  const { readdir } = await import("node:fs/promises");
+  const { defaultDerivedDataName, forgetDerivedData } =
+    await import("../src/core/xcode-project");
+  // Recorded from Xcode 27.2: `xcodebuild -project <path> -list` created this folder.
+  expect(
+    defaultDerivedDataName(
+      "/tmp/claude-501/-Volumes-Workspace-NVME-git-ios-submit/34edf0f9-952e-410b-8295-1fa32be74231/scratchpad/ddhash/ShortKit.xcodeproj",
+    ),
+  ).toBe("ShortKit-aajjpghblqtysocvfdyuqwrruwhv");
+  const home = await mkdtemp(join(tmpdir(), "dd-home-"));
+  const root = await mkdtemp(join(tmpdir(), "dd-snapshot-"));
+  await mkdir(join(root, "ios/App.xcworkspace"), { recursive: true });
+  const { realpathSync } = await import("node:fs");
+  const real = realpathSync(root);
+  const base = join(home, "Library/Developer/Xcode/DerivedData");
+  const mine = defaultDerivedDataName(
+    join(real, "ios/App.xcworkspace").replace(
+      /^\/private(?=\/(?:tmp|var)\/)/,
+      "",
+    ),
+  );
+  await mkdir(join(base, mine), { recursive: true });
+  await mkdir(join(base, "App-someoneelsesprojectxxxxxxxxxx"), {
+    recursive: true,
+  });
+  await forgetDerivedData(root, home);
+  expect(await readdir(base)).toEqual(["App-someoneelsesprojectxxxxxxxxxx"]);
+  await forgetDerivedData(join(root, "missing"), home);
+});
