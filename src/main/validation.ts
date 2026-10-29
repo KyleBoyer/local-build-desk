@@ -47,6 +47,15 @@ const credential = z.discriminatedUnion("kind", [
       values: z.record(z.string(), z.string()),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("login"),
+      label: text,
+      provider: z.enum(["apple", "google"]),
+      username: z.string().min(3).max(320),
+      password: z.string().min(1).max(1024),
+    })
+    .strict(),
 ]);
 export const methods = {
   readRelease: z.tuple([

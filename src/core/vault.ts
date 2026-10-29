@@ -77,7 +77,9 @@ export class Vault {
               ? `Upload key · ${credential.alias}`
               : credential.kind === "ios"
                 ? `${credential.profiles.length} provisioning profile(s)`
-                : `${Object.keys(credential.values).length} environment values`,
+                : credential.kind === "login"
+                  ? `${credential.provider === "apple" ? "Apple ID" : "Google account"} · ${credential.username}`
+                  : `${Object.keys(credential.values).length} environment values`,
     };
     const encrypted = await this.encryption.encrypt(JSON.stringify(credential));
     return { summary, encrypted };
@@ -246,6 +248,23 @@ export async function importCredential(
     }
     case "environment":
       return { kind: "environment", label, values: input.values ?? {} };
+    case "login":
+      invariant(
+        ["apple", "google"].includes(input.provider) &&
+          typeof input.username === "string" &&
+          input.username.trim() &&
+          typeof input.password === "string" &&
+          input.password,
+        "LOGIN_FIELDS",
+        "Enter the account email and password.",
+      );
+      return {
+        kind: "login",
+        label,
+        provider: input.provider,
+        username: input.username.trim(),
+        password: input.password,
+      };
     default:
       throw new Error("Unknown credential kind.");
   }

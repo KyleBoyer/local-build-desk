@@ -105,9 +105,15 @@ test("desktop import, profile selection, toolchain, migration, queue, and keyboa
     await expect(
       page.getByRole("heading", { name: "Let’s get you to Google Play." }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Install Android tools & JDK" }),
-    ).toBeDisabled();
+    // The install button only shows while the Android SDK or Java looks
+    // missing, and runners that have both hide it once the checks finish.
+    // Either way it must never be enabled before the SDK license is accepted.
+    expect(
+      await page
+        .getByRole("button", { name: "Install Android tools & JDK" })
+        .isEnabled({ timeout: 1000 })
+        .catch(() => false),
+    ).toBe(false);
     await page
       .getByRole("button", { name: "Set up signing automatically" })
       .click();

@@ -147,8 +147,135 @@ export function DeskPreferences() {
         {result && <p role="status">{result}</p>}
         {error && <p role="alert">{error}</p>}
       </section>
+      <SavedSignIns />
       <BackupTools />
     </>
+  );
+}
+
+/**
+ * Apple ID and Google account sign-ins kept in the encrypted vault. The desk
+ * fills them into Apple's and Google's sign-in pages in its account windows
+ * when a kept session has expired.
+ */
+function SavedSignIns() {
+  const [logins, setLogins] = useState<
+    import("../../core/types").CredentialSummary[]
+  >([]);
+  const [provider, setProvider] = useState<"apple" | "google">("apple");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const refresh = () =>
+    api
+      .state()
+      .then((state) =>
+        setLogins(state.credentials.filter((c) => c.kind === "login")),
+      )
+      .catch((e) => setError(e.message));
+  useEffect(() => void refresh(), []);
+  const run = (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError("");
+    fn()
+      .then(refresh)
+      .catch((e) => setError(e.message))
+      .finally(() => setBusy(false));
+  };
+  const saved = (p: "apple" | "google") =>
+    logins.find((l) =>
+      l.detail?.startsWith(p === "apple" ? "Apple ID" : "Google account"),
+    );
+  return (
+    <section className="section-card">
+      <div className="section-heading">
+        <h2>Saved sign-ins</h2>
+        <span className="mono subtle">Encrypted in your Keychain</span>
+      </div>
+      <p className="muted">
+        Apple and Google sessions in the desk's account windows are kept across
+        restarts while Apple and Google still accept them. When one has expired,
+        the desk fills in a saved sign-in here (on Apple's and Google's own
+        sign-in pages only); you still approve two-factor prompts. A password is
+        submitted at most once every few minutes, so a wrong one never loops.
+      </p>
+      {logins.length > 0 && (
+        <ul className="saved-logins">
+          {logins.map((login) => (
+            <li key={login.id}>
+              <span>{login.detail}</span>
+              <button
+                className="button"
+                disabled={busy}
+                onClick={() => run(() => api.removeCredential(login.id))}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <fieldset disabled={busy} className="workflow-fieldset">
+        <div className="form-grid">
+          <label>
+            Account
+            <select
+              aria-label="Account"
+              value={provider}
+              onChange={(e) => setProvider(e.target.value as typeof provider)}
+            >
+              <option value="apple">
+                Apple ID (App Store Connect, Developer)
+              </option>
+              <option value="google">Google account (Play Console)</option>
+            </select>
+          </label>
+          <label>
+            Email
+            <input
+              aria-label="Email"
+              autoComplete="off"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              aria-label="Password"
+              type="password"
+              autoComplete="off"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+        </div>
+        <button
+          className="button"
+          disabled={!username.trim() || !password}
+          onClick={() =>
+            run(async () => {
+              const previous = saved(provider);
+              await api.saveCredential({
+                kind: "login",
+                label:
+                  provider === "apple" ? "Apple ID sign-in" : "Google sign-in",
+                provider,
+                username: username.trim(),
+                password,
+              });
+              // One saved sign-in per provider: the new one replaces it.
+              if (previous) await api.removeCredential(previous.id);
+              setPassword("");
+            })
+          }
+        >
+          {saved(provider) ? "Replace saved sign-in" : "Save sign-in"}
+        </button>
+      </fieldset>
+      {error && <p role="alert">{error}</p>}
+    </section>
   );
 }
 

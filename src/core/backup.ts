@@ -98,6 +98,15 @@ const credentialSchema = z.discriminatedUnion("kind", [
         .refine((v) => Object.keys(v).length <= 2000),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("login"),
+      label: text,
+      provider: z.enum(["apple", "google"]),
+      username: text,
+      password: text,
+    })
+    .strict(),
 ]);
 const projectSchema = z
   .object({

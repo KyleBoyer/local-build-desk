@@ -5,6 +5,7 @@ import {
   type StoreProbe,
 } from "./store-automation";
 import { storeScope } from "../core/store-scope";
+import { attachLoginFill } from "./login-fill";
 import type { StoreSetupRequest, StoreSetupState } from "../core/types";
 import {
   BrowserWindow,
@@ -181,6 +182,12 @@ export class AccountSetupManager {
       },
     });
     host.contentView.addChildView(view);
+    attachLoginFill(
+      view.webContents,
+      provider,
+      () => this.engine.savedLogin(provider),
+      (step) => diagnostics.record("automation.login-filled", { step }),
+    );
     const url =
       purpose === "store"
         ? this.storeStartUrl(storeSetup!)

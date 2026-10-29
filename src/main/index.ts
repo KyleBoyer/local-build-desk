@@ -28,6 +28,7 @@ import { methods, type Method } from "./validation";
 import { captureInvocationEnvironment } from "../cli/invocation";
 import { runCLI } from "../cli/commands";
 import { appleWebSession } from "./apple-web";
+import { ACCOUNT_PARTITIONS, keepSessions } from "./session-keeper";
 import { invariant, messageOf } from "../core/errors";
 const dataRoot =
   process.env.LOCAL_BUILD_DESK_DATA_DIR ??
@@ -83,7 +84,10 @@ let notifications: JobNotifications;
 let buildTray: BuildTray | undefined;
 let window: BrowserWindow | undefined;
 /** App Store Connect's web API for App Privacy, in the desk's Apple sign-in. */
-const appleWeb = appleWebSession(() => window);
+const appleWeb = appleWebSession(
+  () => window,
+  () => engine?.savedLogin("apple") ?? Promise.resolve(undefined),
+);
 // Electron's single-instance lock can admit two processes that launch at the
 // same instant (parallel CI jobs), so an atomically created lock file holding
 // the owner's PID decides ownership. A dead owner's lock is reclaimed.
@@ -240,6 +244,8 @@ function startOwner() {
         },
       });
       engine = new Engine(store, vault);
+      // Apple and Google sign-ins survive restarts while they're still valid.
+      for (const partition of ACCOUNT_PARTITIONS) keepSessions(partition);
       buildTray = new BuildTray(
         engine,
         () => store.list<Job>("jobs"),

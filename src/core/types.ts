@@ -294,7 +294,15 @@ export type Credential =
       alias: string;
       keyPassword: string;
     }
-  | { kind: "environment"; label: string; values: Record<string, string> };
+  | { kind: "environment"; label: string; values: Record<string, string> }
+  /** A saved Apple ID or Google account sign-in, filled into their sign-in pages. */
+  | {
+      kind: "login";
+      label: string;
+      provider: "apple" | "google";
+      username: string;
+      password: string;
+    };
 export interface BuildRequest {
   projectId: string;
   platform: Platform | "all";

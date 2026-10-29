@@ -1680,6 +1680,15 @@ export class Engine extends EventEmitter {
       packageName: project.packageName,
     };
   }
+  /** The saved Apple ID or Google sign-in, for filling in its sign-in page. */
+  async savedLogin(provider: "apple" | "google") {
+    for (const summary of this.store.credentialSummaries()) {
+      if (summary.kind !== "login") continue;
+      const login = await this.vault.get(summary.id, "login");
+      if (login.provider === provider) return login;
+    }
+    return undefined;
+  }
   removeCredential(id: string) {
     for (const p of this.store.list<Project>("projects"))
       invariant(

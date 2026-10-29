@@ -1,6 +1,7 @@
 import { app, BrowserWindow, session } from "electron";
 import type { AppleWebSession } from "../core/app-store-compliance";
 import { DeskError } from "../core/errors";
+import { attachLoginFill, type SavedLogin } from "./login-fill";
 
 // App Store Connect's web API (/iris/v1), for the few things Apple's public
 // API doesn't cover (App Privacy). Requests run inside an App Store Connect
@@ -33,6 +34,7 @@ async function load(window: BrowserWindow, url: string) {
 
 export function appleWebSession(
   parent: () => BrowserWindow | undefined,
+  savedLogin: () => Promise<SavedLogin | undefined>,
 ): AppleWebSession {
   let page: BrowserWindow | undefined;
   let loading: Promise<BrowserWindow> | undefined;
@@ -60,6 +62,7 @@ export function appleWebSession(
         page = undefined;
         loading = undefined;
       });
+      attachLoginFill(window.webContents, "apple", savedLogin);
       await load(window, `${ORIGIN}/apps`);
       page = window;
       return window;

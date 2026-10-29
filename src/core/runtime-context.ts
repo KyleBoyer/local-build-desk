@@ -17,7 +17,11 @@ export interface BuildInvocation {
   buildNumber?: number;
   concurrency?: Partial<Record<"ios" | "android", number>>;
 }
-const binding: Record<Credential["kind"], keyof ProjectSettings> = {
+// Saved sign-ins belong to the desk, not to a project build.
+const binding: Record<
+  Exclude<Credential["kind"], "login">,
+  keyof ProjectSettings
+> = {
   apple: "appleConnectionId",
   ios: "iosSigningId",
   google: "googleConnectionId",
@@ -33,6 +37,7 @@ export function bindRuntimeCredentials(
   const values: Record<string, Credential> = {};
   if (noKeychain) for (const key of Object.values(binding)) delete result[key];
   for (const credential of credentials) {
+    if (credential.kind === "login") continue;
     const key = `runtime:${id()}`;
     values[key] = credential;
     (result as any)[binding[credential.kind]] = key;
@@ -165,6 +170,8 @@ export function credentialSecrets(
         ].filter((item): item is string => typeof item === "string");
       case "environment":
         return Object.values(value.values);
+      case "login":
+        return [value.password];
     }
   });
 }
