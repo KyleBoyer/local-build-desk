@@ -48,7 +48,12 @@ function listing(extra: Record<string, unknown> = {}) {
 
 /** An in-memory App Store Connect with a first version in draft. */
 function apple(
-  options: { screenshots?: string[]; contact?: boolean; state?: string } = {},
+  options: {
+    screenshots?: string[];
+    contact?: boolean;
+    state?: string;
+    versionState?: string;
+  } = {},
 ) {
   const writes: { method: string; path: string; body?: any }[] = [];
   const shots = (options.screenshots ?? []).map((checksum, i) => ({

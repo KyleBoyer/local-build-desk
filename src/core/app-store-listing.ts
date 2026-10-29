@@ -243,6 +243,8 @@ async function all(api: AppleAPI, path: string) {
 
 const EDITABLE = [
   "PREPARE_FOR_SUBMISSION",
+  // In a review submission that hasn't been sent yet; still editable.
+  "READY_FOR_REVIEW",
   "DEVELOPER_REJECTED",
   "REJECTED",
   "METADATA_REJECTED",
