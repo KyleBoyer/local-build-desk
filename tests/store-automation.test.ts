@@ -216,11 +216,34 @@ it("reads Play's current release editor: splash progress, OBB input, and editor 
     internalEditor: true,
   });
   const track = page(
-    "<h1>Internal testing</h1><button disabled>Create new release</button><button>Edit release</button>",
+    "<h1>Internal testing</h1><div role='progressbar' aria-label='Set up internal testing track' aria-valuenow='1' aria-valuemax='3'></div><button disabled>Create new release</button><button>Edit release</button>",
     "https://play.google.com/console/developers/1/app/2/tracks/internal-testing",
   );
   expect(probe(track, google)).toMatchObject({
     phase: "release",
     draftEditable: true,
   });
+});
+it("recognizes a saved draft from Play's release card, not the track's draft status", () => {
+  const google = {
+    ...target,
+    provider: "google" as const,
+    mode: "bootstrap" as const,
+    appId: "2",
+    developerId: "1",
+    artifact: {
+      id: "a",
+      name: "app.aab",
+      sha256: "x",
+      size: 1,
+      buildNumber: "7",
+      version: "1.0",
+    },
+  };
+  const html = (card: string) =>
+    `<h1>Internal testing</h1><p>Inactive · Draft release</p><div role="progressbar" aria-label="Set up internal testing track"></div><h2>Releases</h2><div><div><div role="heading">${card}</div></div> <button>Edit release</button> <span>Draft</span></div><h2>Release history</h2>`;
+  const url =
+    "https://play.google.com/console/developers/1/app/2/tracks/internal-testing";
+  expect(probe(page(html("7 (1.0)"), url), google).draftSaved).toBe(true);
+  expect(probe(page(html("6 (0.9)"), url), google).draftSaved).toBe(false);
 });

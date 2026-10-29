@@ -393,20 +393,27 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
         identityMatches,
         error,
       };
-    // Play keeps an aria-hidden splash progress bar on every page; only count
-    // progress shown to people.
-    const uploading =
-      /uploading|processing.*(?:bundle|upload)|upload.*in progress/i.test(
-        body,
-      ) ||
-      [...document.querySelectorAll("[role=progressbar]")].some(
-        (el) => visible(el) && !el.closest("[aria-hidden=true]"),
-      );
     const internalEditor = [
       ...document.querySelectorAll<HTMLElement>("h1,h2,[role=heading]"),
     ]
       .filter(visible)
       .some((el) => /internal testing release/i.test(el.textContent ?? ""));
+    // Play shows other progress bars too: an aria-hidden splash bar on every
+    // page and a setup-task meter on the track page. Only progress in the
+    // release editor, or labelled as an upload, means a bundle is uploading.
+    const uploading =
+      /uploading|processing.*(?:bundle|upload)|upload.*in progress/i.test(
+        body,
+      ) ||
+      [...document.querySelectorAll("[role=progressbar]")].some(
+        (el) =>
+          visible(el) &&
+          !el.closest("[aria-hidden=true]") &&
+          (internalEditor ||
+            /upload|bundle|processing/i.test(
+              el.getAttribute("aria-label") ?? "",
+            )),
+      );
     const draftEditable = controls.some(
       (el) =>
         /^Edit release$/i.test(label(el)) &&
@@ -426,16 +433,40 @@ export function inspectStorePage(target: StoreSetupState): StoreProbe {
             row.innerText,
           ),
       );
+    // Play lists releases as cards: a heading with the release name and a
+    // status line. Climb from the heading only while the card holds no other
+    // heading, so page-level text such as "Draft release" is not mistaken for it.
+    const headingSelector = "[role=heading],h1,h2,h3,h4";
+    const draftCard = [
+      ...document.querySelectorAll<HTMLElement>(headingSelector),
+    ]
+      .filter(visible)
+      .filter((heading) => versionRx.test(norm(heading.textContent ?? "")))
+      .some((heading) => {
+        let card = heading.parentElement;
+        while (
+          card &&
+          [...card.querySelectorAll(headingSelector)].filter(visible).length <=
+            1
+        ) {
+          if (/(^|\s)Draft(\s|$)/.test(norm(card.innerText ?? ""))) return true;
+          card = card.parentElement;
+        }
+        return false;
+      });
     const draftSaved =
       !!version &&
-      !/\/releases?\/(?:new|create|[^/]+\/edit)(?:\/|$)/i.test(
+      !/\/releases?\/(?:new|create|[^/]+\/edit|[^/]+\/prepare)(?:\/|$)/i.test(
         location.pathname,
       ) &&
+      !internalEditor &&
       !uploading &&
       !has(/^(?:Save|Save as draft|Save draft)$/i) &&
-      rows.some(
-        (row) => versionRx.test(row.innerText) && /Draft/i.test(row.innerText),
-      );
+      (draftCard ||
+        rows.some(
+          (row) =>
+            versionRx.test(row.innerText) && /Draft/i.test(row.innerText),
+        ));
     // The release editor also has an OBB expansion-file input without an
     // accept list; when an input names .aab, only those count.
     const fileInputs = [

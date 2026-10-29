@@ -2423,6 +2423,14 @@ export class AccountSetupManager {
         this.persist(account);
         return;
       }
+      // Play keeps the editor open after saving; confirm the draft on the track.
+      if (state.submitted.draft && probe.internalEditor) {
+        await account.view.webContents.loadURL(
+          state.internalUrl ??
+            `https://play.google.com/console/developers/${state.developerId}/app/${state.appId}/tracks/internal-testing`,
+        );
+        return;
+      }
       if (state.submitted.upload && probe.uploaded) {
         await this.storeAction(account, "save-draft", "draft");
         return;
