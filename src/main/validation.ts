@@ -128,7 +128,21 @@ export const methods = {
     z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
   ]),
   releaseNoteDraft: z.tuple([identifier]),
-  readCompliance: z.tuple([identifier]),
+  readCompliance: z.tuple([identifier, text.optional()]),
+  checkTargets: z.tuple([identifier]),
+  runChecks: z.tuple([
+    identifier,
+    text,
+    z.enum(["all", "tests", "screenshots"]),
+  ]),
+  useScreenshots: z.tuple([identifier]),
+  screenshotPreview: z.tuple([identifier, z.number().int().min(0).max(79)]),
+  readiness: z.tuple([
+    identifier,
+    z.enum(["testflight", "appstore"]).optional(),
+  ]),
+  resume: z.tuple([identifier]),
+  readStoreStatus: z.tuple([identifier]),
   saveCompliance: z.tuple([
     identifier,
     z.string().min(1).max(1024),

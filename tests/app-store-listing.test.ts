@@ -745,3 +745,26 @@ it("does not overwrite a different set while Apple is processing it", async () =
     ),
   ).toBe(false);
 });
+
+it("treats a version already waiting for review as a normal, read-only state", async () => {
+  png("a.png", 1320, 2868, 1);
+  png("b.png", 1320, 2868, 2);
+  const { api, writes } = apple({ versionState: "WAITING_FOR_REVIEW" });
+  const loaded = await loadListing(listing());
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan).toMatchObject({
+    readOnly: true,
+    versionState: "WAITING_FOR_REVIEW",
+    blockers: [],
+    changes: [],
+  });
+  expect(plan.manual[0]).toMatch(/waiting for review/);
+  await expect(
+    applyListing(api, plan, loaded, { submit: true }),
+  ).resolves.toMatchObject({ alreadySubmitted: true });
+  expect(writes).toEqual([]);
+  // A different build than the one under review is a real mismatch.
+  await expect(
+    listingPlan(api, "com.example.app", "1.0", loaded, "8"),
+  ).rejects.toThrow(/another build/);
+});

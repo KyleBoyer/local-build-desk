@@ -161,7 +161,15 @@ export function StoreCompliance({ project }: { project: Project }) {
                 void api
                   .choose({ kind: "file", extensions: ["json"] })
                   .then((paths: string[]) => {
-                    if (paths[0]) setListing(paths[0]);
+                    if (paths[0]) {
+                      setBusy(true);
+                      setError("");
+                      void api
+                        .readCompliance(project.id, paths[0])
+                        .then(load)
+                        .catch((e) => setError(e.message))
+                        .finally(() => setBusy(false));
+                    }
                   })
               }
             >

@@ -377,3 +377,30 @@ it("protects pending unselected Google keys from opening API edits while a conso
     validate.mockRestore();
   }
 });
+it("loads a chosen listing file's saved answers and remembers the choice", async () => {
+  const { realpath } = await import("node:fs/promises");
+  const path = await realpath(root);
+  store.putProject({
+    id: "listing-project",
+    name: "Listing",
+    path,
+    settings: {},
+    profiles: ["production"],
+  } as unknown as Project);
+  await mkdir(join(path, "store"));
+  await writeFile(
+    join(path, "store/listing.json"),
+    JSON.stringify({ name: "Fixture", keywords: "fixture" }),
+  );
+  const view = await engine.readCompliance(
+    "listing-project",
+    join(path, "store/listing.json"),
+  );
+  expect(view.listing).toBe("store/listing.json");
+  expect(
+    store.get<Project>("projects", "listing-project").settings.appStoreListing,
+  ).toBe("store/listing.json");
+  await expect(
+    engine.readCompliance("listing-project", "/etc/passwd.json"),
+  ).rejects.toThrow(/inside the project/);
+});

@@ -1,3 +1,4 @@
+import { ValidationWorkflow, ReadinessWorkflow } from "./ValidationWorkflow";
 import { ProjectBuildSettings } from "./ProjectBuildSettings";
 import { useLogFollow } from "./useLogFollow";
 import { WorkProgress } from "./WorkProgress";
@@ -94,6 +95,8 @@ const pageNames = {
   project: "Project",
   setup: "Guided setup",
   builds: "Builds",
+  tests: "Tests",
+  readiness: "Readiness",
   signing: "Signing",
   connections: "Connections",
   toolchain: "Toolchain",
@@ -658,6 +661,8 @@ export function App() {
               project: Box,
               setup: Zap,
               builds: Layers3,
+              tests: ClipboardCheck,
+              readiness: ShieldCheck,
               signing: ShieldCheck,
               connections: Link2,
               toolchain: CircuitBoard,
@@ -743,6 +748,35 @@ export function App() {
           </div>
         </header>
         <div className="content">
+          {page === "tests" &&
+            (project ? (
+              <ValidationWorkflow
+                key={project.id}
+                project={project}
+                jobs={state.jobs}
+                profile={profile}
+                onChanged={() => void refresh()}
+                onRun={(job) => {
+                  setSelectedJob(job.id);
+                  setPage("builds");
+                  void refresh();
+                }}
+              />
+            ) : (
+              <p className="muted">Import a project to configure tests.</p>
+            ))}
+          {page === "readiness" &&
+            (project ? (
+              <ReadinessWorkflow
+                key={project.id}
+                project={project}
+                onBuild={() => setPage("project")}
+              />
+            ) : (
+              <p className="muted">
+                Import a project to check release readiness.
+              </p>
+            ))}
           {page === "preferences" && <DeskPreferences />}
           {page === "compliance" &&
             (project ? (
@@ -1783,6 +1817,9 @@ function JobDetail({
           "snapshot",
           "install",
           "configure",
+          ...(job.validation || job.kind === "test"
+            ? ["testing", "screenshots"]
+            : []),
           "signing",
           "compile",
           "export",
@@ -1800,7 +1837,11 @@ function JobDetail({
           <PlatformIcon platform={job.platform} size={20} />
           <h2>
             {job.platform === "ios" ? "iOS" : "Android"}{" "}
-            {job.kind === "submit" ? "submission" : "build"}
+            {job.kind === "submit"
+              ? "submission"
+              : job.kind === "test"
+                ? "checks"
+                : "build"}
             <span className="mono subtle">
               {job.buildNumber
                 ? ` #${job.buildNumber}`
@@ -1829,6 +1870,20 @@ function JobDetail({
                 Retry
               </Button>
             )}
+          {["failed", "cancelled", "interrupted", "needs-attention"].includes(
+            job.status,
+          ) && (
+            <Button
+              onClick={() =>
+                void action(async () => {
+                  const resumed = await api.resume(job.id);
+                  if (resumed[0]) onSelect(resumed[0]);
+                })
+              }
+            >
+              Resume safely
+            </Button>
+          )}
           {job.submission && (
             <Button
               disabled={job.status === "running"}
@@ -1929,6 +1984,52 @@ function JobDetail({
           <div>
             <strong>{job.submission.destination}</strong>
             <p>{job.submission.message ?? job.submission.state}</p>
+          </div>
+        </div>
+      )}
+      {!!job.checkpoints?.length && (
+        <details className="checkpoint-history">
+          <summary>Release checkpoints · {job.checkpoints.length}</summary>
+          <ol>
+            {job.checkpoints.map((c, i) => (
+              <li key={i}>
+                <strong>{c.stage}</strong>
+                <span>{c.state}</span>
+                <time>{shortDate(c.startedAt)}</time>
+                {c.detail && <p>{c.detail}</p>}
+              </li>
+            ))}
+          </ol>
+          <p className="muted">
+            Interrupted native work reruns safely from unchanged source and
+            caches. Verified artifacts resume at upload; uncertain uploads
+            reconcile store state first.
+          </p>
+        </details>
+      )}
+      {job.validation && (
+        <div className="submission-state">
+          <ClipboardCheck size={17} />
+          <div>
+            <strong>Release checks: {job.validation.state}</strong>
+            <p>
+              {job.validation.runs.length} run(s) ·{" "}
+              {job.validation.screenshots.length} capture(s) · source{" "}
+              {job.validation.sourceHash.slice(0, 12)}
+            </p>
+            {job.validation.runs.map(
+              (r, i) =>
+                r.resultBundle && (
+                  <Button
+                    key={i}
+                    onClick={() =>
+                      void action(() => api.reveal(r.resultBundle!))
+                    }
+                  >
+                    Open {r.device} results
+                  </Button>
+                ),
+            )}
           </div>
         </div>
       )}

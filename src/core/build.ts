@@ -1,3 +1,4 @@
+import { runReleaseChecks } from "./release-validation";
 import {
   detectProjectType,
   appRoot,
@@ -214,6 +215,12 @@ export async function buildLocal(ctx: BuildContext) {
     importedEnv,
   );
   const profile = resolveProfile(inspection.eas, job.profile, job.platform);
+  if (job.kind === "test") {
+    profile.simulator = job.platform === "ios";
+    profile.distribution = "internal";
+    profile.developmentClient = false;
+    profile.debugBuild = true;
+  }
   job.facts = {
     projectType: "expo",
     configuration: profile.configuration,
@@ -369,7 +376,11 @@ export async function buildLocal(ctx: BuildContext) {
   }
   if (job.platform === "ios" && !profile.simulator)
     await vault.get(project.settings.iosSigningId, "ios");
-  if (job.platform === "android" && !profile.developmentClient)
+  if (
+    job.platform === "android" &&
+    !profile.developmentClient &&
+    job.kind !== "test"
+  )
     await vault.get(project.settings.androidSigningId, "android");
   if (job.autoSubmit) {
     invariant(
@@ -427,16 +438,19 @@ export async function buildLocal(ctx: BuildContext) {
   const fixed =
     job.requestedBuildNumber ??
     (!profile.autoIncrement && parsed !== undefined ? parsed : undefined);
-  job.buildNumber = store.claimNumber(
-    key,
-    job.id,
-    initial ??
-      (job.requestedBuildNumber !== undefined
-        ? job.requestedBuildNumber - 1
-        : undefined),
-    fixed,
-  );
-  job.versionReservation = "reserved";
+  job.buildNumber =
+    job.kind === "test"
+      ? String(parsed ?? 1)
+      : store.claimNumber(
+          key,
+          job.id,
+          initial ??
+            (job.requestedBuildNumber !== undefined
+              ? job.requestedBuildNumber - 1
+              : undefined),
+          fixed,
+        );
+  if (job.kind !== "test") job.versionReservation = "reserved";
   job.version = inspection.version;
   job.bundleId = identity;
   ctx.save();
@@ -722,6 +736,8 @@ export async function buildIOS(
       ctx.job.version!,
       ctx.job.buildNumber!,
     );
+  await runReleaseChecks(ctx, selected, profile, source, output, options);
+  if (ctx.job.kind === "test") return;
   if (profile.simulator) {
     ctx.stage("compile");
     await run(
@@ -1006,6 +1022,8 @@ export async function buildAndroid(
   options: CommandOptions,
   androidPath = "android",
 ) {
+  await runReleaseChecks(ctx, undefined, profile, source, output, options);
+  if (ctx.job.kind === "test") return;
   await privateDirectory(async (root) => {
     const android = resolve(source, androidPath);
     for (const [local, cached] of [

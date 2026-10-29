@@ -1,3 +1,9 @@
+import { readinessReport } from "./readiness";
+import { loadListing, listingPlan, displayTypeFor } from "./app-store-listing";
+import { snapshot } from "./snapshot";
+import { validateProvision } from "./signing";
+import { assertUploadChecks, simulatorCatalog } from "./release-validation";
+import { checkpoint, finishCheckpoint } from "./checkpoints";
 import { inside } from "./xcode-project";
 import { projectApplications, projectSettings } from "./project-discovery";
 import { settingsSchema } from "./settings-schema";
@@ -28,7 +34,14 @@ import {
 } from "./testflight-setup";
 import type { StoreSetupRequest, StoreSetupState } from "./types";
 import { EventEmitter } from "node:events";
-import { realpath, readFile, mkdir, readdir } from "node:fs/promises";
+import {
+  realpath,
+  readFile,
+  mkdir,
+  readdir,
+  cp,
+  writeFile,
+} from "node:fs/promises";
 import {
   appendFileSync,
   existsSync,
@@ -539,13 +552,403 @@ export class Engine extends EventEmitter {
     );
     return { path, relative: relative(project.path, path) };
   }
-  async readCompliance(projectId: string): Promise<ComplianceView> {
+  async checkTargets(projectId: string) {
     const project = this.store.get<Project>("projects", projectId);
-    if (!project.settings.appStoreListing) return {};
-    const { path, relative } = await this.listingFile(
+    const options = { env: toolEnvironment(project.settings) };
+    const catalog = await simulatorCatalog(options);
+    const inspection = await inspectProject(project.path, project.settings);
+    let testPlans: string[] = [];
+    if (inspection.iosTarget) {
+      const target = inspection.iosTarget;
+      const { containerArguments } = await import("./xcode-project");
+      const result = await run(
+        "xcodebuild",
+        [
+          ...containerArguments(target.container, project.path),
+          "-scheme",
+          project.settings.releaseChecks?.scheme ?? target.scheme,
+          "-showTestPlans",
+          "-json",
+        ],
+        { ...options, allowFailure: true, timeout: 60000 },
+      );
+      try {
+        const parsed = JSON.parse(result.stdout);
+        testPlans = (parsed.testPlans ?? [])
+          .map((p: any) => (typeof p === "string" ? p : p.name))
+          .filter(Boolean);
+      } catch {}
+    }
+    return {
+      devices: catalog.devices
+        .filter((d) => /iPhone|iPad/.test(d.name))
+        .map((d) => ({ id: d.identifier, name: d.name })),
+      runtimes: catalog.runtimes.map((r) => ({
+        id: r.identifier,
+        name: r.name,
+        version: r.version,
+      })),
+      schemes: inspection.schemes ?? [],
+      testPlans,
+    };
+  }
+  runChecks(
+    projectId: string,
+    profile: string,
+    mode: "all" | "tests" | "screenshots" = "all",
+  ) {
+    return this.build({
+      projectId,
+      profile,
+      platform: "ios",
+      autoSubmit: false,
+      validationOnly: true,
+      checksMode: mode,
+    });
+  }
+  async screenshotPreview(jobId: string, index: number) {
+    const job = this.store.get<Job>("jobs", jobId),
+      shot = job.validation?.screenshots[index];
+    invariant(shot, "SCREENSHOT_MISSING", "This capture is not available.");
+    const bytes = await readFile(shot.path);
+    invariant(
+      bytes.length <= 20 * 1024 * 1024 &&
+        bytes
+          .subarray(0, 8)
+          .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+        createHash("sha256").update(bytes).digest("hex") === shot.sha256,
+      "SCREENSHOT_CHANGED",
+      "The capture is missing, invalid, or changed.",
+    );
+    return `data:image/png;base64,${bytes.toString("base64")}`;
+  }
+  async useScreenshots(jobId: string) {
+    const job = this.store.get<Job>("jobs", jobId),
+      project = this.store.get<Project>("projects", job.projectId);
+    invariant(
+      job.kind === "build" &&
+        job.validation?.state === "passed" &&
+        job.validation.screenshots.length,
+      "SCREENSHOTS_NOT_READY",
+      "Capture screenshots during a successful production build before associating them with its store listing.",
+    );
+    assertUploadChecks(job, {
+      ...project.settings,
+      releaseChecks: {
+        ...project.settings.releaseChecks!,
+        enabled: true,
+        required: true,
+      },
+    });
+    invariant(
+      project.settings.appStoreListing,
+      "LISTING_REQUIRED",
+      "Choose the source listing JSON on the App Store screen first.",
+    );
+    const original = await this.listingFile(
       project,
       project.settings.appStoreListing,
     );
+    const listing = JSON.parse(await readFile(original.path, "utf8"));
+    const root = inside(project.path, ".local-build-desk/store");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const files: string[] = [];
+    for (const [i, shot] of job.validation.screenshots.entries()) {
+      invariant(
+        shot.displayType &&
+          displayTypeFor(shot.width, shot.height) === shot.displayType,
+        "SCREENSHOT_SIZE",
+        "A captured device is not a supported store screenshot size. Choose an App Store-sized iPhone/iPad in Tests.",
+      );
+      const digest = await hashArtifact(shot.path);
+      invariant(
+        digest.sha256 === shot.sha256 && digest.size === shot.size,
+        "SCREENSHOT_CHANGED",
+        "A captured screenshot changed. Run the capture plan again.",
+      );
+      const name = `${job.validation.fingerprint.slice(0, 16)}-${i}-${shot.name}.png`;
+      await cp(shot.path, join(root, name));
+      files.push(name);
+    }
+    // Keep generated store files out of the app snapshot and reuse fingerprint.
+    // Rebase other user-supplied relative files when making the local overlay.
+    for (const key of ["inAppPurchases"] as const)
+      if (Array.isArray(listing[key]))
+        listing[key] = listing[key].map((p: string) =>
+          p.endsWith(".json")
+            ? relative(root, resolve(dirname(original.path), p))
+            : p,
+        );
+    listing.screenshots = files;
+    listing.generatedScreenshots = {
+      jobId: job.id,
+      sourceHash: job.facts?.sourceHash,
+      validationFingerprint: job.validation.fingerprint,
+      buildNumber: job.buildNumber,
+      version: job.version,
+      files: job.validation.screenshots.map((s) => ({
+        sha256: s.sha256,
+        name: s.name,
+      })),
+    };
+    const file = join(root, "listing.json");
+    await writeFile(file, JSON.stringify(listing, null, 2) + "\n", {
+      mode: 0o600,
+    });
+    this.saveSettings(project.id, {
+      ...project.settings,
+      appStoreListing: relative(project.path, file),
+    });
+    return file;
+  }
+  async readStoreStatus(projectId: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const api = new AppleAPI(
+      await this.vault.get(project.settings.appleConnectionId, "apple"),
+    );
+    const app = await api.app(project.bundleId!);
+    invariant(
+      app,
+      "APPLE_APP",
+      "The app record is not available. Complete Guided setup.",
+    );
+    const versions = (
+      await api.request(
+        `/apps/${app.id}/appStoreVersions?filter[platform]=IOS&limit=50`,
+      )
+    ).data;
+    const version =
+      versions.find(
+        (v: any) => v.attributes.versionString === project.version,
+      ) ?? versions[0];
+    invariant(
+      version,
+      "APPLE_VERSION",
+      "No App Store version has been prepared yet.",
+    );
+    const state = version.attributes.appStoreState ?? version.attributes.state;
+    return {
+      version: version.attributes.versionString,
+      state,
+      editable: [
+        "PREPARE_FOR_SUBMISSION",
+        "DEVELOPER_REJECTED",
+        "REJECTED",
+        "METADATA_REJECTED",
+      ].includes(state),
+    };
+  }
+  async readiness(
+    projectId: string,
+    destination: "testflight" | "appstore" = "testflight",
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    const report = readinessReport(
+      project,
+      this.store.list<Job>("jobs"),
+      this.store.list<Artifact>("artifacts"),
+      await this.doctor(projectId),
+      destination,
+    );
+    const item = (id: string) => report.items.find((i) => i.id === id)!;
+    try {
+      const inspection = await inspectProject(project.path, project.settings);
+      const signing = await this.vault.get(
+        project.settings.iosSigningId,
+        "ios",
+      );
+      const apple = await this.vault.get(
+        project.settings.appleConnectionId,
+        "apple",
+      );
+      await privateDirectory(async (root) => {
+        const profiles = await Promise.all(
+          signing.profiles.map((p) => decodeProfile(p, root)),
+        );
+        const targets = inspection.iosTarget?.targets ?? [
+          { bundleId: project.bundleId!, entitlements: {} },
+        ];
+        for (const target of targets) {
+          const valid = profiles.some((profile) => {
+            try {
+              validateProvision(
+                profile,
+                target.bundleId,
+                apple.teamId,
+                target.entitlements,
+                "store",
+              );
+              return true;
+            } catch {
+              return false;
+            }
+          });
+          invariant(
+            valid,
+            "PROFILE_NOT_READY",
+            `No valid App Store profile covers ${target.bundleId} and its entitlements. Renew signing in Guided setup.`,
+          );
+        }
+        invariant(
+          signing.p12.length > 0,
+          "PRIVATE_KEY",
+          "The distribution certificate/private-key container is missing.",
+        );
+        item("signing").status = "ready";
+        item("signing").detail =
+          `${targets.length} application/extension target(s) have matching, unexpired store profiles. Archive signing verifies the private key.`;
+      });
+      const api = new AppleAPI(apple);
+      await api.validate();
+      item("connection").status = "ready";
+      item("connection").detail =
+        "The Apple API key authenticated successfully.";
+      if (report.jobId) {
+        const job = this.store.get<Job>("jobs", report.jobId);
+        const currentHash = await snapshot(
+          project.path,
+          join(this.store.root, "readiness-snapshot"),
+          inspection.native,
+          undefined,
+          false,
+          (inspection.containers ?? []).flatMap((c) =>
+            dirname(c.path) === "." ? [c.path] : [dirname(c.path)],
+          ),
+        );
+        if (job.facts?.sourceHash !== currentHash)
+          report.items.push({
+            id: "source",
+            title: "Current source",
+            status: "blocked",
+            detail:
+              "The working tree changed after this artifact was built. Build fresh to test, capture and release the current source.",
+          });
+      }
+      if (destination === "appstore") {
+        const status = await this.readStoreStatus(projectId).catch(
+          () => undefined,
+        );
+        if (status && !status.editable) {
+          report.delivery.review = status.state;
+          report.items.push({
+            id: "review",
+            title: "App Review",
+            status: "ready",
+            detail: `${status.version}: ${status.state.replaceAll("_", " ").toLowerCase()}. This is a normal submitted release state.`,
+          });
+        } else if (project.settings.appStoreListing) {
+          const file = await this.listingFile(
+            project,
+            project.settings.appStoreListing,
+          );
+          const plan = await listingPlan(
+            api,
+            project.bundleId!,
+            project.version!,
+            await loadListing(file.path),
+          );
+          report.items.push({
+            id: "listing",
+            title: "Store listing & compliance",
+            status: plan.blockers.length ? "blocked" : "ready",
+            detail:
+              plan.blockers.join(" ") ||
+              "Listing, screenshots, compliance and selected build are ready.",
+          });
+        } else
+          report.items.push({
+            id: "listing",
+            title: "Store listing",
+            status: "blocked",
+            detail: "Choose the listing file on the App Store screen.",
+          });
+      }
+    } catch (e) {
+      const signing = item("signing");
+      if (signing.status === "pending") {
+        signing.status = "blocked";
+        signing.detail = messageOf(e);
+      } else
+        report.items.push({
+          id: "remote",
+          title: "Store access",
+          status: "blocked",
+          detail: messageOf(e),
+        });
+    }
+    report.canUpload = !report.items.some((i) => i.status === "blocked");
+    return report;
+  }
+  async resume(jobId: string): Promise<Job[]> {
+    const job = this.store.get<Job>("jobs", jobId);
+    invariant(
+      !["queued", "running"].includes(job.status),
+      "RESUME_ACTIVE",
+      "This operation is already active.",
+    );
+    if (
+      job.submission &&
+      ["uploading", "uncertain", "processing", "uploaded"].includes(
+        job.submission.state,
+      )
+    ) {
+      await this.reconcile(jobId);
+      return [this.store.get<Job>("jobs", jobId)];
+    }
+    invariant(
+      !job.submission || job.submission.state !== "accepted",
+      "ALREADY_SUBMITTED",
+      "This artifact is already available in the store. It will not be uploaded twice.",
+    );
+    if (job.artifactId && !job.submission)
+      return [await this.submit(job.artifactId)];
+    const project = this.projectFor(job);
+    if (job.facts?.sourceHash) {
+      const inspection = await inspectProject(project.path, project.settings);
+      const current = await snapshot(
+        project.path,
+        join(this.store.root, "resume-check"),
+        inspection.native,
+        undefined,
+        false,
+        (inspection.containers ?? []).flatMap((c) =>
+          dirname(c.path) === "." ? [c.path] : [dirname(c.path)],
+        ),
+      );
+      invariant(
+        current === job.facts.sourceHash,
+        "RESUME_SOURCE_CHANGED",
+        "The working tree changed. Start a new build; an interrupted build cannot approve different source.",
+      );
+    }
+    const jobs = await this.build({
+      projectId: job.projectId,
+      platform: job.platform,
+      profile: job.profile,
+      autoSubmit: job.autoSubmit,
+      clean: false,
+      validationOnly: job.kind === "test",
+      checksMode: job.checksMode,
+    });
+    for (const next of jobs) {
+      next.resumedFrom = jobId;
+      this.saveJob(next);
+    }
+    return jobs;
+  }
+  async readCompliance(
+    projectId: string,
+    listing?: string,
+  ): Promise<ComplianceView> {
+    const project = this.store.get<Project>("projects", projectId);
+    const chosen = listing ?? project.settings.appStoreListing;
+    if (!chosen) return {};
+    const { path, relative } = await this.listingFile(project, chosen);
+    if (listing && project.settings.appStoreListing !== relative)
+      this.saveSettings(projectId, {
+        ...project.settings,
+        appStoreListing: relative,
+      });
     return { listing: relative, ...(await readListingCompliance(path)) };
   }
   async saveCompliance(
@@ -997,7 +1400,8 @@ export class Engine extends EventEmitter {
         createdAt: now(),
         autoSubmit: request.autoSubmit ?? false,
         clean: request.clean ?? false,
-        kind: "build",
+        kind: request.validationOnly ? "test" : "build",
+        checksMode: request.checksMode,
         projectSnapshot: invocation ? structuredClone(project) : undefined,
         requiresInvocationCredentials: invocation
           ? invocation.context.noKeychain ||
@@ -1090,6 +1494,7 @@ export class Engine extends EventEmitter {
         );
         job.versionReservation = "committed";
       }
+      checkpoint(job, stage);
       job.stage = stage;
       job.stageStartedAt = now();
       job.progress = undefined;
@@ -1131,7 +1536,7 @@ export class Engine extends EventEmitter {
         redactor.add(
           ...Object.values(resolveProfile(eas, job.profile, job.platform).env),
         );
-      if (job.kind === "build")
+      if (job.kind === "build" || job.kind === "test")
         await buildLocal({
           store,
           vault,
@@ -1188,6 +1593,12 @@ export class Engine extends EventEmitter {
         this.store.releaseNumber(job.id)
       )
         job.versionReservation = "released";
+      finishCheckpoint(
+        job,
+        job.status === "needs-attention"
+          ? "interrupted"
+          : job.status === "succeeded",
+      );
       job.finishedAt = now();
       this.saveJob(job);
       this.controllers.delete(job.id);
@@ -1349,6 +1760,12 @@ export class Engine extends EventEmitter {
       "ARTIFACT_TYPE",
       "Only store IPA/AAB artifacts can be uploaded.",
     );
+    const current =
+      !job.requiresInvocationCredentials &&
+      !project.id.startsWith("invocation:")
+        ? this.store.list<Project>("projects").find((p) => p.id === project.id)
+        : undefined;
+    assertUploadChecks(job, current?.settings ?? project.settings);
     const redactor = new Redactor();
     stage("upload");
     if (job.platform === "ios") {

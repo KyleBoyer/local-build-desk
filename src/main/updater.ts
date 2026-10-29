@@ -13,6 +13,10 @@ export class Updater {
   private timer?: NodeJS.Timeout;
   private initialTimer?: NodeJS.Timeout;
   private checking?: Promise<UpdateStatus>;
+  private installing = false;
+  get isInstalling() {
+    return this.installing;
+  }
   constructor(
     private readonly emit: (status: UpdateStatus) => void,
     private readonly busy: () => boolean,
@@ -110,6 +114,8 @@ export class Updater {
     );
     // The app's before-quit handler shuts the engine down first; Squirrel
     // replaces the bundle once the process exits and relaunches it.
+    if (this.installing) return;
+    this.installing = true;
     autoUpdater.quitAndInstall(false, true);
   }
   private set(next: Omit<UpdateStatus, "currentVersion">) {

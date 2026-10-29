@@ -362,6 +362,12 @@ export class Store {
             : "interrupted";
         if (job.submission?.state === "uploading")
           job.submission.state = "uncertain";
+        if (job.validation?.state === "running") {
+          job.validation.state = "interrupted";
+          job.validation.finishedAt = new Date().toISOString();
+        }
+        for (const item of job.checkpoints ?? [])
+          if (item.state === "running") item.state = "interrupted";
         job.error =
           "The app stopped during this operation. Inspect the logs; reconcile store state before retrying an upload.";
         if (this.releaseNumber(job.id)) job.versionReservation = "released";

@@ -59,6 +59,7 @@ export interface Profile {
   issues: Issue[];
 }
 export interface ProjectSettings {
+  releaseChecks?: import("./release-check-schema").ReleaseCheckPolicy;
   projectType?: ProjectType;
   appDirectory?: string;
   iosTarget?: string;
@@ -160,6 +161,8 @@ export type Stage =
   | "snapshot"
   | "install"
   | "configure"
+  | "testing"
+  | "screenshots"
   | "signing"
   | "compile"
   | "export"
@@ -200,7 +203,76 @@ export interface Submission {
   message?: string;
   uploadedAt?: string;
 }
+export interface Checkpoint {
+  stage: Stage;
+  state: "running" | "complete" | "failed" | "interrupted";
+  startedAt: string;
+  finishedAt?: string;
+  detail?: string;
+}
+export interface CapturedScreenshot {
+  name: string;
+  path: string;
+  sha256: string;
+  size: number;
+  width: number;
+  height: number;
+  displayType?: string;
+  device: string;
+  runtime: string;
+}
+export interface CheckRun {
+  device: string;
+  runtime?: string;
+  status: "passed" | "failed";
+  resultBundle?: string;
+  attachments?: string;
+  passed?: number;
+  failed?: number;
+  skipped?: number;
+  detail?: string;
+}
+export interface ValidationResult {
+  state: "running" | "passed" | "failed" | "cancelled" | "interrupted";
+  fingerprint: string;
+  sourceHash: string;
+  policyDigest: string;
+  configuration: string;
+  startedAt: string;
+  finishedAt?: string;
+  mode: "all" | "tests" | "screenshots";
+  runs: CheckRun[];
+  screenshots: CapturedScreenshot[];
+  error?: string;
+}
+export interface ReadinessItem {
+  id: string;
+  title: string;
+  status: "ready" | "blocked" | "warning" | "pending";
+  detail: string;
+  action?: string;
+}
+export interface ReleaseReadiness {
+  projectId: string;
+  jobId?: string;
+  destination: "testflight" | "appstore";
+  checkedAt: string;
+  items: ReadinessItem[];
+  canUpload: boolean;
+  delivery: {
+    built: boolean;
+    uploaded: boolean;
+    processed: boolean;
+    assigned: boolean;
+    review?: string;
+  };
+}
 export interface Job {
+  checkpoints?: Checkpoint[];
+  validation?: ValidationResult;
+  checksMode?: "all" | "tests" | "screenshots";
+  resumedFrom?: string;
+
   restoredFromBackup?: boolean;
   reuseFingerprint?: string;
   nativeReuseFingerprint?: string;
@@ -238,7 +310,7 @@ export interface Job {
   submission?: Submission;
   parentJobId?: string;
   storeEligible?: boolean;
-  kind: "build" | "submit";
+  kind: "build" | "submit" | "test";
 }
 export interface LogEntry {
   time: string;
@@ -304,6 +376,8 @@ export type Credential =
       password: string;
     };
 export interface BuildRequest {
+  checksMode?: "all" | "tests" | "screenshots";
+  validationOnly?: boolean;
   projectId: string;
   platform: Platform | "all";
   profile: string;
@@ -341,6 +415,35 @@ export interface DeskEvent {
   update?: UpdateStatus;
 }
 export interface DesktopAPI {
+  checkTargets(
+    projectId: string,
+  ): Promise<{
+    devices: { id: string; name: string }[];
+    runtimes: { id: string; name: string; version: string }[];
+    schemes: string[];
+    testPlans: string[];
+  }>;
+  runChecks(
+    projectId: string,
+    profile: string,
+    mode: "all" | "tests" | "screenshots",
+  ): Promise<Job[]>;
+  useScreenshots(jobId: string): Promise<string>;
+  screenshotPreview(jobId: string, index: number): Promise<string>;
+  readiness(
+    projectId: string,
+    destination?: "testflight" | "appstore",
+  ): Promise<ReleaseReadiness>;
+  resume(jobId: string): Promise<Job[]>;
+  readStoreStatus(
+    projectId: string,
+  ): Promise<{
+    version: string;
+    state: string;
+    editable: boolean;
+    buildNumber?: string;
+  }>;
+
   readRelease(
     jobId: string,
     draft: ReleaseDraft,
@@ -375,7 +478,7 @@ export interface DesktopAPI {
   prepareRelease(jobId: string, draft: ReleaseDraft): Promise<ReleasePreview>;
   applyRelease(token: string): Promise<string>;
   savePlayNotes(projectId: string, text: string, locale: string): Promise<void>;
-  readCompliance(projectId: string): Promise<ComplianceView>;
+  readCompliance(projectId: string, listing?: string): Promise<ComplianceView>;
   saveCompliance(
     projectId: string,
     listing: string,

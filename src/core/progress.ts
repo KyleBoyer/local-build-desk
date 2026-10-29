@@ -9,6 +9,10 @@ export const stageGuidance: Record<Stage, string> = {
     "Installing dependencies. First-time downloads can take several minutes.",
   configure:
     "Preparing native projects and tools. Component downloads can take several minutes.",
+  testing:
+    "Running required checks in the build snapshot. First simulator boot and test compilation can take a few minutes.",
+  screenshots:
+    "Opening the capture plan and exporting screenshots. Progress and test diagnostics are retained.",
   signing: "Preparing signing credentials and native tools.",
   compile:
     "Compiling native code. This can take several minutes, especially on a first build.",

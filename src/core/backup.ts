@@ -16,6 +16,11 @@ import {
 } from "node:fs/promises";
 import { resolve, dirname, join, isAbsolute } from "node:path";
 import { z } from "zod";
+import {
+  validationResultSchema,
+  checkpointSchema,
+} from "./release-check-schema";
+import { releaseJournalSchema } from "./release-journal";
 import { settingsSchema } from "./settings-schema";
 import { Store, appDirectoryKey } from "./database";
 import { Vault } from "./vault";
@@ -185,7 +190,7 @@ const jobSchema = z
     projectName: text,
     platform: z.enum(["ios", "android"]),
     profile: text,
-    kind: z.enum(["build", "submit"]),
+    kind: z.enum(["build", "submit", "test"]),
     status: z.enum([
       "queued",
       "running",
@@ -201,6 +206,8 @@ const jobSchema = z
       "snapshot",
       "install",
       "configure",
+      "testing",
+      "screenshots",
       "signing",
       "compile",
       "export",
@@ -250,6 +257,10 @@ const jobSchema = z
     storeEligible: z.boolean().optional(),
     facts: factsSchema.optional(),
     restoredFromBackup: z.boolean().optional(),
+    validation: validationResultSchema.optional(),
+    checkpoints: z.array(checkpointSchema).max(1000).optional(),
+    checksMode: z.enum(["all", "tests", "screenshots"]).optional(),
+    resumedFrom: id.optional(),
     reuseFingerprint: text.optional(),
     nativeReuseFingerprint: text.optional(),
   })
@@ -303,6 +314,7 @@ const payloadSchema = z
       .max(200000),
     jobs: z.array(jobSchema).max(100000),
     artifacts: z.array(artifactSchema).max(200000),
+    releaseJournals: z.array(releaseJournalSchema).max(10000).optional(),
     notificationsEnabled: z.boolean(),
   })
   .strict();
@@ -453,6 +465,7 @@ export async function captureBackup(
     versionClaims: versionClaims!,
     jobs: jobs!,
     artifacts: artifacts!,
+    releaseJournals: store.preference("release-journals", []),
     notificationsEnabled: store.preference("notificationsEnabled", true),
   });
 }
@@ -601,6 +614,19 @@ export async function restorePayload(
   assertIdle();
   store.db.exec("BEGIN IMMEDIATE");
   try {
+    const journals = store.preference<z.infer<typeof releaseJournalSchema>[]>(
+      "release-journals",
+      [],
+    );
+    const journalIds = new Set(journals.map((j) => j.id));
+    for (const journal of payload.releaseJournals ?? [])
+      if (!journalIds.has(journal.id))
+        journals.push({
+          ...journal,
+          projectId: projectIds.get(journal.projectId) ?? journal.projectId,
+          state: journal.state === "running" ? "interrupted" : journal.state,
+        });
+    store.setPreference("release-journals", journals);
     for (const row of prepared) vault.writePrepared(row);
     for (const project of projects) store.putProject(project);
     for (const row of payload.versionClaims)
@@ -636,6 +662,15 @@ export async function restorePayload(
         job.error =
           "Restored from a backup; retry locally after checking project paths and credentials.";
       }
+      if (job.validation?.state === "running") {
+        job.validation.state = "interrupted";
+        job.validation.finishedAt = new Date().toISOString();
+      }
+      for (const point of job.checkpoints ?? [])
+        if (point.state === "running") {
+          point.state = "interrupted";
+          point.finishedAt = new Date().toISOString();
+        }
       if (job.submission?.state === "uploading") {
         job.submission.state = "uncertain";
         job.status = "needs-attention";

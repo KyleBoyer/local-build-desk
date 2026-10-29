@@ -1,3 +1,4 @@
+import { installQuitController } from "./quit-controller";
 import type { Job } from "../core/types";
 import {
   app,
@@ -431,23 +432,21 @@ function startOwner() {
       app.on("activate", () => {
         if (!BrowserWindow.getAllWindows().length) void createWindow();
       });
-      let quitReady = false;
-      app.on("before-quit", (event) => {
-        if (quitReady) return;
-        event.preventDefault();
-        updater.stop();
-        buildTray?.dispose();
-        void engine.shutdown().finally(() => {
+      installQuitController(
+        app,
+        async () => {
+          updater.stop();
+          buildTray?.dispose();
+          await engine.shutdown();
           server.close();
           try {
             unlinkSync(socketPath);
           } catch {}
           store.close();
           releaseOwnerLock();
-          quitReady = true;
-          app.quit();
-        });
-      });
+        },
+        () => updater.isInstalling,
+      );
     })
     .catch((error) => {
       console.error(error);

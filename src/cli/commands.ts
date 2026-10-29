@@ -30,6 +30,8 @@ import {
   type AppleWebSession,
 } from "../core/app-store-compliance";
 import { setTimeout as sleep } from "node:timers/promises";
+import { ReleaseJournal, listingFingerprint } from "../core/release-journal";
+import { assertScreenshotProvenance } from "../core/screenshot-provenance";
 import { transferVersionCounter } from "../core/versions";
 export const CLI_EXIT = { success: 0, failure: 1, processing: 2 } as const;
 export interface CLIRuntime {
@@ -120,6 +122,13 @@ export const help = `Local Build Desk — compile and upload from this Mac
   ios-submit install-tool --project PATH --tool android|ios-platform|node|cocoapods|xcodegen|gcloud [--accept-android-license]
   ios-submit build --project PATH --platform ios|android|all --profile production [--auto-submit] [--clean]
     [--build-directory PATH] stores snapshots and native caches on another disk
+  ios-submit test --project PATH [--profile production] [--platform ios|android]
+  ios-submit screenshots --project PATH [--profile production]
+  ios-submit test-targets --project PATH
+  ios-submit readiness --project PATH [--destination testflight|appstore]
+  ios-submit resume --job JOB_ID
+  ios-submit store-status --project PATH
+  ios-submit use-screenshots --job JOB_ID
   ios-submit submit --artifact ARTIFACT_ID [--wait] [--timeout 1800]
   ios-submit status [--job JOB_ID] [--wait] [--timeout 1800]
   ios-submit logs --job JOB_ID
@@ -159,6 +168,7 @@ export async function runCLI(
       args: argv,
       allowPositionals: true,
       options: {
+        destination: { type: "string" },
         project: { type: "string" },
         source: { type: "string" },
         "settings-from": { type: "string" },
@@ -275,6 +285,8 @@ export async function runCLI(
     let invocation: BuildInvocation | undefined;
     const invocationCommand = [
       "build",
+      "test",
+      "screenshots",
       "doctor",
       "inspect",
       "submit",
@@ -326,6 +338,33 @@ export async function runCLI(
       );
       return project.id;
     };
+    if (command === "test-targets") {
+      output(await engine.checkTargets(projectId()));
+      return 0;
+    }
+    if (command === "readiness") {
+      invariant(
+        !v.destination || ["testflight", "appstore"].includes(v.destination),
+        "DESTINATION",
+        "Use --destination testflight or appstore.",
+      );
+      output(
+        await engine.readiness(
+          projectId(),
+          v.destination as "testflight" | "appstore" | undefined,
+        ),
+      );
+      return 0;
+    }
+    if (command === "store-status") {
+      output(await engine.readStoreStatus(projectId()));
+      return 0;
+    }
+    if (command === "use-screenshots") {
+      invariant(v.job, "JOB_REQUIRED", "Pass --job.");
+      output({ listing: await engine.useScreenshots(v.job) });
+      return 0;
+    }
     if (command === "connect-google") {
       invariant(
         v.key,
@@ -592,6 +631,21 @@ export async function runCLI(
         "Couldn't read the bundle ID and version; pass --version.",
       );
       const loaded = await loadListing(listingPath);
+      const writing = !!(v.apply || v["submit-for-review"]);
+      const app = writing ? await api.app(bundleId) : undefined;
+      const journal = writing
+        ? new ReleaseJournal(engine.store, {
+            projectId: project!.id,
+            bundleId,
+            version,
+            appId: app.id,
+            manifestHash: listingFingerprint(
+              loaded.listing,
+              loaded.screenshots,
+            ),
+          })
+        : undefined;
+      if (journal) await journal.reconcile(api);
       const plan = await listingPlan(
         api,
         bundleId,
@@ -604,11 +658,20 @@ export async function runCLI(
         output({ dryRun: true, ...plan });
         return plan.blockers.length ? CLI_EXIT.failure : CLI_EXIT.success;
       }
-      const result = await applyListing(api, plan, loaded, {
+      if (!plan.readOnly)
+        await assertScreenshotProvenance(
+          engine.store,
+          project!,
+          loaded,
+          v["build-number"] ?? plan.build?.number,
+          version,
+        );
+      const result = await applyListing(journal!.wrap(api), plan, loaded, {
         web: runtime.appleWeb,
         submit: v["submit-for-review"],
         log: (line) => write(line + "\n"),
       });
+      journal!.finish(result.submitted);
       // A submitted version is no longer editable, so there's nothing left to check.
       if (result.submitted) {
         output(result);
@@ -786,7 +849,7 @@ export async function runCLI(
       return 0;
     }
     let jobs: Job[];
-    if (command === "build") {
+    if (["build", "test", "screenshots"].includes(command)) {
       const platform = v.platform ?? "all";
       invariant(
         ["ios", "android", "all"].includes(platform),
@@ -798,11 +861,16 @@ export async function runCLI(
           projectId: projectId(),
           platform: platform as Platform | "all",
           profile: v.profile ?? "production",
-          autoSubmit: v["auto-submit"],
+          validationOnly: command !== "build",
+          checksMode: command === "screenshots" ? "screenshots" : "all",
+          autoSubmit: command === "build" && v["auto-submit"],
           clean: v.clean,
         },
         invocation,
       );
+    } else if (command === "resume") {
+      invariant(v.job, "JOB_REQUIRED", "Pass --job.");
+      jobs = await engine.resume(v.job);
     } else if (command === "submit") {
       invariant(
         v.artifact,

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { releaseChecksSchema } from "./release-check-schema";
 const text = z.string().max(4096),
   identifier = z.string().min(1).max(128);
 export const localProfileSchema = z
@@ -25,6 +26,7 @@ export const localProfileSchema = z
   .strict();
 export const settingsSchema = z
   .object({
+    releaseChecks: releaseChecksSchema.optional(),
     projectType: z.enum(["expo", "capacitor", "native-ios"]).optional(),
     appDirectory: text.optional(),
     iosTarget: text.optional(),

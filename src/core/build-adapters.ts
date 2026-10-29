@@ -129,6 +129,12 @@ export async function buildNonExpo(ctx: BuildContext) {
     { signal: ctx.signal, secrets: preflightSecrets },
   );
   const profile = resolveProfile(inspection.eas, job.profile, job.platform);
+  if (job.kind === "test") {
+    profile.simulator = job.platform === "ios";
+    profile.distribution = "internal";
+    profile.debugBuild = true;
+    profile.developmentClient = false;
+  }
   preflightSecrets.add(...Object.values(profile.env));
   inspection = await inspectProject(
     project.path,
@@ -563,7 +569,8 @@ export async function buildNonExpo(ctx: BuildContext) {
       ? inspection.config.ios?.buildNumber
       : inspection.config.android?.versionCode;
   invariant(
-    generated ||
+    job.kind === "test" ||
+      generated ||
       /^\d+$/.test(String(configured)) ||
       job.requestedBuildNumber !== undefined ||
       store.counter(key) !== undefined,
@@ -573,16 +580,19 @@ export async function buildNonExpo(ctx: BuildContext) {
   const initial = /^\d+$/.test(String(configured))
     ? Math.max(0, Number(configured) - 1)
     : 0;
-  job.buildNumber = store.claimNumber(
-    key,
-    job.id,
-    initial,
-    job.requestedBuildNumber ??
-      (!profile.autoIncrement && /^\d+$/.test(String(configured))
-        ? Number(configured)
-        : undefined),
-  );
-  job.versionReservation = "reserved";
+  job.buildNumber =
+    job.kind === "test"
+      ? String(/^\d+$/.test(String(configured)) ? configured : 1)
+      : store.claimNumber(
+          key,
+          job.id,
+          initial,
+          job.requestedBuildNumber ??
+            (!profile.autoIncrement && /^\d+$/.test(String(configured))
+              ? Number(configured)
+              : undefined),
+        );
+  if (job.kind !== "test") job.versionReservation = "reserved";
   ctx.save();
   const cache = join(
     storage,

@@ -294,6 +294,7 @@ export interface ListingPlan {
   version: string;
   versionId?: string;
   versionState?: string;
+  readOnly?: boolean;
   appInfoId: string;
   appInfoLocalizationId?: string;
   versionLocalizationId?: string;
@@ -427,11 +428,42 @@ export async function listingPlan(
   );
   const existing = versions.find((v) => v.attributes.versionString === version);
   const draft = versions.find((v) => EDITABLE.includes(stateOf(v)));
-  invariant(
-    !existing || EDITABLE.includes(stateOf(existing)),
-    "VERSION_NOT_EDITABLE",
-    `Version ${version} is ${stateOf(existing)}. Bump the app version, or manage this one in App Store Connect.`,
-  );
+  if (existing && !EDITABLE.includes(stateOf(existing))) {
+    const attached = (
+      await api.request(`/appStoreVersions/${existing.id}/build`)
+    ).data;
+    invariant(
+      !buildNumber || attached?.attributes?.version === buildNumber,
+      "REVIEW_BUILD_MISMATCH",
+      `Version ${version} is already ${stateOf(existing)} with another build. No changes were sent.`,
+    );
+    return {
+      appId: app.id,
+      version,
+      versionId: existing.id,
+      versionState: stateOf(existing),
+      readOnly: true,
+      appInfoId: info.id,
+      appInfoLocalizationId: infoLocalization?.id,
+      locale,
+      changes: [],
+      categories: {},
+      screenshots: { processing: false, keep: true, current: 0, upload: [] },
+      build: attached
+        ? {
+            id: attached.id,
+            number: attached.attributes?.version,
+            attached: true,
+          }
+        : undefined,
+      inAppPurchases: [],
+      blockers: [],
+      compliance: { attested: false, statements: [], blockers: [] },
+      manual: [
+        `Version ${version} is ${stateOf(existing).replaceAll("_", " ").toLowerCase()}. This release is read-only; no listing or review changes will be sent.`,
+      ],
+    };
+  }
   // Apple keeps one draft per platform; a draft under another number gets renamed.
   const target = existing ?? draft;
   const live = versions.some((v) =>
@@ -856,6 +888,13 @@ export async function applyListing(
     wait?: (ms: number) => Promise<void>;
   } = {},
 ) {
+  if (plan.readOnly)
+    return {
+      versionId: plan.versionId!,
+      submitted: !!options.submit,
+      alreadySubmitted: !!options.submit,
+      state: plan.versionState,
+    };
   const log = options.log ?? (() => undefined);
   const fetcher = options.fetcher ?? fetch;
   const wait =
@@ -1199,12 +1238,18 @@ export async function applyListing(
     "LISTING_BLOCKED",
     `Not submitting for review: ${blockers.join(" ")}`,
   );
-  const open = (
+  const drafts = (
     await all(
       api,
       `/reviewSubmissions?filter[app]=${plan.appId}&filter[platform]=IOS&limit=50`,
     )
-  ).find((s) => s.attributes.state === "READY_FOR_REVIEW");
+  ).filter((s) => s.attributes.state === "READY_FOR_REVIEW");
+  invariant(
+    drafts.length <= 1,
+    "REVIEW_AMBIGUOUS",
+    "Apple returned multiple review drafts. Select the intended one in App Store Connect before continuing; no new submission was created.",
+  );
+  const open = drafts[0];
   const submission =
     open ??
     (
