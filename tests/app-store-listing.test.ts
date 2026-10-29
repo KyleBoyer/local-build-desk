@@ -125,7 +125,7 @@ function apple(
               id: "version",
               attributes: {
                 versionString: "1.0",
-                appStoreState: "PREPARE_FOR_SUBMISSION",
+                appStoreState: options.versionState ?? "PREPARE_FOR_SUBMISSION",
               },
             },
           ],
@@ -410,4 +410,22 @@ it("creates a missing in-app purchase from its product file", async () => {
   expect(
     created[3]!.body.data.relationships.availableTerritories.data,
   ).toHaveLength(2);
+});
+
+it("keeps working on a version already in an unsent review submission", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api } = apple({
+    screenshots: [a, b],
+    contact: true,
+    versionState: "READY_FOR_REVIEW",
+  });
+  const plan = await listingPlan(
+    api,
+    "com.example.app",
+    "1.0",
+    await loadListing(listing()),
+  );
+  expect(plan.versionId).toBe("version");
+  expect(plan.versionState).toBe("READY_FOR_REVIEW");
 });
