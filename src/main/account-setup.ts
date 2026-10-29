@@ -1233,7 +1233,8 @@ export class AccountSetupManager {
     const scopeKey =
       mutation === "invite" ||
       mutation === "invite-confirm" ||
-      mutation === "grant"
+      mutation === "grant" ||
+      mutation === "grant-confirm"
         ? `${google.developerId}:${target.email}:${target.packageName}`
         : scope;
     if (mutation && google.submitted[mutation] === scopeKey) {
@@ -1777,6 +1778,21 @@ export class AccountSetupManager {
         account,
         `${play}/users-and-permissions/${encodeURIComponent(target.email)}`,
       );
+      return;
+    }
+    if (probe.phase === "play-user-confirm") {
+      const scope = `${google.developerId}:${target.email}:${target.packageName}`;
+      if (
+        google.approvedPlayScope !== scope ||
+        google.submitted.grant !== scope
+      ) {
+        this.prompt(
+          account,
+          "Google is asking to update this user's permissions, but no matching approved change is pending. Review the page before confirming.",
+        );
+        return;
+      }
+      await this.googleAction(account, "confirm-user-update", "grant-confirm");
       return;
     }
     if (probe.phase === "play-user") {

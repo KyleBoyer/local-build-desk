@@ -381,3 +381,17 @@ it("adds a new app to an existing Play user's page and keeps its other apps", ()
     ).phase,
   ).not.toBe("play-user");
 });
+it("recognizes Play's update-permissions confirmation for the service account only", () => {
+  const url = `https://play.google.com/console/developers/123/users-and-permissions/${encodeURIComponent(target.email)}`;
+  const dom = page(
+    `<div role="dialog">Update ${target.email}? Are you sure you want to update the permissions of this user? <button>Cancel</button><button>Yes</button></div>`,
+    url,
+  );
+  expect(probe(dom).phase).toBe("play-user-confirm");
+  let yes = 0;
+  dom.window.document
+    .querySelectorAll("button")[1]
+    .addEventListener("click", () => yes++);
+  expect(act(dom, "confirm-user-update").done).toBe(true);
+  expect(yes).toBe(1);
+});

@@ -17,6 +17,7 @@ export interface GoogleProbe {
     | "play-create"
     | "play-users"
     | "play-user"
+    | "play-user-confirm"
     | "play-app-select"
     | "play-permissions"
     | "play-invite"
@@ -78,6 +79,7 @@ export type GoogleActionType =
   | "confirm-invite"
   | "open-add-app"
   | "save-user"
+  | "confirm-user-update"
   | "open-play-create"
   | "fill-play-create";
 export interface GoogleAction {
@@ -507,11 +509,20 @@ export function inspectGooglePage(target: GoogleTarget): GoogleProbe {
     const userPage = location.pathname.match(
       /\/users-and-permissions\/([^/]+)\/?$/,
     );
-    if (
-      userPage &&
+    const ownPage =
+      !!userPage &&
       decodeURIComponent(userPage[1]).toLowerCase() ===
-        target.email.toLowerCase()
+        target.email.toLowerCase();
+    // Saving asks "Update <email>? Are you sure you want to update the
+    // permissions of this user?"
+    if (
+      ownPage &&
+      dialog &&
+      dialog.innerText.includes(target.email) &&
+      /update the permissions/i.test(dialog.innerText)
     )
+      return { phase: "play-user-confirm", developerId };
+    if (ownPage)
       return {
         phase: "play-user",
         developerId,
@@ -825,6 +836,8 @@ export function performGoogleAction(action: GoogleAction): GoogleActionResult {
       return click(/^Add app\b/i);
     case "save-user":
       return click(/^Save changes$/i);
+    case "confirm-user-update":
+      return click(/^Yes$/i, dialog ?? document);
     case "apply-app": {
       const picker =
         dialog ??
