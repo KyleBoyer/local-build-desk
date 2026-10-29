@@ -16,6 +16,8 @@ const names = [
   "prepareRelease",
   "applyRelease",
   "savePlayNotes",
+  "readCompliance",
+  "saveCompliance",
   "releaseNoteDraft",
   "notificationSettings",
   "testNotification",

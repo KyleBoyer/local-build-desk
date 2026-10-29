@@ -83,5 +83,7 @@ export const settingsSchema = z
       .string()
       .regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/)
       .optional(),
+    // App Store listing JSON, relative to the project, for `ios-submit listing`.
+    appStoreListing: z.string().max(1024).optional(),
   })
   .strict();

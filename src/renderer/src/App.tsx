@@ -33,6 +33,7 @@ import {
   Download,
   ExternalLink,
   FileCode2,
+  ClipboardCheck,
   FileKey2,
   Folder,
   FolderOpen,
@@ -60,6 +61,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Setup } from "./Setup";
+import { StoreCompliance } from "./StoreCompliance";
 import type {
   Artifact,
   Check as ToolCheck,
@@ -97,6 +99,7 @@ const pageNames = {
   toolchain: "Toolchain",
   preferences: "Preferences",
   release: "Release",
+  compliance: "App Store",
 } as const;
 type Page = keyof typeof pageNames;
 const statusLabel = (value: string) =>
@@ -660,6 +663,7 @@ export function App() {
               toolchain: CircuitBoard,
               preferences: Settings2,
               release: FileCode2,
+              compliance: ClipboardCheck,
             }[p];
             return (
               <button
@@ -740,6 +744,14 @@ export function App() {
         </header>
         <div className="content">
           {page === "preferences" && <DeskPreferences />}
+          {page === "compliance" &&
+            (project ? (
+              <StoreCompliance key={project.id} project={project} />
+            ) : (
+              <p className="muted">
+                Import a project to answer its App Store questions.
+              </p>
+            ))}
           {page === "release" &&
             (project ? (
               <ReleaseAssistant

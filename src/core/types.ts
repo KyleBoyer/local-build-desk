@@ -91,6 +91,8 @@ export interface ProjectSettings {
   playReleaseNotes?: string;
   /** Language for playReleaseNotes. Missing means en-US. */
   playReleaseNotesLanguage?: string;
+  /** App Store listing JSON (relative to the project) used by `ios-submit listing`. */
+  appStoreListing?: string;
   ascAppId?: string;
   setupAppleComplete?: boolean;
   testFlightGroupId?: string;
@@ -365,6 +367,13 @@ export interface DesktopAPI {
   prepareRelease(jobId: string, draft: ReleaseDraft): Promise<ReleasePreview>;
   applyRelease(token: string): Promise<string>;
   savePlayNotes(projectId: string, text: string, locale: string): Promise<void>;
+  readCompliance(projectId: string): Promise<ComplianceView>;
+  saveCompliance(
+    projectId: string,
+    listing: string,
+    answers: Omit<import("./app-store-compliance").Compliance, "attestation">,
+    attestBy?: string,
+  ): Promise<ComplianceView>;
   releaseNoteDraft(jobId: string): Promise<{ text: string; note: string }>;
   notificationSettings(
     enabled?: boolean,
@@ -685,4 +694,13 @@ export interface AccountSetupState {
   connectedCredentialId?: string;
   events: string[];
   diagnosticPath?: string;
+}
+
+/** A project's App Store compliance answers, read from its listing file. */
+export interface ComplianceView {
+  /** The listing file, relative to the project; missing until one is chosen. */
+  listing?: string;
+  compliance?: import("./app-store-compliance").Compliance;
+  attested?: boolean;
+  statements?: string[];
 }

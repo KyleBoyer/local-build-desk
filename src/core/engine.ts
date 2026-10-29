@@ -37,7 +37,13 @@ import {
   readdirSync,
   mkdirSync as requireMkdir,
 } from "node:fs";
-import { resolve, join, dirname, extname, relative } from "node:path";
+import { resolve, join, dirname, extname, relative, sep } from "node:path";
+import {
+  readListingCompliance,
+  saveListingCompliance,
+  type Compliance,
+} from "./app-store-compliance";
+import type { ComplianceView } from "./types";
 import { createHash, randomBytes } from "node:crypto";
 import { Store, id, now } from "./database";
 import { Vault, importCredential, privateDirectory } from "./vault";
@@ -517,6 +523,52 @@ export class Engine extends EventEmitter {
           " Refresh the preview before retrying; a preceding store change may already have succeeded.",
       );
     }
+  }
+  /** The listing file holding a project's App Store compliance answers. */
+  private async listingFile(project: Project, listing: string) {
+    // Compare real paths: the project is stored resolved, and a chosen file
+    // may come through a symlink (such as /var → /private/var).
+    const path = await realpath(resolve(project.path, listing)).catch(() =>
+      resolve(project.path, listing),
+    );
+    invariant(
+      (path.startsWith(project.path + sep) || path === project.path) &&
+        path.endsWith(".json"),
+      "LISTING_PATH",
+      "Choose a .json listing file inside the project.",
+    );
+    return { path, relative: relative(project.path, path) };
+  }
+  async readCompliance(projectId: string): Promise<ComplianceView> {
+    const project = this.store.get<Project>("projects", projectId);
+    if (!project.settings.appStoreListing) return {};
+    const { path, relative } = await this.listingFile(
+      project,
+      project.settings.appStoreListing,
+    );
+    return { listing: relative, ...(await readListingCompliance(path)) };
+  }
+  async saveCompliance(
+    projectId: string,
+    listing: string,
+    answers: Omit<Compliance, "attestation">,
+    attestBy?: string,
+  ): Promise<ComplianceView> {
+    const project = this.store.get<Project>("projects", projectId);
+    const file = await this.listingFile(project, listing);
+    if (project.settings.appStoreListing !== file.relative)
+      this.saveSettings(projectId, {
+        ...project.settings,
+        appStoreListing: file.relative,
+      });
+    const saved = await saveListingCompliance(
+      file.path,
+      answers,
+      attestBy
+        ? { name: attestBy, date: new Date().toISOString().slice(0, 10) }
+        : undefined,
+    );
+    return { listing: file.relative, ...saved };
   }
   savePlayNotes(projectId: string, text: string, locale: string) {
     const project = this.store.get<Project>("projects", projectId);

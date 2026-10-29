@@ -4,6 +4,11 @@ const text = z.string().max(4096),
   platform = z.enum(["ios", "android"]);
 export { settingsSchema } from "../core/settings-schema";
 import { settingsSchema } from "../core/settings-schema";
+import {
+  ageRatingSchema,
+  appPrivacySchema,
+  pricingSchema,
+} from "../core/app-store-compliance";
 const credential = z.discriminatedUnion("kind", [
   z
     .object({
@@ -114,6 +119,19 @@ export const methods = {
     z.string().regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
   ]),
   releaseNoteDraft: z.tuple([identifier]),
+  readCompliance: z.tuple([identifier]),
+  saveCompliance: z.tuple([
+    identifier,
+    z.string().min(1).max(1024),
+    z
+      .object({
+        ageRating: ageRatingSchema.optional(),
+        appPrivacy: appPrivacySchema.optional(),
+        pricing: pricingSchema.optional(),
+      })
+      .strict(),
+    z.string().min(2).max(100).optional(),
+  ]),
   notificationSettings: z.tuple([z.boolean().optional()]),
   testNotification: z.tuple([]),
   compareBuild: z.tuple([identifier]),

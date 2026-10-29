@@ -24,6 +24,11 @@ import {
   listingPlan,
   loadListing,
 } from "../core/app-store-listing";
+import {
+  readListingCompliance,
+  saveListingCompliance,
+  type AppleWebSession,
+} from "../core/app-store-compliance";
 import { setTimeout as sleep } from "node:timers/promises";
 import { transferVersionCounter } from "../core/versions";
 export const CLI_EXIT = { success: 0, failure: 1, processing: 2 } as const;
@@ -34,6 +39,8 @@ export interface CLIRuntime {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   pollIntervalMs?: number;
+  /** App Store Connect's web API in the desk's signed-in session (desktop owner only). */
+  appleWeb?: AppleWebSession;
 }
 function pendingProcessing(job: Job) {
   return job.submission?.state === "processing";
@@ -118,9 +125,10 @@ export const help = `Local Build Desk — compile and upload from this Mac
   ios-submit logs --job JOB_ID
   ios-submit cancel --job JOB_ID
   ios-submit reconcile --job JOB_ID
-  ios-submit listing --project PATH --listing FILE [--version X.Y] [--build-number N] [--apply] [--submit-for-review]
+  ios-submit listing --project PATH [--listing FILE] [--version X.Y] [--build-number N] [--attest NAME] [--apply] [--submit-for-review]
     shows what the App Store listing would change; --apply writes text, screenshots and the build;
-    --submit-for-review also sends the version (and its in-app purchases) to App Review
+    --submit-for-review also sends the version (and its in-app purchases) to App Review;
+    --attest NAME confirms the listing's age rating, App Privacy and pricing answers so they can be applied
   ios-submit migrate --project PATH [--credentials FILE] [--env FILE] [--ios-last-used N] [--android-last-used N]
 
 Project selection: --project-type expo|capacitor|native-ios (omit for auto-detection), --app-directory PATH,
@@ -210,6 +218,7 @@ export async function runCLI(
         version: { type: "string" },
         apply: { type: "boolean" },
         "submit-for-review": { type: "boolean" },
+        attest: { type: "string" },
       },
     });
     const command = parsed.positionals[0],
@@ -533,11 +542,29 @@ export async function runCLI(
     }
     if (command === "listing") {
       projectId();
+      const listingPath =
+        v.listing ??
+        (project!.settings.appStoreListing
+          ? resolve(project!.path, project!.settings.appStoreListing)
+          : undefined);
       invariant(
-        v.listing,
+        listingPath,
         "LISTING_REQUIRED",
-        "Pass --listing with the App Store listing JSON.",
+        "Pass --listing with the App Store listing JSON, or choose it in Local Build Desk's App Store compliance page.",
       );
+      if (v.attest) {
+        // Attesting records the person's confirmation of exactly these answers.
+        const { compliance } = await readListingCompliance(listingPath);
+        const attested = await saveListingCompliance(listingPath, compliance, {
+          name: v.attest,
+          date: new Date().toISOString().slice(0, 10),
+        });
+        write(
+          `${v.attest} attests that these answers are accurate and complete:\n` +
+            attested.statements.map((line) => `  • ${line}`).join("\n") +
+            "\n",
+        );
+      }
       invariant(
         project!.settings.appleConnectionId,
         "APPLE_CONNECTION",
@@ -564,19 +591,21 @@ export async function runCLI(
         "APP_IDENTITY",
         "Couldn't read the bundle ID and version; pass --version.",
       );
-      const loaded = await loadListing(v.listing);
+      const loaded = await loadListing(listingPath);
       const plan = await listingPlan(
         api,
         bundleId,
         version,
         loaded,
         v["build-number"],
+        runtime.appleWeb,
       );
       if (!v.apply && !v["submit-for-review"]) {
         output({ dryRun: true, ...plan });
         return plan.blockers.length ? CLI_EXIT.failure : CLI_EXIT.success;
       }
       const result = await applyListing(api, plan, loaded, {
+        web: runtime.appleWeb,
         submit: v["submit-for-review"],
         log: (line) => write(line + "\n"),
       });
@@ -586,6 +615,7 @@ export async function runCLI(
         version,
         loaded,
         v["build-number"],
+        runtime.appleWeb,
       );
       output({
         ...result,

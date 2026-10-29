@@ -2958,3 +2958,38 @@ footer span:first-child {
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
 }
+
+/* App Store compliance questionnaire */
+.compliance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px 18px;
+  margin-bottom: 14px;
+}
+.compliance-group h3 {
+  margin: 16px 0 6px;
+}
+.compliance-type {
+  margin: 4px 0;
+}
+.compliance-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 4px 0 10px 26px;
+  align-items: center;
+}
+.compliance-statements {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  line-height: 1.5;
+}
+.compliance-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin: 6px 0 10px;
+}
+.compliance-choices label.check-label {
+  white-space: nowrap;
+}

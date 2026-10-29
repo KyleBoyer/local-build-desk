@@ -4,6 +4,16 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { invariant } from "./errors";
 import type { AppleAPI } from "./stores";
+import {
+  ageRatingSchema,
+  appPrivacySchema,
+  applyCompliance,
+  attestationSchema,
+  compliancePlan,
+  pricingSchema,
+  type AppleWebSession,
+  type CompliancePlan,
+} from "./app-store-compliance";
 
 // The App Store side of a release: listing text, screenshots, the build, and
 // (only when asked) the App Review submission. `listingPlan` reads Apple and
@@ -50,6 +60,11 @@ export const listingSchema = z
      * product JSON files (relative to the listing) that can create them.
      */
     inAppPurchases: z.array(z.string()).optional(),
+    // Compliance answers; applied only while `attestation` matches them.
+    ageRating: ageRatingSchema.optional(),
+    appPrivacy: appPrivacySchema.optional(),
+    pricing: pricingSchema.optional(),
+    attestation: attestationSchema.optional(),
   })
   .loose();
 export type Listing = z.infer<typeof listingSchema>;
@@ -272,6 +287,8 @@ export interface ListingPlan {
     /** Missing, and the listing defines it: `--apply` creates it. */
     create?: boolean;
   }[];
+  /** Age rating, App Privacy and pricing, from the attested answers. */
+  compliance: CompliancePlan;
   /** Things App Review will refuse; an API key can't fix some of them. */
   blockers: string[];
   /** Things to check by hand in App Store Connect. */
@@ -290,6 +307,7 @@ export async function listingPlan(
     productIds,
   }: Awaited<ReturnType<typeof loadListing>>,
   buildNumber?: string,
+  web?: AppleWebSession,
 ): Promise<ListingPlan> {
   const app = await api.app(bundleId);
   const locale = listing.locale;
@@ -560,6 +578,16 @@ export async function listingPlan(
       );
   }
 
+  const compliance = await compliancePlan(
+    api,
+    web,
+    app.id,
+    info.id,
+    listing,
+    listing.name ?? infoLocalization?.attributes.name ?? bundleId,
+  );
+  blockers.push(...compliance.blockers);
+
   return {
     appId: app.id,
     version,
@@ -584,11 +612,14 @@ export async function listingPlan(
     build,
     inAppPurchases,
     blockers,
-    // The API can't read or set these; App Review checks them.
+    compliance,
+    // Unanswered in the listing, so App Review checks what's in App Store Connect.
     manual: [
-      "App Privacy answers (App Store Connect → App Privacy)",
-      "Age rating questionnaire",
-      "Price and availability",
+      ...(listing.appPrivacy
+        ? []
+        : ["App Privacy answers (App Store Connect → App Privacy)"]),
+      ...(listing.ageRating ? [] : ["Age rating questionnaire"]),
+      ...(listing.pricing ? [] : ["Price and availability"]),
     ],
   };
 }
@@ -744,9 +775,10 @@ export async function createInAppPurchase(
 export async function applyListing(
   api: AppleAPI,
   plan: ListingPlan,
-  { screenshots, products }: Awaited<ReturnType<typeof loadListing>>,
+  { listing, screenshots, products }: Awaited<ReturnType<typeof loadListing>>,
   options: {
     submit?: boolean;
+    web?: AppleWebSession;
     fetcher?: typeof fetch;
     log?: (line: string) => void;
     wait?: (ms: number) => Promise<void>;
@@ -1017,6 +1049,17 @@ export async function applyListing(
     );
     log(`Build ${plan.build.number} attached`);
   }
+
+  // Age rating, pricing and App Privacy, once attested.
+  if (plan.compliance.attested)
+    await applyCompliance(
+      api,
+      options.web,
+      plan.appId,
+      plan.compliance,
+      listing,
+      log,
+    );
 
   // In-app purchases the listing defines but Apple doesn't have yet.
   for (const iap of plan.inAppPurchases) {

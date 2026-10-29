@@ -27,6 +27,7 @@ import { BuildTray } from "./build-tray";
 import { methods, type Method } from "./validation";
 import { captureInvocationEnvironment } from "../cli/invocation";
 import { runCLI } from "../cli/commands";
+import { appleWebSession } from "./apple-web";
 import { invariant, messageOf } from "../core/errors";
 const dataRoot =
   process.env.LOCAL_BUILD_DESK_DATA_DIR ??
@@ -81,6 +82,8 @@ let updater: Updater;
 let notifications: JobNotifications;
 let buildTray: BuildTray | undefined;
 let window: BrowserWindow | undefined;
+/** App Store Connect's web API for App Privacy, in the desk's Apple sign-in. */
+const appleWeb = appleWebSession(() => window);
 // Electron's single-instance lock can admit two processes that launch at the
 // same instant (parallel CI jobs), so an atomically created lock file holding
 // the owner's PID decides ownership. A dead owner's lock is reclaimed.
@@ -323,7 +326,7 @@ function startOwner() {
                 if (!socket.destroyed)
                   socket.write(JSON.stringify({ text }) + "\n");
               },
-              { environment, cwd },
+              { environment, cwd, appleWeb },
             );
             socket.end(JSON.stringify({ exit: code }) + "\n");
           } catch (error) {
@@ -372,6 +375,7 @@ function startOwner() {
           (text) => process.stdout.write(text),
           {
             environment: cliEnvironment,
+            appleWeb,
             onJobs: (ids) => {
               for (const id of ids) {
                 owningJobs.add(id);
