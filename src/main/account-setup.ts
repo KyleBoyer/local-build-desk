@@ -1231,7 +1231,9 @@ export class AccountSetupManager {
       target = this.googleTarget(account),
       scope = `${target.cloudProject}:${target.email}`;
     const scopeKey =
-      mutation === "invite" || mutation === "invite-confirm"
+      mutation === "invite" ||
+      mutation === "invite-confirm" ||
+      mutation === "grant"
         ? `${google.developerId}:${target.email}:${target.packageName}`
         : scope;
     if (mutation && google.submitted[mutation] === scopeKey) {
@@ -1768,11 +1770,43 @@ export class AccountSetupManager {
       );
       return;
     }
+    if (probe.phase === "play-users" && probe.targetUserPresent) {
+      // Already a Play user (for example from another app): open its page to
+      // check for, and add, this app's access.
+      await this.googleNavigate(
+        account,
+        `${play}/users-and-permissions/${encodeURIComponent(target.email)}`,
+      );
+      return;
+    }
+    if (probe.phase === "play-user") {
+      const scope = `${google.developerId}:${target.email}:${target.packageName}`;
+      if (!probe.targetAppGranted) {
+        await this.googleAction(account, "open-add-app");
+        return;
+      }
+      if (probe.saveEnabled) {
+        if (google.approvedPlayScope !== scope) {
+          google.approval = "play";
+          this.prompt(
+            account,
+            `Approve saving read and testing-release access to ${target.packageName} for ${target.email}. Its access to other apps stays as it is.`,
+          );
+          return;
+        }
+        await this.googleAction(account, "save-user", "grant");
+        return;
+      }
+      this.prompt(
+        account,
+        "The service account has access to this app. Waiting for app access to propagate. If Google requires a first console upload, complete it in this app’s Play Console page; the API is checked automatically.",
+      );
+      return;
+    }
     if (probe.phase === "play-users") {
       if (
-        probe.targetUserPresent ||
         google.submitted.invite ===
-          `${google.developerId}:${target.email}:${target.packageName}`
+        `${google.developerId}:${target.email}:${target.packageName}`
       ) {
         this.prompt(
           account,

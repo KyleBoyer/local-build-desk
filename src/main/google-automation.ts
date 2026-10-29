@@ -16,6 +16,7 @@ export interface GoogleProbe {
     | "play-apps"
     | "play-create"
     | "play-users"
+    | "play-user"
     | "play-app-select"
     | "play-permissions"
     | "play-invite"
@@ -31,6 +32,10 @@ export interface GoogleProbe {
   keyMenuOpen?: boolean;
   apiEnabled?: boolean;
   targetUserPresent?: boolean;
+  /** On an existing user's page: the target app is in its app permissions. */
+  targetAppGranted?: boolean;
+  /** On an existing user's page: there are unsaved permission changes. */
+  saveEnabled?: boolean;
   targetAppPresent?: boolean;
   appScoped?: boolean;
   permissionsReady?: boolean;
@@ -71,6 +76,8 @@ export type GoogleActionType =
   | "apply-permissions"
   | "invite"
   | "confirm-invite"
+  | "open-add-app"
+  | "save-user"
   | "open-play-create"
   | "fill-play-create";
 export interface GoogleAction {
@@ -495,6 +502,31 @@ export function inspectGooglePage(target: GoogleTarget): GoogleProbe {
         unsafePermissions: unsafe,
         formReady: inputs.some((input) => input.value === target.email),
       };
+    // An existing user's own page: app access is added there with Add app and
+    // saved with Save changes, keeping access to the user's other apps.
+    const userPage = location.pathname.match(
+      /\/users-and-permissions\/([^/]+)\/?$/,
+    );
+    if (
+      userPage &&
+      decodeURIComponent(userPage[1]).toLowerCase() ===
+        target.email.toLowerCase()
+    )
+      return {
+        phase: "play-user",
+        developerId,
+        targetAppGranted: [
+          ...document.querySelectorAll<HTMLElement>("tr,[role=row]"),
+        ]
+          .filter(visible)
+          .some((row) => row.innerText.includes(target.packageName)),
+        saveEnabled: controls.some(
+          (el) =>
+            /^Save changes$/i.test(label(el)) &&
+            !el.hasAttribute("disabled") &&
+            el.getAttribute("aria-disabled") !== "true",
+        ),
+      };
     if (
       /users-and-permissions|usersAndPermissions/i.test(location.pathname) ||
       controls.some((e) => /^Invite new users?$/i.test(label(e)))
@@ -789,6 +821,10 @@ export function performGoogleAction(action: GoogleAction): GoogleActionResult {
         box.click();
       return { done: true };
     }
+    case "open-add-app":
+      return click(/^Add app\b/i);
+    case "save-user":
+      return click(/^Save changes$/i);
     case "apply-app": {
       const picker =
         dialog ??

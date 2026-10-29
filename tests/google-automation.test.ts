@@ -346,3 +346,38 @@ it("confirms only the intended service-account invitation with app scope visible
   expect(act(dom, "confirm-invite").done).toBe(false);
   expect(clicks).toBe(1);
 });
+it("adds a new app to an existing Play user's page and keeps its other apps", () => {
+  const url = `https://play.google.com/console/developers/123/users-and-permissions/${encodeURIComponent(target.email)}`;
+  const html = (rows: string, saveDisabled: boolean) =>
+    `<h1>${target.email}</h1><button aria-haspopup="true">Add app <i aria-hidden="true">arrow_drop_down</i></button><div role="grid"><div role="row">App Permissions</div><div role="row">Other app com.example.other 3</div>${rows}</div><button ${saveDisabled ? "disabled" : ""}>Save changes</button>`;
+  const before = page(html("", true), url);
+  expect(probe(before)).toMatchObject({
+    phase: "play-user",
+    targetAppGranted: false,
+    saveEnabled: false,
+  });
+  let opened = 0;
+  before.window.document
+    .querySelector("button")!
+    .addEventListener("click", () => opened++);
+  expect(act(before, "open-add-app").done).toBe(true);
+  expect(opened).toBe(1);
+  const pending = page(
+    html(`<div role="row">Fixture ${target.packageName} 3</div>`, false),
+    url,
+  );
+  expect(probe(pending)).toMatchObject({
+    phase: "play-user",
+    targetAppGranted: true,
+    saveEnabled: true,
+  });
+  // Another user's page is not mistaken for the service account's.
+  expect(
+    probe(
+      page(
+        html("", true),
+        "https://play.google.com/console/developers/123/users-and-permissions/someone%40example.com",
+      ),
+    ).phase,
+  ).not.toBe("play-user");
+});

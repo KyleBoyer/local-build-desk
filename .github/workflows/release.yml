@@ -92,7 +92,9 @@ jobs:
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
       - name: Build, sign and notarize app
-        run: npm run release:mac
+        # Stapling fetches the ticket from Apple's CloudKit service, which
+        # intermittently drops the connection (error 68); retry once.
+        run: npm run release:mac || (sleep 60 && npm run release:mac)
       - name: Verify signatures, notarize DMG and verify ZIP
         run: node scripts/verify-release.mjs
       - name: Remove credentials and temporary keychain
