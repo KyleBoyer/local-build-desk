@@ -23,6 +23,7 @@ import { Vault, cleanupStaleSecrets } from "../core/vault";
 import { AccountSetupManager } from "./account-setup";
 import { Updater } from "./updater";
 import { JobNotifications } from "./notifications";
+import { BuildTray } from "./build-tray";
 import { methods, type Method } from "./validation";
 import { captureInvocationEnvironment } from "../cli/invocation";
 import { runCLI } from "../cli/commands";
@@ -78,6 +79,7 @@ let engine: Engine;
 let accountSetup: AccountSetupManager;
 let updater: Updater;
 let notifications: JobNotifications;
+let buildTray: BuildTray | undefined;
 let window: BrowserWindow | undefined;
 // Electron's single-instance lock can admit two processes that launch at the
 // same instant (parallel CI jobs), so an atomically created lock file holding
@@ -235,21 +237,21 @@ function startOwner() {
         },
       });
       engine = new Engine(store, vault);
+      buildTray = new BuildTray(
+        engine,
+        () => store.list<Job>("jobs"),
+        {
+          openBuild: cliArgs ? undefined : (jobId) => void openBuild(jobId),
+          showLogs: (jobId) =>
+            shell.showItemInFolder(join(dataRoot, "jobs", jobId, "logs.jsonl")),
+        },
+        hideTestUI || process.platform !== "darwin",
+      );
+      app.once("will-quit", () => buildTray?.dispose());
       if (!cliArgs) {
         notifications = new JobNotifications(
           store,
-          (jobId) => {
-            void (async () => {
-              if (!window || window.isDestroyed()) await createWindow();
-              if (window!.isMinimized()) window!.restore();
-              window!.show();
-              window!.focus();
-              window!.webContents.send("desk:event", {
-                type: "focus-job",
-                jobId,
-              });
-            })();
-          },
+          (jobId) => void openBuild(jobId),
           hideTestUI,
         );
         engine.on("event", (event) => {
@@ -345,6 +347,7 @@ function startOwner() {
         const finish = (code: number): Promise<void> => {
           if (exitPromise) return exitPromise;
           exitPromise = (async () => {
+            buildTray?.dispose();
             await engine.shutdown();
             server.close();
             try {
@@ -423,6 +426,7 @@ function startOwner() {
         if (quitReady) return;
         event.preventDefault();
         updater.stop();
+        buildTray?.dispose();
         void engine.shutdown().finally(() => {
           server.close();
           try {
@@ -437,12 +441,20 @@ function startOwner() {
     })
     .catch((error) => {
       console.error(error);
+      buildTray?.dispose();
       releaseOwnerLock();
       app.exit(1);
     });
   app.on("window-all-closed", () => {
     app.quit();
   });
+}
+async function openBuild(jobId: string) {
+  if (!window || window.isDestroyed()) await createWindow();
+  if (window!.isMinimized()) window!.restore();
+  window!.show();
+  window!.focus();
+  window!.webContents.send("desk:event", { type: "focus-job", jobId });
 }
 async function createWindow() {
   window = new BrowserWindow({

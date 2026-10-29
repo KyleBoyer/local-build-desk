@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, _electron as electron } from "@playwright/test";
 import { build } from "esbuild";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -71,6 +71,7 @@ async function harness() {
   };
   return {
     root,
+    env,
     launch,
     async cleanup() {
       for (const child of children)
@@ -92,6 +93,9 @@ test("a headless CLI owner waits for a forwarded build before closing the shared
     await expect
       .poll(() => owner.output(), { timeout: 20000 })
       .toContain("fixture-active");
+    expect(owner.output()).toContain(
+      'fixture-tray {"count":1,"visible":true,"windows":0}',
+    );
     const client = h.launch([
       "build",
       "--project",
@@ -101,6 +105,11 @@ test("a headless CLI owner waits for a forwarded build before closing the shared
     ]);
     expect(await client.exit).toBe(0);
     expect(await owner.exit).toBe(0);
+    expect(owner.output()).toContain(
+      'fixture-tray {"count":2,"visible":true,"windows":0}',
+    );
+    expect(owner.output()).toContain("fixture-tray idle");
+    expect(owner.output()).toContain("fixture-tray-disposed");
     const store = new Store(join(h.root, "data"));
     try {
       expect(store.list<Job>("jobs").map((job) => job.status)).toEqual([
@@ -111,6 +120,66 @@ test("a headless CLI owner waits for a forwarded build before closing the shared
       store.close();
     }
   } finally {
+    await h.cleanup();
+  }
+});
+
+test("the desktop tray opens the selected build and restores a hidden window", async () => {
+  const h = await harness();
+  const app = await electron.launch({
+    args: [resolve("out/tests/cli-owner.cjs")],
+    env: Object.fromEntries(
+      Object.entries({
+        ...h.env,
+        LOCAL_BUILD_DESK_DISABLE_UPDATES: "true",
+      }).filter((entry): entry is [string, string] => entry[1] !== undefined),
+    ),
+  });
+  try {
+    const page = await app.firstWindow();
+    await app.evaluate(({ app, BrowserWindow }) => {
+      app.setActivationPolicy("accessory");
+      BrowserWindow.getAllWindows()[0].hide();
+    });
+    const jobId = await page.evaluate(
+      async (path) => {
+        await window.desk.notificationSettings(false);
+        const project = await window.desk.importProject(path);
+        const jobs = await window.desk.build({
+          projectId: project.id,
+          platform: "ios",
+          profile: "production",
+          autoSubmit: false,
+          clean: false,
+        });
+        return jobs[0].id;
+      },
+      join(h.root, "second"),
+    );
+    await app.evaluate((_, id) => {
+      const monitor = (globalThis as any).__deskTray;
+      const item = monitor.menu.items.find((item: any) => item.id === id);
+      if (!item)
+        throw new Error("Active build is missing from the native tray menu");
+      const action = item.submenu.items.find(
+        (item: any) => item.label === "Open build in Local Build Desk",
+      );
+      action.click();
+    }, jobId);
+    await expect(
+      page.getByRole("heading", { name: "Build history" }),
+    ).toBeVisible();
+    expect(
+      await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0].isVisible(),
+      ),
+    ).toBe(true);
+    await expect
+      .poll(() => app.evaluate(() => !!(globalThis as any).__deskTray.tray))
+      .toBe(false);
+    await page.screenshot({ path: "test-results/tray-build-navigation.png" });
+  } finally {
+    await app.close();
     await h.cleanup();
   }
 });
@@ -143,6 +212,7 @@ test("cancel reaches the headless owner through its socket and SIGINT exits clea
       .toContain("fixture-active");
     interrupt.child.kill("SIGINT");
     expect(await interrupt.exit, interrupt.output()).toBe(130);
+    expect(interrupt.output()).toContain("fixture-tray-disposed");
     const store = new Store(join(h.root, "data"));
     try {
       expect(

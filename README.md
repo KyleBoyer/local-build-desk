@@ -167,6 +167,8 @@ AAB transfer, waiting for Google’s bundle confirmation, validation, and draft 
 
 Replay fixtures are deliberately sanitized and run in hidden windows; dummy Apple pages are never presented as live account pages. CLI owners and forwarded CLI clients run without an extra Dock icon.
 
+On macOS, a **menu bar build monitor** appears while jobs are active, queued, or awaiting Apple processing. The icon’s count covers all jobs owned by the shared desktop/CLI engine, including concurrent CLI clients. Click it for each job’s current stage, elapsed time, and reported download/upload percentage or byte progress. Native compilers that do not report a percentage show their stage and elapsed time instead. The menu updates every second and provides log-file and CLI status/log actions; desktop sessions also offer **Open build in Local Build Desk**. The icon disappears when no work remains. A CLI-only owner stays windowless and exits normally; to keep monitoring Apple processing after upload, use `--wait` or leave the desktop running.
+
 ## Everyday build and release tools
 
 **Preferences → Completion notifications** enables native macOS alerts for finished builds, upload results, processing completion, and failures. Click an alert to open that build, including delivered alerts from an earlier app session. Notifications need the signed app and macOS permission. The desktop must be running to observe completion; CLI jobs forwarded to an open desktop also notify. The preference is local to this Mac.
