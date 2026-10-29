@@ -1,4 +1,4 @@
-import { BrowserWindow, session } from "electron";
+import { app, BrowserWindow, session } from "electron";
 import type { AppleWebSession } from "../core/app-store-compliance";
 import { DeskError } from "../core/errors";
 
@@ -15,6 +15,20 @@ const IDLE_CLOSE = 60 * 1000;
 interface Reply {
   status: number;
   text: string;
+}
+
+const SIGNED_OUT: Reply = { status: 401, text: "" };
+
+/**
+ * App Store Connect redirects between its pages and Apple's sign-in while a
+ * page loads; a load replaced by a redirect isn't a failure.
+ */
+async function load(window: BrowserWindow, url: string) {
+  try {
+    await window.loadURL(url);
+  } catch (error) {
+    if (!/ERR_ABORTED/.test((error as Error).message)) throw error;
+  }
 }
 
 export function appleWebSession(
@@ -46,7 +60,7 @@ export function appleWebSession(
         page = undefined;
         loading = undefined;
       });
-      await window.loadURL(`${ORIGIN}/apps`);
+      await load(window, `${ORIGIN}/apps`);
       page = window;
       return window;
     })().catch((error) => {
@@ -66,6 +80,9 @@ export function appleWebSession(
   ): Promise<Reply> {
     const window = await open();
     keepAlive();
+    // Signed out, the page ends up on Apple's sign-in instead, where App Store
+    // Connect's requests can't be made.
+    if (!window.webContents.getURL().startsWith(ORIGIN)) return SIGNED_OUT;
     const request = {
       url: `/iris/v1${path}`,
       method,
@@ -73,8 +90,10 @@ export function appleWebSession(
     };
     // Runs in App Store Connect's own origin; nothing from the page comes back
     // except the status and response text.
-    return window.webContents.executeJavaScript(
-      `(async (r) => {
+    return (
+      window.webContents
+        .executeJavaScript(
+          `(async (r) => {
         const response = await fetch(r.url, {
           method: r.method,
           credentials: "include",
@@ -87,6 +106,13 @@ export function appleWebSession(
         });
         return { status: response.status, text: await response.text() };
       })(${JSON.stringify(request)})`,
+        )
+        // An expired session redirects the request itself to Apple's sign-in,
+        // which the browser reports as a failed fetch.
+        .catch((error: Error) => {
+          if (/Failed to fetch/.test(error.message)) return SIGNED_OUT;
+          throw error;
+        })
     );
   }
 
@@ -95,10 +121,11 @@ export function appleWebSession(
 
   async function signIn() {
     const window = await open();
-    if (window.webContents.getURL().startsWith(ORIGIN) && (await signedIn()))
-      return;
-    await window.loadURL(`${ORIGIN}/login`);
+    if (await signedIn()) return;
+    await load(window, `${ORIGIN}/login`);
+    // Bring it to the front: a sign-in behind other windows is easy to miss.
     window.show();
+    app.focus({ steal: true });
     window.focus();
     const started = Date.now();
     try {
@@ -114,11 +141,7 @@ export function appleWebSession(
             "Timed out waiting for the App Store Connect sign-in.",
           );
         await new Promise((ready) => setTimeout(ready, 2000));
-        if (
-          window.webContents.getURL().startsWith(ORIGIN) &&
-          (await signedIn().catch(() => false))
-        )
-          break;
+        if (await signedIn().catch(() => false)) break;
       }
     } finally {
       if (!window.isDestroyed()) window.hide();
