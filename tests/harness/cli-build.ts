@@ -22,15 +22,18 @@ export async function buildLocal(ctx: any) {
   ctx.log("fixture-token " + (env.TOKEN ?? "none"));
   ctx.stage("compile");
   ctx.log("fixture-active " + ctx.job.id);
-  if (env.FIXTURE_WAIT_FOR_SECOND === "true") {
+  const waitForQueued = env.FIXTURE_WAIT_FOR_QUEUED === "true";
+  if (env.FIXTURE_WAIT_FOR_SECOND === "true" || waitForQueued) {
     const deadline = Date.now() + 20000;
     while (
-      !ctx.store.list("jobs").some(
-        (job: any) =>
-          job.id !== ctx.job.id &&
-          job.status === "running" &&
-          job.stage === "compile",
-      )
+      !ctx.store
+        .list("jobs")
+        .some(
+          (job: any) =>
+            job.id !== ctx.job.id &&
+            (waitForQueued ||
+              (job.status === "running" && job.stage === "compile")),
+        )
     ) {
       if (Date.now() >= deadline)
         throw new Error("Second fixture build did not enter compilation");

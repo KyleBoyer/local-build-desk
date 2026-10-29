@@ -83,13 +83,14 @@ async function harness() {
 test("a headless CLI owner waits for a forwarded build before closing the shared engine", async () => {
   const h = await harness();
   try {
-    const owner = h.launch([
-      "build",
-      "--project",
-      join(h.root, "first"),
-      "--platform",
-      "ios",
-    ]);
+    const owner = h.launch(
+      ["build", "--project", join(h.root, "first"), "--platform", "ios"],
+      {
+        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+          FIXTURE_WAIT_FOR_QUEUED: "true",
+        }),
+      },
+    );
     await expect
       .poll(() => owner.output(), { timeout: 20000 })
       .toContain("fixture-active");
@@ -228,13 +229,16 @@ test("cancel reaches the headless owner through its socket and SIGINT exits clea
 test("a disconnected CLI client does not abandon its queued native build", async () => {
   const h = await harness();
   try {
-    const owner = h.launch([
-      "build",
-      "--project",
-      join(h.root, "first"),
-      "--platform",
-      "ios",
-    ]);
+    // Keep the original owner alive until it accepts the client, even on a
+    // loaded CI Mac where starting a second Electron process takes longer.
+    const owner = h.launch(
+      ["build", "--project", join(h.root, "first"), "--platform", "ios"],
+      {
+        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+          FIXTURE_WAIT_FOR_QUEUED: "true",
+        }),
+      },
+    );
     await expect
       .poll(() => owner.output(), { timeout: 20000 })
       .toContain("fixture-active");
@@ -320,13 +324,14 @@ test("parallel CI clients keep independent environments, outputs and exit codes 
 test("interrupting the owning command cancels its job while another client finishes", async () => {
   const h = await harness();
   try {
-    const owner = h.launch([
-      "build",
-      "--source",
-      join(h.root, "first"),
-      "--platform",
-      "ios",
-    ]);
+    const owner = h.launch(
+      ["build", "--source", join(h.root, "first"), "--platform", "ios"],
+      {
+        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+          FIXTURE_WAIT_FOR_QUEUED: "true",
+        }),
+      },
+    );
     await expect
       .poll(() => owner.output(), { timeout: 20000 })
       .toContain("fixture-active");
