@@ -434,11 +434,15 @@ export interface DesktopAPI {
   mobilePairing(): Promise<MonitorPairing>;
   revokeMobileDevice(id?: string): Promise<MonitorStatus>;
   copyMobileLink(): Promise<void>;
-  storeReleases(projectId: string): Promise<StoreReleaseSnapshot>;
+  storeReleases(
+    projectId: string,
+    force?: boolean,
+  ): Promise<StoreReleaseSnapshot>;
   storeReleaseDetails(
     projectId: string,
     releaseId: string,
     locale?: string,
+    force?: boolean,
   ): Promise<StoreReleaseDetail>;
   storeImagePreview(projectId: string, imageId: string): Promise<string>;
   checkTargets(projectId: string): Promise<{

@@ -1,3 +1,4 @@
+import { StoreReadCache } from "./store-read-cache";
 import {
   appleReleases,
   appleReleaseDetail,
@@ -142,7 +143,10 @@ export class Engine extends EventEmitter {
       controller = new AbortController();
     const operation = Promise.resolve()
       .then(() => fn(controller.signal))
-      .finally(() => this.releaseOperations.delete(key));
+      .finally(() => {
+        this.releaseOperations.delete(key);
+        this.emit("settled");
+      });
     this.releaseOperations.set(key, { controller, operation });
     return operation;
   }
@@ -547,6 +551,8 @@ export class Engine extends EventEmitter {
         messageOf(error) +
           " Refresh the preview before retrying; a preceding store change may already have succeeded.",
       );
+    } finally {
+      this.invalidateStoreReads(preview.job.projectId);
     }
   }
   /** The listing file holding a project's App Store compliance answers. */
@@ -713,6 +719,123 @@ export class Engine extends EventEmitter {
     });
     return file;
   }
+  private _storeReads?: StoreReadCache;
+  private get storeReads() {
+    return (this._storeReads ??= new StoreReadCache(
+      join(this.store.root, "store-read-cache"),
+    ));
+  }
+  private storeReadKey(
+    projectId: string,
+    kind: "metadata" | "assets" = "metadata",
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    return JSON.stringify([
+      projectId,
+      this.storeReleaseIdentity(project),
+      kind,
+      kind === "metadata"
+        ? this.store.preference("store-read-revision:" + projectId, 0)
+        : 0,
+    ]);
+  }
+  private invalidateStoreReads(projectId: string) {
+    const key = "store-read-revision:" + projectId;
+    this.store.setPreference(key, this.store.preference<number>(key, 0) + 1);
+    this.storeReleaseCache.delete(projectId);
+  }
+  async storeReleases(
+    projectId: string,
+    force = false,
+  ): Promise<StoreReleaseSnapshot> {
+    if (force) this.invalidateStoreReads(projectId);
+    const namespace = this.storeReadKey(projectId),
+      key = this.storeReadKey(projectId, "assets") + ":releases";
+    const result = await this.storeReads.read(key, {
+      ttl: (s: StoreReleaseSnapshot) =>
+        Object.values(s.channels).some((c) => c.error) ? 30000 : 120000,
+      retention: 86400000,
+      force,
+      version: namespace,
+      load: async () => {
+        invariant(
+          namespace === this.storeReadKey(projectId),
+          "STORE_CONNECTION_CHANGED",
+          "The store connection or snapshot changed. Refresh the store view.",
+        );
+        const value = await this.fetchStoreReleases(projectId);
+        invariant(
+          namespace === this.storeReadKey(projectId),
+          "STORE_CONNECTION_CHANGED",
+          "The store connection or snapshot changed. Refresh the store view.",
+        );
+        return value;
+      },
+    });
+    invariant(
+      namespace === this.storeReadKey(projectId),
+      "STORE_CONNECTION_CHANGED",
+      "The store connection or snapshot changed. Refresh the store view.",
+    );
+    const value = { ...result.value, cache: result.cache };
+    this.storeReleaseCache.set(projectId, {
+      identity: this.storeReleaseIdentity(
+        this.store.get<Project>("projects", projectId),
+      ),
+      expires: Date.now() + 15 * 60 * 1000,
+      releases: value.releases,
+    });
+    return value;
+  }
+  async storeReleaseDetails(
+    projectId: string,
+    releaseId: string,
+    locale?: string,
+    force = false,
+  ): Promise<StoreReleaseDetail> {
+    await this.storeReleases(projectId);
+    const namespace = this.storeReadKey(projectId),
+      release = this.storeReleaseCache
+        .get(projectId)
+        ?.releases.find((r) => r.id === releaseId);
+    invariant(
+      release,
+      "STORE_RELEASE_CHANGED",
+      "This release is no longer in the current store snapshot. Refresh the submitted releases list.",
+    );
+    const result = await this.storeReads.read(
+      namespace + ":detail:" + JSON.stringify([release, locale ?? ""]),
+      {
+        ttl: 15 * 60 * 1000,
+        retention: 7 * 86400000,
+        force,
+        load: async () => {
+          invariant(
+            namespace === this.storeReadKey(projectId),
+            "STORE_CONNECTION_CHANGED",
+            "The store connection or snapshot changed. Refresh the store view.",
+          );
+          const value = await this.fetchStoreReleaseDetails(
+            projectId,
+            releaseId,
+            locale,
+          );
+          invariant(
+            namespace === this.storeReadKey(projectId),
+            "STORE_CONNECTION_CHANGED",
+            "The store connection or snapshot changed. Refresh the store view.",
+          );
+          return value;
+        },
+      },
+    );
+    invariant(
+      namespace === this.storeReadKey(projectId),
+      "STORE_CONNECTION_CHANGED",
+      "The store connection or snapshot changed. Refresh the store view.",
+    );
+    return { ...result.value, cache: result.cache };
+  }
   private storeReleaseCache = new Map<
     string,
     { identity: string; expires: number; releases: StoreRelease[] }
@@ -765,7 +888,7 @@ export class Engine extends EventEmitter {
     } catch {}
     return "https://play.google.com/console";
   }
-  storeReleases(projectId: string): Promise<StoreReleaseSnapshot> {
+  private fetchStoreReleases(projectId: string): Promise<StoreReleaseSnapshot> {
     return this.releaseOperation(async (signal) => {
       const project = this.store.get<Project>("projects", projectId);
       const identity = this.storeReleaseIdentity(project);
@@ -853,6 +976,22 @@ export class Engine extends EventEmitter {
         })(),
       ]);
       snapshot.checkedAt = now();
+      const previous = await this.storeReads.peek<StoreReleaseSnapshot>(
+        this.storeReadKey(projectId, "assets") + ":releases",
+      );
+      for (const channel of ["appstore", "testflight", "play"] as const) {
+        const source = snapshot.channels[channel];
+        source.checkedAt = snapshot.checkedAt;
+        if (source.error && previous) {
+          source.cached = true;
+          source.checkedAt =
+            previous.value.channels[channel].checkedAt ??
+            previous.value.checkedAt;
+          snapshot.releases.push(
+            ...previous.value.releases.filter((r) => r.channel === channel),
+          );
+        }
+      }
       this.storeReleaseCache.set(projectId, {
         identity,
         expires: Date.now() + 15 * 60 * 1000,
@@ -861,7 +1000,7 @@ export class Engine extends EventEmitter {
       return snapshot;
     });
   }
-  storeReleaseDetails(
+  private fetchStoreReleaseDetails(
     projectId: string,
     releaseId: string,
     locale?: string,
@@ -1012,8 +1151,13 @@ export class Engine extends EventEmitter {
           projectId,
           identity,
           source,
-          expires: Date.now() + 15 * 60 * 1000,
+          expires: Date.now() + 7 * 86400000,
         });
+        await this.storeReads.remember(
+          "handle:" + imageId,
+          this.storeImages.get(imageId)!,
+          7 * 86400000,
+        );
         const { url, local, ...metadata } = source;
         detail.images.push({ ...metadata, id: imageId, available });
       }
@@ -1028,26 +1172,65 @@ export class Engine extends EventEmitter {
   storeImagePreview(projectId: string, imageId: string): Promise<string> {
     return this.releaseOperation(async (signal) => {
       const project = this.store.get<Project>("projects", projectId),
-        record = this.storeImages.get(imageId);
+        record =
+          this.storeImages.get(imageId) ??
+          (
+            await this.storeReads.peek<{
+              projectId: string;
+              identity: string;
+              expires: number;
+              source: StoreImageSource;
+            }>("handle:" + imageId)
+          )?.value;
       invariant(
         record &&
           record.projectId === projectId &&
-          record.identity === this.storeReleaseIdentity(project) &&
+          record.identity ===
+            this.storeReleaseIdentity(
+              this.store.get<Project>("projects", projectId),
+            ) &&
           record.expires > Date.now(),
         "STORE_IMAGE_EXPIRED",
         "This image preview expired. Refresh the selected release to load it again.",
       );
-      if (record.source.local)
-        return this.screenshotPreview(
+      if (record.source.local) {
+        const value = await this.screenshotPreview(
           record.source.local.jobId,
           record.source.local.index,
         );
+        invariant(
+          record.identity ===
+            this.storeReleaseIdentity(
+              this.store.get<Project>("projects", projectId),
+            ),
+          "STORE_IMAGE_EXPIRED",
+          "This image preview expired. Refresh the selected release to load it again.",
+        );
+        return value;
+      }
       invariant(
         record.source.url,
         "STORE_IMAGE_UNAVAILABLE",
         "This asset is still processing or has no preview URL. Open the store console for details.",
       );
-      return fetchStoreImage(record.source.url, fetch, signal);
+      const assetNamespace = this.storeReadKey(projectId, "assets");
+      const result = await this.storeReads.read(
+        assetNamespace + ":image:" + record.source.url,
+        {
+          ttl: 86400000,
+          retention: 7 * 86400000,
+          load: () =>
+            this.releaseOperation((signal) =>
+              fetchStoreImage(record.source.url!, fetch, signal),
+            ),
+        },
+      );
+      invariant(
+        assetNamespace === this.storeReadKey(projectId, "assets"),
+        "STORE_CONNECTION_CHANGED",
+        "The store connection changed. Refresh the store view.",
+      );
+      return result.value;
     });
   }
   async readStoreStatus(projectId: string) {
@@ -1665,6 +1848,7 @@ export class Engine extends EventEmitter {
       project.profiles = Object.keys(settings.localProfiles);
     project.settings = settings;
     this.store.putProject(project);
+    this.invalidateStoreReads(projectId);
     this.changed();
   }
   doctor(projectId?: string) {
@@ -1998,7 +2182,24 @@ export class Engine extends EventEmitter {
       this.emit("settled");
     }
   }
+  private storeReadReceipts = new Map<string, string>();
   private saveJob(job: Job) {
+    if (job.submission) {
+      const revision = JSON.stringify([
+        job.submission.state,
+        job.submission.externalId,
+        job.submission.lastCheckedAt,
+      ]);
+      if (this.storeReadReceipts.get(job.id) !== revision) {
+        this.storeReadReceipts.set(job.id, revision);
+        if (
+          this.store
+            .list<Project>("projects")
+            .some((p) => p.id === job.projectId)
+        )
+          this.invalidateStoreReads(job.projectId);
+      }
+    }
     this.store.putJob(job);
     this.changed();
   }

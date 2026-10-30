@@ -1222,29 +1222,51 @@ function Releases({
     [detail, setDetail] = useState<StoreReleaseDetail>(),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const sequence = useRef(0);
+  const sequence = useRef(0),
+    overviewSequence = useRef(0);
   useEffect(() => {
     if (!project && projects[0]) setProject(projects[0].id);
   }, [projects, project]);
-  const refresh = async () => {
+  const refresh = async (force = false, quiet = false) => {
     if (!project) return;
-    const token = ++sequence.current;
-    setBusy(true);
+    const token = ++overviewSequence.current,
+      selection = sequence.current;
+    if (!quiet) {
+      sequence.current++;
+      setBusy(true);
+      setSelected(undefined);
+      setDetail(undefined);
+    }
     setError("");
-    setSelected(undefined);
-    setDetail(undefined);
     try {
       const result = await request<StoreReleaseSnapshot>(
-        `projects/${safeId(project)}/releases`,
+        `projects/${safeId(project)}/releases${force ? "?refresh=1" : ""}`,
       );
-      if (token !== sequence.current) return;
+      if (token !== overviewSequence.current) return;
       setSnapshot(result);
+      if (quiet && selection === sequence.current && selected) {
+        const updated = result.releases.find((r) => r.id === selected),
+          before = snapshot?.releases.find((r) => r.id === selected);
+        if (!updated) {
+          setSelected(undefined);
+          setDetail(undefined);
+        } else if (JSON.stringify(updated) !== JSON.stringify(before))
+          void show(
+            selected,
+            detail?.imageLocale &&
+              /^[A-Za-z0-9_-]{2,30}$/.test(detail.imageLocale)
+              ? detail.imageLocale
+              : undefined,
+            true,
+          );
+      }
       if (!result.channels.appstore.connected && result.channels.play.connected)
         setChannel("play");
     } catch (error) {
-      if (token === sequence.current) setError((error as Error).message);
+      if (token === overviewSequence.current)
+        setError((error as Error).message);
     } finally {
-      if (token === sequence.current) setBusy(false);
+      if (!quiet && token === overviewSequence.current) setBusy(false);
     }
   };
   useEffect(() => {
@@ -1252,13 +1274,16 @@ function Releases({
     void refresh();
     return () => {
       sequence.current++;
+      overviewSequence.current++;
     };
   }, [project]);
-  const show = async (id: string, locale?: string) => {
+  const show = async (id: string, locale?: string, quiet = false) => {
     const token = ++sequence.current;
     setSelected(id);
-    setDetail(undefined);
-    setBusy(true);
+    if (!quiet) {
+      setDetail(undefined);
+      setBusy(true);
+    }
     setError("");
     try {
       const result = await request<StoreReleaseDetail>(
@@ -1268,15 +1293,35 @@ function Releases({
     } catch (error) {
       if (token === sequence.current) setError((error as Error).message);
     } finally {
-      if (token === sequence.current) setBusy(false);
+      if (!quiet && token === sequence.current) setBusy(false);
     }
   };
+  useEffect(() => {
+    if (!snapshot?.cache?.refreshing) return;
+    const timer = setTimeout(() => void refresh(false, true), 1000);
+    return () => clearTimeout(timer);
+  }, [snapshot, project, selected]);
+  useEffect(() => {
+    if (!selected || !detail?.cache?.refreshing) return;
+    const timer = setTimeout(
+      () =>
+        void show(
+          selected,
+          detail.imageLocale && /^[A-Za-z0-9_-]{2,30}$/.test(detail.imageLocale)
+            ? detail.imageLocale
+            : undefined,
+          true,
+        ),
+      1000,
+    );
+    return () => clearTimeout(timer);
+  }, [detail, selected, project]);
   const release = snapshot?.releases.find((r) => r.id === selected),
     source = snapshot?.channels[channel];
   return (
     <>
       <div className="m-store-heading">
-        <span className="m-eyebrow">LIVE STORE RECORDS</span>
+        <span className="m-eyebrow">STORE RECORDS</span>
         <h1>Your releases.</h1>
         <p className="m-muted">
           The version in review. The builds being tested. The assets attached.
@@ -1317,6 +1362,16 @@ function Releases({
       </div>
       {source?.note && <p className="m-store-note">{source.note}</p>}
       {source?.error && <p className="m-error">{source.error}</p>}
+      {snapshot?.cache?.refreshError && (
+        <p className="m-error" role="alert">
+          Showing saved data. Refresh failed: {snapshot.cache.refreshError}
+        </p>
+      )}
+      {detail?.cache?.refreshError && (
+        <p className="m-error" role="alert">
+          Showing saved details. Refresh failed: {detail.cache.refreshError}
+        </p>
+      )}
       {error && (
         <p className="m-error" role="alert">
           {error}
@@ -1482,7 +1537,16 @@ function Releases({
         )}
       {snapshot && (
         <p className="m-store-note">
-          Store last checked {time(detail?.checkedAt ?? snapshot.checkedAt)}.
+          Store last checked{" "}
+          {time(detail?.checkedAt ?? source?.checkedAt ?? snapshot.checkedAt)}.
+          {(detail?.cache ?? snapshot.cache)?.source === "cache"
+            ? " Saved copy."
+            : ""}
+          {detail?.cache?.refreshing || snapshot.cache?.refreshing
+            ? " Checking for updates…"
+            : detail?.cache?.stale || snapshot.cache?.stale || source?.cached
+              ? " May be out of date."
+              : ""}{" "}
           Refresh to check for changes.
         </p>
       )}
@@ -1490,7 +1554,7 @@ function Releases({
         <button
           className="m-button m-wide"
           disabled={busy}
-          onClick={() => void refresh()}
+          onClick={() => void refresh(true)}
         >
           <RefreshCw size={14} />
           Refresh store status

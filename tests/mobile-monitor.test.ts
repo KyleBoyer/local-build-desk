@@ -133,6 +133,7 @@ function request(
     host?: string;
     origin?: string;
     ca?: string;
+    etag?: string;
   } = {},
 ) {
   const status = monitor.status(),
@@ -147,6 +148,7 @@ function request(
         headers["content-length"] = Buffer.byteLength(body);
       }
       if (options.cookie) headers.cookie = options.cookie;
+      if (options.etag) headers["if-none-match"] = options.etag;
       if (options.host) headers.host = options.host;
       if (options.origin) headers.origin = options.origin;
       const req = (url.protocol === "https:" ? httpsRequest : httpRequest)(
@@ -317,7 +319,23 @@ describe("mobile monitor", () => {
     expect((await request("/api/history?offset=-1", { cookie })).status).toBe(
       400,
     );
+    const image = await request("/api/jobs/job/captures/0", { cookie });
+    expect(image.headers["cache-control"]).toBe("private, no-cache");
+    const cached = await request("/api/jobs/job/captures/0", {
+      cookie,
+      etag: image.headers.etag,
+    });
+    expect(cached.status).toBe(304);
+    expect(cached.body).toBe("");
     monitor.revoke();
+    expect(
+      (
+        await request("/api/jobs/job/captures/0", {
+          cookie,
+          etag: image.headers.etag,
+        })
+      ).status,
+    ).toBe(401);
     expect((await request("/api/state", { cookie })).status).toBe(401);
   });
   it("generates usable TLS with an encrypted private key, secure sessions, certificate reuse and custom import", async () => {

@@ -152,7 +152,7 @@ export const methods = {
   revokeMobileDevice: z.tuple([identifier.optional()]),
   copyMobileLink: z.tuple([]),
   readStoreStatus: z.tuple([identifier]),
-  storeReleases: z.tuple([identifier]),
+  storeReleases: z.tuple([identifier, z.boolean().optional()]),
   storeReleaseDetails: z.tuple([
     identifier,
     identifier,
@@ -160,6 +160,7 @@ export const methods = {
       .string()
       .regex(/^[A-Za-z0-9_-]{2,30}$/)
       .optional(),
+    z.boolean().optional(),
   ]),
   storeImagePreview: z.tuple([identifier, z.string().uuid()]),
   saveCompliance: z.tuple([

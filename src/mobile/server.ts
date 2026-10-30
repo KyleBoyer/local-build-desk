@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer as createHTTPSServer } from "node:https";
 import type { TLSSocket } from "node:tls";
 import type { Encryption } from "../core/vault";
@@ -474,6 +475,7 @@ export class MobileMonitor extends EventEmitter {
           return this.json(res, 400, { error: "Choose a capture index." });
         if (jobRoute[2] === "captures")
           return this.image(
+            req,
             res,
             await this.engine.screenshotPreview(id, Number(jobRoute[3])),
           );
@@ -504,8 +506,12 @@ export class MobileMonitor extends EventEmitter {
                 projectId,
                 decodeURIComponent(releases[2]),
                 url.searchParams.get("locale") ?? undefined,
+                url.searchParams.get("refresh") === "1",
               )
-            : await this.engine.storeReleases(projectId),
+            : await this.engine.storeReleases(
+                projectId,
+                url.searchParams.get("refresh") === "1",
+              ),
         );
       }
       const image = path.match(
@@ -513,6 +519,7 @@ export class MobileMonitor extends EventEmitter {
       );
       if (image)
         return this.image(
+          req,
           res,
           await this.engine.storeImagePreview(
             decodeURIComponent(image[1]!),
@@ -583,12 +590,23 @@ export class MobileMonitor extends EventEmitter {
     });
     res.end(req.method === "HEAD" ? undefined : bytes);
   }
-  private image(res: ServerResponse, data: string) {
+  private image(req: IncomingMessage, res: ServerResponse, data: string) {
     const match = data.match(
       /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/=]+)$/,
     );
     if (!match) return this.json(res, 404, { error: "Preview unavailable." });
-    res.writeHead(200, { ...baseHeaders, "Content-Type": `image/${match[1]}` });
-    res.end(Buffer.from(match[2]!, "base64"));
+    const bytes = Buffer.from(match[2]!, "base64"),
+      etag = '"' + createHash("sha256").update(bytes).digest("base64url") + '"';
+    // Revalidate through authentication every time, but avoid retransmitting
+    // an unchanged screenshot to a phone over a slower VPN/cellular link.
+    const unchanged = req.headers["if-none-match"] === etag;
+    res.writeHead(unchanged ? 304 : 200, {
+      ...baseHeaders,
+      "Content-Type": `image/${match[1]}`,
+      "Cache-Control": "private, no-cache",
+      ETag: etag,
+      Vary: "Cookie",
+    });
+    res.end(unchanged ? undefined : bytes);
   }
 }

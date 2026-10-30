@@ -260,6 +260,45 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
       path: "test-results/mobile-store-review.png",
       fullPage: true,
     });
+    const warm = await app.evaluate(() => ({
+      reads: (globalThis as any).__storeHistoryReads.length,
+      images: (globalThis as any).__storeHistoryImageFetches,
+    }));
+    await phone.getByRole("button", { name: "Projects", exact: true }).click();
+    await phone.getByRole("button", { name: "Releases", exact: true }).click();
+    await expect(phone.getByText(/Saved copy/)).toBeVisible();
+    await phone
+      .locator(".m-store-list>button")
+      .filter({ hasText: "Build 3" })
+      .click();
+    const cachedShot = phone.getByAltText("review-home.png", { exact: true });
+    await expect(cachedShot).toBeVisible();
+    await expect
+      .poll(() => cachedShot.evaluate((i: HTMLImageElement) => i.naturalWidth))
+      .toBe(1);
+    expect(
+      await app.evaluate(() => (globalThis as any).__storeHistoryReads.length),
+    ).toBe(warm.reads);
+    expect(
+      await app.evaluate(() => (globalThis as any).__storeHistoryImageFetches),
+    ).toBe(warm.images);
+    await app.evaluate(() => {
+      (globalThis as any).__storeHistoryDelay = 150;
+      (globalThis as any).__storeHistoryState = "IN_REVIEW";
+      for (const entry of (
+        globalThis as any
+      ).__mobileEngine._storeReads.memory.values())
+        entry.fetchedAt -= 16 * 60 * 1000;
+    });
+    await phone.getByRole("button", { name: "Projects", exact: true }).click();
+    await phone.getByRole("button", { name: "Releases", exact: true }).click();
+    await expect(phone.getByText(/Checking for updates/)).toBeVisible();
+    await expect(
+      phone.locator(".m-store-list>button").filter({ hasText: "Build 3" }),
+    ).toContainText(/in review/i, { timeout: 15000 });
+    await app.evaluate(() => {
+      (globalThis as any).__storeHistoryDelay = 0;
+    });
     await phone
       .getByRole("button", { name: "TestFlight", exact: true })
       .click();

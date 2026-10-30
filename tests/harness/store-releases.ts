@@ -6,6 +6,8 @@ const fixture = globalThis as any;
 fixture.__storeHistoryState = "WAITING_FOR_REVIEW";
 fixture.__storeHistoryGoogleError = false;
 fixture.__storeHistoryWrites = [];
+fixture.__storeHistoryReads = [];
+fixture.__storeHistoryImageFetches = 0;
 const read = Vault.prototype.get;
 Vault.prototype.get = async function (id: any, kind: any): Promise<any> {
   if (id === "apple-fixture")
@@ -29,6 +31,11 @@ Vault.prototype.get = async function (id: any, kind: any): Promise<any> {
   return read.call(this, id, kind);
 };
 AppleAPI.prototype.request = async function (path, method = "GET", body) {
+  fixture.__storeHistoryReads.push(path);
+  if (fixture.__storeHistoryDelay)
+    await new Promise((resolve) =>
+      setTimeout(resolve, fixture.__storeHistoryDelay),
+    );
   if (method !== "GET") {
     fixture.__storeHistoryWrites.push({ path, method });
     throw Error("The status view must not write to Apple");
@@ -212,7 +219,8 @@ globalThis.fetch = async function (input, init) {
   if (
     url.startsWith("https://is1.mzstatic.com/") ||
     url.startsWith("https://play-lh.googleusercontent.com/")
-  )
+  ) {
+    fixture.__storeHistoryImageFetches++;
     return new Response(
       Buffer.from(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGZkAAAAASUVORK5CYII=",
@@ -220,6 +228,7 @@ globalThis.fetch = async function (input, init) {
       ),
       { headers: { "Content-Type": "image/png" } },
     );
+  }
   return actualFetch(input, init);
 };
 const fail = (error: unknown) => {

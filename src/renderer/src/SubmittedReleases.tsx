@@ -167,33 +167,36 @@ export function SubmittedReleases({ project }: { project: Project }) {
   const refreshRequest = useRef(0);
   const request = useRef(0),
     mounted = useRef(true);
-  const refresh = useCallback(async () => {
-    const sequence = ++refreshRequest.current;
-    request.current++;
-    setSelected(undefined);
-    setDetail(undefined);
-    setDetailBusy(false);
-    setDetailError("");
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api.storeReleases(project.id);
-      if (!mounted.current || sequence !== refreshRequest.current) return;
-      setSnapshot(result);
-      setSelected((previous) =>
-        result.releases.find((r) => r.id === previous?.id),
-      );
-      setDetail(undefined);
-      setDetailError("");
+  const refresh = useCallback(
+    async (force = false) => {
+      const sequence = ++refreshRequest.current;
       request.current++;
-    } catch (error) {
-      if (mounted.current && sequence === refreshRequest.current)
-        setError((error as Error).message);
-    } finally {
-      if (mounted.current && sequence === refreshRequest.current)
-        setBusy(false);
-    }
-  }, [project.id]);
+      setSelected(undefined);
+      setDetail(undefined);
+      setDetailBusy(false);
+      setDetailError("");
+      setBusy(true);
+      setError("");
+      try {
+        const result = await api.storeReleases(project.id, force);
+        if (!mounted.current || sequence !== refreshRequest.current) return;
+        setSnapshot(result);
+        setSelected((previous) =>
+          result.releases.find((r) => r.id === previous?.id),
+        );
+        setDetail(undefined);
+        setDetailError("");
+        request.current++;
+      } catch (error) {
+        if (mounted.current && sequence === refreshRequest.current)
+          setError((error as Error).message);
+      } finally {
+        if (mounted.current && sequence === refreshRequest.current)
+          setBusy(false);
+      }
+    },
+    [project.id],
+  );
   useEffect(() => {
     mounted.current = true;
     void refresh();
@@ -234,6 +237,58 @@ export function SubmittedReleases({ project }: { project: Project }) {
       if (mounted.current && current === request.current) setDetailBusy(false);
     }
   };
+  useEffect(() => {
+    if (!snapshot?.cache?.refreshing) return;
+    const timer = setTimeout(() => {
+      const sequence = refreshRequest.current,
+        detailRequest = request.current;
+      void api
+        .storeReleases(project.id)
+        .then((value) => {
+          if (!mounted.current || sequence !== refreshRequest.current) return;
+          setSnapshot(value);
+          setSelected((previous) =>
+            value.releases.find((r) => r.id === previous?.id),
+          );
+          const updated = value.releases.find((r) => r.id === selected?.id);
+          if (
+            updated &&
+            selected &&
+            sequence === refreshRequest.current &&
+            request.current === detailRequest &&
+            JSON.stringify(updated) !== JSON.stringify(selected)
+          )
+            void show(
+              updated,
+              locale && /^[A-Za-z0-9_-]{2,30}$/.test(locale)
+                ? locale
+                : undefined,
+            );
+        })
+        .catch((error) => setError(error.message));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [snapshot, project.id, selected, locale]);
+  useEffect(() => {
+    if (!selected || !detail?.cache?.refreshing) return;
+    const timer = setTimeout(() => {
+      const sequence = request.current;
+      void api
+        .storeReleaseDetails(
+          project.id,
+          selected.id,
+          locale && /^[A-Za-z0-9_-]{2,30}$/.test(locale) ? locale : undefined,
+        )
+        .then((value) => {
+          if (mounted.current && sequence === request.current) setDetail(value);
+        })
+        .catch((error) => {
+          if (mounted.current && sequence === request.current)
+            setDetailError(error.message);
+        });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [detail, selected, locale, project.id]);
   const rows = snapshot?.releases.filter((r) => r.channel === channel) ?? [],
     source = snapshot?.channels[channel];
   const listing =
@@ -266,7 +321,7 @@ export function SubmittedReleases({ project }: { project: Project }) {
         </div>
         <button
           className="button"
-          onClick={() => void refresh()}
+          onClick={() => void refresh(true)}
           disabled={busy}
         >
           <RefreshCw size={14} className={busy ? "spin" : ""} />
@@ -305,6 +360,18 @@ export function SubmittedReleases({ project }: { project: Project }) {
       {error && (
         <p role="alert" className="inline-error">
           Could not refresh: {error}
+        </p>
+      )}
+      {snapshot?.cache?.refreshError && (
+        <p role="alert" className="muted">
+          Showing saved store data. Refresh failed:{" "}
+          {snapshot.cache.refreshError}
+        </p>
+      )}
+      {detail?.cache?.refreshError && (
+        <p role="alert" className="muted">
+          Showing saved release details. Refresh failed:{" "}
+          {detail.cache.refreshError}
         </p>
       )}
       {source?.error && (
@@ -362,6 +429,19 @@ export function SubmittedReleases({ project }: { project: Project }) {
         </div>
         {selected && (
           <div className="store-release-detail">
+            {detail?.cache && (
+              <p className="muted">
+                {detail.cache.source === "cache"
+                  ? "Saved release details"
+                  : "Release details"}{" "}
+                · checked {date(detail.checkedAt)}
+                {detail.cache.refreshing
+                  ? " · Checking for updates…"
+                  : detail.cache.stale
+                    ? " · May be out of date"
+                    : ""}
+              </p>
+            )}
             <div className="section-heading">
               <div>
                 <div className="eyebrow">{labels[selected.channel]}</div>
@@ -525,7 +605,13 @@ export function SubmittedReleases({ project }: { project: Project }) {
       {snapshot && (
         <p className="store-checked-at mono subtle">
           <Clock3 size={12} />
-          Last checked {date(snapshot.checkedAt)} ·{" "}
+          Last checked {date(source?.checkedAt ?? snapshot.checkedAt)} ·{" "}
+          {snapshot.cache?.source === "cache" ? "Saved copy · " : ""}
+          {snapshot.cache?.refreshing
+            ? "Checking for updates… · "
+            : snapshot.cache?.stale || source?.cached
+              ? "May be out of date · "
+              : ""}
           {channel === "play" ? "Current track state" : "Latest 25 records"}
         </p>
       )}

@@ -453,18 +453,63 @@ it("binds store images and release selection to the imported project's current c
     });
     const snapshot = await engine.storeReleases("project");
     expect(snapshot.releases[0]?.status).toBe("WAITING_FOR_REVIEW");
+    const reads = vi.mocked(AppleAPI.prototype.request).mock.calls.length;
+    expect((await engine.storeReleases("project")).cache?.source).toBe("cache");
+    expect(vi.mocked(AppleAPI.prototype.request).mock.calls.length).toBe(reads);
     await expect(
       engine.storeReleaseDetails("project", "appstore:foreign-app"),
     ).rejects.toThrow(/no longer/);
     const detail = await engine.storeReleaseDetails("project", "appstore:v");
     expect(detail.images[0]?.available).toBe(true);
-    // Another desktop/phone details request must not expire this view.
-    await engine.storeReleaseDetails("project", "appstore:v");
+    // Another desktop/phone details request must reuse provider metadata.
+    const detailReads = vi.mocked(AppleAPI.prototype.request).mock.calls.length;
+    expect(
+      (await engine.storeReleaseDetails("project", "appstore:v")).cache?.source,
+    ).toBe("cache");
+    expect(vi.mocked(AppleAPI.prototype.request).mock.calls.length).toBe(
+      detailReads,
+    );
     const fetcher = vi.fn(async () => new Response(png));
     vi.stubGlobal("fetch", fetcher);
     await expect(
       engine.storeImagePreview("project", detail.images[0]!.id),
     ).resolves.toContain("data:image/png");
+    await expect(
+      engine.storeImagePreview("project", detail.images[0]!.id),
+    ).resolves.toContain("data:image/png");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    // The disk cache and opaque image handles survive an owner restart.
+    const reopened = new Engine(store, vault);
+    try {
+      const cached = await reopened.storeReleases("project");
+      expect(cached.cache?.source).toBe("cache");
+      const restored = await reopened.storeReleaseDetails(
+        "project",
+        "appstore:v",
+      );
+      expect(restored.images[0]!.id).toBe(detail.images[0]!.id);
+      await expect(
+        reopened.storeImagePreview("project", restored.images[0]!.id),
+      ).resolves.toContain("data:image/png");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const before = vi.mocked(AppleAPI.prototype.request).mock.calls.length;
+      await reopened.storeReleases("project", true);
+      expect(
+        vi.mocked(AppleAPI.prototype.request).mock.calls.length,
+      ).toBeGreaterThan(before);
+      // A partial provider error keeps previously fetched channel rows and age.
+      vi.mocked(AppleAPI.prototype.request).mockRejectedValueOnce(
+        Error("Apple temporarily unavailable"),
+      );
+      const partial = await reopened.storeReleases("project", true);
+      expect(partial.channels.appstore.error).toContain(
+        "temporarily unavailable",
+      );
+      expect(partial.channels.appstore.cached).toBe(true);
+      expect(partial.releases.some((r) => r.id === "appstore:v")).toBe(true);
+    } finally {
+      await reopened.shutdown();
+    }
     engine.saveSettings("project", {});
     await expect(
       engine.storeImagePreview("project", detail.images[0]!.id),

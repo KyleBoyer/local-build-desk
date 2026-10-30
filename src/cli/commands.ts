@@ -131,8 +131,8 @@ export const help = `Local Build Desk — compile and upload from this Mac
   ios-submit readiness --project PATH [--destination testflight|appstore]
   ios-submit resume --job JOB_ID
   ios-submit store-status --project PATH
-  ios-submit store-releases --project PATH
-  ios-submit store-release --project PATH --release-id ID [--locale en-US]
+  ios-submit store-releases --project PATH [--refresh]
+  ios-submit store-release --project PATH --release-id ID [--locale en-US] [--refresh]
   ios-submit use-screenshots --job JOB_ID
   ios-submit submit --artifact ARTIFACT_ID [--wait] [--timeout 1800]
   ios-submit status [--job JOB_ID] [--wait] [--timeout 1800]
@@ -179,6 +179,7 @@ export async function runCLI(
         cert: { type: "string" },
         origin: { type: "string" },
         pair: { type: "boolean" },
+        refresh: { type: "boolean" },
         stop: { type: "boolean" },
         start: { type: "boolean" },
         "release-id": { type: "string" },
@@ -411,7 +412,7 @@ export async function runCLI(
       return 0;
     }
     if (command === "store-releases") {
-      output(await engine.storeReleases(projectId()));
+      output(await engine.storeReleases(projectId(), v.refresh));
       return 0;
     }
     if (command === "store-release") {
@@ -425,6 +426,7 @@ export async function runCLI(
           projectId(),
           v["release-id"],
           v.locale,
+          v.refresh,
         ),
       );
       return 0;

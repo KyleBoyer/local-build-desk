@@ -1,3 +1,9 @@
+export interface StoreCacheInfo {
+  source: "network" | "cache";
+  stale: boolean;
+  refreshing: boolean;
+  refreshError?: string;
+}
 export type StoreChannel = "appstore" | "testflight" | "play";
 export interface StoreRelease {
   id: string;
@@ -37,15 +43,23 @@ export interface StoreListingText {
 }
 export interface StoreReleaseSnapshot {
   projectId: string;
+  cache?: StoreCacheInfo;
   checkedAt: string;
   releases: StoreRelease[];
   channels: Record<
     StoreChannel,
-    { connected: boolean; error?: string; note?: string }
+    {
+      connected: boolean;
+      error?: string;
+      note?: string;
+      checkedAt?: string;
+      cached?: boolean;
+    }
   >;
 }
 export interface StoreReleaseDetail {
   releaseId: string;
+  cache?: StoreCacheInfo;
   checkedAt: string;
   listings: StoreListingText[];
   images: StoreImage[];
