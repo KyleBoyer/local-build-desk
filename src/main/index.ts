@@ -327,6 +327,33 @@ function startOwner() {
           if (event.type === "state") notifications.scan();
         });
       }
+      updater = new Updater(
+        (update) => {
+          if (window && !window.isDestroyed())
+            window.webContents.send("desk:event", { type: "update", update });
+        },
+        () => engine.isBusy(),
+        app.isPackaged &&
+          !hideTestUI &&
+          !process.env.LOCAL_BUILD_DESK_DISABLE_UPDATES,
+        !cliArgs,
+      );
+      // A headless CLI owner installs a staged update by exiting. The desktop
+      // replies first, then restarts into it unless work is still running,
+      // in which case Squirrel installs it whenever the app next quits.
+      const updates = {
+        updater,
+        apply: () => {
+          if (cliArgs) return "exit" as const;
+          if (engine.isBusy()) return "quit" as const;
+          setTimeout(() => {
+            try {
+              updater.install();
+            } catch {}
+          }, 500);
+          return "restart" as const;
+        },
+      };
       engine.start();
       notifications?.scan();
       if (!cliArgs) void notifications.restoreHistory();
@@ -392,7 +419,7 @@ function startOwner() {
                 if (!socket.destroyed)
                   socket.write(JSON.stringify({ text }) + "\n");
               },
-              { environment, cwd, appleWeb, monitor: mobile },
+              { environment, cwd, appleWeb, monitor: mobile, updates },
             );
             socket.end(JSON.stringify({ exit: code }) + "\n");
           } catch (error) {
@@ -466,6 +493,7 @@ function startOwner() {
             environment: cliEnvironment,
             appleWeb,
             monitor: mobile,
+            updates,
             onJobs: (ids) => {
               for (const id of ids) {
                 owningJobs.add(id);
@@ -499,16 +527,6 @@ function startOwner() {
       accountSetup = new AccountSetupManager(engine, () => window, {
         hidden: hideTestUI,
       });
-      updater = new Updater(
-        (update) => {
-          if (window && !window.isDestroyed())
-            window.webContents.send("desk:event", { type: "update", update });
-        },
-        () => engine.isBusy(),
-        app.isPackaged &&
-          !hideTestUI &&
-          !process.env.LOCAL_BUILD_DESK_DISABLE_UPDATES,
-      );
       registerIPC();
       if (!monitorDaemon || desktopRequested) await createWindow();
       else app.dock?.hide();

@@ -2,13 +2,20 @@ import { it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 const autoUpdater = Object.assign(new EventEmitter(), {
   checkForUpdates: vi.fn(),
+  downloadUpdate: vi.fn(),
   quitAndInstall: vi.fn(),
+  autoDownload: true,
 });
-vi.mock("electron", () => ({ app: { getVersion: () => "0.1.0" } }));
+const nativeUpdater = new EventEmitter();
+vi.mock("electron", () => ({
+  app: { getVersion: () => "0.1.0" },
+  autoUpdater: nativeUpdater,
+}));
 vi.mock("electron-updater", () => ({ default: { autoUpdater } }));
 const { Updater } = await import("../src/main/updater");
 beforeEach(() => {
   autoUpdater.removeAllListeners();
+  nativeUpdater.removeAllListeners();
   vi.clearAllMocks();
 });
 afterEach(() => vi.useRealTimers());
@@ -87,4 +94,48 @@ it("stops the startup check as well as periodic checks during shutdown", async (
   updater.stop();
   await vi.advanceTimersByTimeAsync(5 * 60 * 60 * 1000);
   expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+});
+it("lets a CLI owner report an update, then download and stage it on request", async () => {
+  const updater = new Updater(vi.fn(), () => false, true, false);
+  expect(autoUpdater.autoDownload).toBe(false);
+  autoUpdater.checkForUpdates.mockImplementation(async () => {
+    autoUpdater.emit("update-available", { version: "0.2.0" });
+  });
+  expect(await updater.check()).toMatchObject({
+    state: "available",
+    version: "0.2.0",
+  });
+  expect(autoUpdater.downloadUpdate).not.toHaveBeenCalled();
+  autoUpdater.downloadUpdate.mockImplementation(async () => {
+    autoUpdater.emit("download-progress", { percent: 50 });
+    autoUpdater.emit("update-downloaded", { version: "0.2.0" });
+  });
+  let settled = false;
+  const prepared = updater.prepare(60000).finally(() => (settled = true));
+  await new Promise((wake) => setTimeout(wake, 10));
+  expect(autoUpdater.downloadUpdate).toHaveBeenCalledTimes(1);
+  expect(updater.status().state).toBe("ready");
+  // Squirrel.Mac has not fetched it from the local proxy yet, so quitting
+  // now would not install it.
+  if (process.platform === "darwin") {
+    expect(settled).toBe(false);
+    nativeUpdater.emit("update-downloaded");
+  }
+  expect(await prepared).toMatchObject({ state: "ready", version: "0.2.0" });
+});
+it("reports an up-to-date app without downloading", async () => {
+  const updater = new Updater(vi.fn(), () => false, true, false);
+  autoUpdater.checkForUpdates.mockImplementation(async () => {
+    autoUpdater.emit("update-not-available");
+  });
+  expect(await updater.prepare(60000)).toMatchObject({ state: "current" });
+  expect(autoUpdater.downloadUpdate).not.toHaveBeenCalled();
+});
+it("stops waiting for a stalled download at the timeout", async () => {
+  const updater = new Updater(vi.fn(), () => false, true, false);
+  autoUpdater.checkForUpdates.mockImplementation(async () => {
+    autoUpdater.emit("update-available", { version: "0.2.0" });
+  });
+  autoUpdater.downloadUpdate.mockReturnValue(new Promise(() => {}));
+  await expect(updater.prepare(20)).rejects.toThrow(/did not finish in time/);
 });

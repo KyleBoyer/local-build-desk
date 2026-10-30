@@ -1,4 +1,5 @@
 import type { MobileMonitor } from "../mobile/server";
+import type { Updater } from "../main/updater";
 import { detectProjectType, appRoot } from "../core/project-adapters";
 import { xcodeContainers, xcodegenSpecs } from "../core/xcode-project";
 import { hasFile } from "../core/config";
@@ -45,6 +46,12 @@ export interface CLIRuntime {
   /** App Store Connect's web API in the desk's signed-in session (desktop owner only). */
   appleWeb?: AppleWebSession;
   monitor?: MobileMonitor;
+  /** Self-update through the owner's signed-release updater. */
+  updates?: {
+    updater: Pick<Updater, "status" | "check" | "prepare">;
+    /** Applies a staged update once this command has replied. */
+    apply(): "restart" | "exit" | "quit";
+  };
 }
 function pendingProcessing(job: Job) {
   return job.submission?.state === "processing";
@@ -144,6 +151,8 @@ export const help = `Local Build Desk — compile and upload from this Mac
     --submit-for-review also sends the version (and its in-app purchases) to App Review;
     --attest NAME confirms the listing's age rating, App Privacy and pricing answers so they can be applied
   ios-submit migrate --project PATH [--credentials FILE] [--env FILE] [--ios-last-used N] [--android-last-used N]
+  ios-submit update [--check] [--timeout 1800]
+    installs the latest signed release of the app and CLI; --check only reports it
 
 Project selection: --project-type expo|capacitor|native-ios (omit for auto-detection), --app-directory PATH,
 --ios-target PATH --scheme NAME --configuration NAME, --web-build-script SCRIPT.
@@ -238,6 +247,7 @@ export async function runCLI(
         "ios-last-used": { type: "string" },
         "android-last-used": { type: "string" },
         help: { type: "boolean" },
+        check: { type: "boolean" },
         wait: { type: "boolean" },
         timeout: { type: "string" },
         listing: { type: "string" },
@@ -298,6 +308,47 @@ export async function runCLI(
             : value;
     const output = (value: unknown) =>
       rawWrite(JSON.stringify(redactValue(value), null, 2) + "\n");
+    if (command === "update") {
+      const updater = runtime.updates?.updater;
+      if (!updater || updater.status().state === "disabled") {
+        output({
+          state: "disabled",
+          currentVersion: updater?.status().currentVersion,
+          message:
+            "Self-update needs the signed Local Build Desk app. In a source checkout, run git pull, npm install, and npm run build.",
+        });
+        return CLI_EXIT.failure;
+      }
+      const status = v.check
+        ? await updater.check()
+        : await updater.prepare(timeoutSeconds * 1000);
+      if (status.state !== "ready" || v.check) {
+        output({
+          ...status,
+          message:
+            status.state === "current"
+              ? `Local Build Desk ${status.currentVersion} is up to date.`
+              : status.state === "available"
+                ? `Local Build Desk ${status.version} is available. Run ios-submit update to install it.`
+                : status.state === "downloading" || status.state === "ready"
+                  ? `Local Build Desk is downloading ${status.version}. Run ios-submit update to install it.`
+                  : `Could not update: ${status.error ?? status.state}`,
+        });
+        return status.state === "error" ? CLI_EXIT.failure : CLI_EXIT.success;
+      }
+      const install = runtime.updates!.apply();
+      output({
+        ...status,
+        install,
+        message:
+          install === "restart"
+            ? `Local Build Desk is restarting to install ${status.version}.`
+            : install === "exit"
+              ? `Local Build Desk ${status.version} installs when this command exits. The CLI and desktop use it from their next launch.`
+              : `Local Build Desk ${status.version} is downloaded and installs when the app quits. Builds or setup tasks are still running.`,
+      });
+      return CLI_EXIT.success;
+    }
     if (command === "monitor") {
       invariant(
         runtime.monitor,

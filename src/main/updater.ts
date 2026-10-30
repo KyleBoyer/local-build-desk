@@ -1,4 +1,4 @@
-import { app } from "electron";
+import { app, autoUpdater as nativeUpdater } from "electron";
 import electronUpdater from "electron-updater";
 import type { UpdateStatus } from "../core/types";
 import { invariant, messageOf } from "../core/errors";
@@ -14,6 +14,10 @@ export class Updater {
   private initialTimer?: NodeJS.Timeout;
   private checking?: Promise<UpdateStatus>;
   private installing = false;
+  // electron-updater reports "ready" before Squirrel.Mac has fetched the
+  // update from its local proxy; only then does quitting install it.
+  private staged = process.platform !== "darwin";
+  private readonly waiters = new Set<() => void>();
   get isInstalling() {
     return this.installing;
   }
@@ -21,13 +25,16 @@ export class Updater {
     private readonly emit: (status: UpdateStatus) => void,
     private readonly busy: () => boolean,
     enabled: boolean,
+    // The desktop downloads found updates in the background. A CLI owner
+    // only reports them unless `update` asks for the download.
+    private readonly autoDownload = true,
   ) {
     this.current = {
       state: enabled ? "idle" : "disabled",
       currentVersion: app.getVersion(),
     };
     if (!enabled) return;
-    autoUpdater.autoDownload = true;
+    autoUpdater.autoDownload = autoDownload;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.logger = {
       info: (message) => console.info("[updater]", message),
@@ -41,7 +48,11 @@ export class Updater {
       this.set({ state: "current" }),
     );
     autoUpdater.on("update-available", (info) =>
-      this.set({ state: "downloading", version: info.version, percent: 0 }),
+      this.set(
+        autoUpdater.autoDownload
+          ? { state: "downloading", version: info.version, percent: 0 }
+          : { state: "available", version: info.version },
+      ),
     );
     autoUpdater.on("download-progress", (progress) =>
       this.set({
@@ -56,6 +67,10 @@ export class Updater {
     autoUpdater.on("error", (error) =>
       this.set({ state: "error", error: messageOf(error) }),
     );
+    nativeUpdater?.on("update-downloaded", () => {
+      this.staged = true;
+      this.notify();
+    });
   }
   status() {
     return this.current;
@@ -121,5 +136,40 @@ export class Updater {
   private set(next: Omit<UpdateStatus, "currentVersion">) {
     this.current = { ...next, currentVersion: this.current.currentVersion };
     this.emit(this.current);
+    this.notify();
+  }
+  private notify() {
+    for (const wake of this.waiters) wake();
+  }
+  /** Checks, downloads any newer release, and resolves once it is staged so
+   * that quitting this process installs it. */
+  async prepare(timeoutMs: number): Promise<UpdateStatus> {
+    let status = await this.check();
+    if (status.state === "available") {
+      this.set({ state: "downloading", version: status.version, percent: 0 });
+      void autoUpdater.downloadUpdate().catch((error) => {
+        this.set({ state: "error", error: messageOf(error) });
+      });
+    }
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      status = this.current;
+      if (status.state === "ready" && this.staged) return status;
+      if (!["downloading", "ready"].includes(status.state)) return status;
+      invariant(
+        Date.now() < deadline,
+        "UPDATE_TIMEOUT",
+        `Downloading ${status.version ?? "the update"} did not finish in time. Run update again to resume.`,
+      );
+      await new Promise<void>((wake) => {
+        const done = () => {
+          clearTimeout(timer);
+          this.waiters.delete(done);
+          wake();
+        };
+        const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
+        this.waiters.add(done);
+      });
+    }
   }
 }

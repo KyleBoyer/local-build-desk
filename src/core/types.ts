@@ -429,6 +429,7 @@ export interface UpdateStatus {
     | "idle"
     | "checking"
     | "current"
+    | "available"
     | "downloading"
     | "ready"
     | "error";

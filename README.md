@@ -157,6 +157,8 @@ ios-submit connect-google --project /path/to/app --key /path/to/existing-service
 ios-submit install-tool --project /path/to/app --tool android --accept-android-license
 ```
 
+`ios-submit update` installs the latest signed release of Local Build Desk, which is also the CLI. It checks GitHub releases, downloads and verifies the update, and reports how it applies: a CLI-only run installs it when the command exits; when the desktop or menu-bar monitor owns the queue, the app restarts into it, or installs it at its next quit if builds or setup tasks are running. `ios-submit update --check` only reports the newest version. Self-update needs the packaged app, for example `"/Applications/Local Build Desk.app/Contents/MacOS/Local Build Desk" --desk-cli update`. A source checkout reports this and is updated with `git pull`, `npm install`, and `npm run build`.
+
 The CLI exits **0** for success, **1** for failure, and **2** while Apple processing is pending. `--wait` on `build`, `submit`, or `status` waits for processing; `--timeout` is in seconds (default 1800). `status` refreshes pending jobs directly from Apple, so it works without the desktop open. A refresh failure is reported with a recovery action. Upload completion and accepted processing remain separate states. `status` distinguishes accepted builds and Play drafts. An uncertain upload must be reconciled before retrying; retries never blindly upload a second copy. Existing successful artifacts can be uploaded without rebuilding. `cancel --job` works through the shared engine. Interrupting a headless owner stops and awaits its child processes; during normal completion, the owner waits for forwarded CLI requests before closing the shared engine.
 
 ## Long-running operations
