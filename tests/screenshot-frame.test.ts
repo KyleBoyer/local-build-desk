@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { Resvg } from "@resvg/resvg-js";
 import { frameSchema } from "../src/core/release-check-schema";
-import { frameScreenshot, wrapHeadline } from "../src/core/screenshot-frame";
+import {
+  frameScreenshot,
+  playCanvas,
+  wrapHeadline,
+} from "../src/core/screenshot-frame";
 
 function png(width: number, height: number, rgb: [number, number, number]) {
   const crcTable = Array.from({ length: 256 }, (_, n) => {
@@ -81,4 +85,20 @@ it("frames a capture at its own size with background, headline and screenshot", 
   expect(at(5, 5)).toEqual([0, 0, 128]);
   expect(at(300, 800)).toEqual([255, 0, 0]);
   expect(at(5, 1195)).toEqual([0, 0, 128]);
+});
+
+it("gives captures taller than 2:1 a 9:16 canvas for Google Play", async () => {
+  expect(playCanvas(1280, 2856)).toEqual({ width: 1280, height: 2276 });
+  expect(playCanvas(1080, 1920)).toEqual({ width: 1080, height: 1920 });
+  const dir = await mkdtemp(join(tmpdir(), "lbd-frame-play-"));
+  await writeFile(join(dir, "raw.png"), png(320, 714, [0, 255, 0]));
+  const framed = await frameScreenshot(
+    join(dir, "raw.png"),
+    join(dir, "framed.png"),
+    frameSchema.parse({}),
+    "Fits Google Play",
+    playCanvas,
+  );
+  const out = await readFile(framed.path);
+  expect([out.readUInt32BE(16), out.readUInt32BE(20)]).toEqual([320, 569]);
 });

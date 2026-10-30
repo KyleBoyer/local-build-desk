@@ -33,7 +33,7 @@ import {
 } from "./release-check-schema";
 import { createScreenshotRunner } from "./screenshot-runner";
 import { captureAndroid, withEmulator } from "./android-capture";
-import { frameScreenshot } from "./screenshot-frame";
+import { frameScreenshot, playCanvas } from "./screenshot-frame";
 import { admitHeavyStep } from "./memory";
 import { displayTypeFor } from "./app-store-listing";
 import { withLock } from "./locks";
@@ -994,6 +994,7 @@ export async function runReleaseChecks(
           shot.path.replace(/\.png$/, "") + "-framed.png",
           capturePlan.frame,
           capturePlan.captures.find((c) => c.name === shot.name)?.headline,
+          ctx.job.platform === "android" ? playCanvas : undefined,
         );
       await writeManifest();
     }

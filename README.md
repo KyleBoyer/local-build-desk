@@ -227,7 +227,7 @@ Use **Discover targets** to select installed iPhone/iPad device types, an exact 
 }
 ```
 
-Sizes are fractions of the image width; fonts come from the Mac's installed fonts.
+Sizes are fractions of the image width; fonts come from the Mac's installed fonts. Google Play rejects screenshots more than twice as long as they are wide, so Android captures taller than that are framed on a 9:16 canvas of the same width; iOS images keep the capture's App Store size.
 
 Keep the plan with the app by checking it in and setting `screenshotPlanFile` (for example `assets/store/screenshots.json`) instead of an inline `screenshots` plan. Each run reads the file from the same source snapshot it builds, so the plan is versioned with the screens it captures. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Captures run on iOS simulators and Android emulators; Android tests use a project-owned test command with an exit-code contract.
 

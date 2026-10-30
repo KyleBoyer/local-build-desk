@@ -43,14 +43,23 @@ export function wrapHeadline(
   return lines;
 }
 
-/** Renders a store image at the capture's own size: optional headline at the
- * top, then the screenshot scaled to fit, with rounded corners and an
- * optional border, over a plain or gradient background. */
+/** Google Play rejects screenshots more than twice as long as they are wide;
+ * taller captures get a 9:16 canvas of the same width. */
+export function playCanvas(width: number, height: number) {
+  return height > width * 2
+    ? { width, height: Math.round((width * 16) / 9) }
+    : { width, height };
+}
+
+/** Renders a store image, by default at the capture's own size: optional
+ * headline at the top, then the screenshot scaled to fit, with rounded
+ * corners and an optional border, over a plain or gradient background. */
 export async function frameScreenshot(
   input: string,
   output: string,
   frame: ScreenshotFrame,
   headline?: string,
+  canvas?: (width: number, height: number) => { width: number; height: number },
 ) {
   const png = await readFile(input);
   invariant(
@@ -58,8 +67,12 @@ export async function frameScreenshot(
     "SCREENSHOT_FORMAT",
     "Only PNG captures can be framed.",
   );
-  const W = png.readUInt32BE(16),
-    H = png.readUInt32BE(20);
+  const shotW = png.readUInt32BE(16),
+    shotH = png.readUInt32BE(20);
+  const { width: W, height: H } = canvas?.(shotW, shotH) ?? {
+    width: shotW,
+    height: shotH,
+  };
   const margin = Math.round(W * 0.07),
     size = Math.round(W * frame.headlineSize),
     lineHeight = Math.round(size * 1.18);
@@ -72,9 +85,12 @@ export async function frameScreenshot(
     : 0;
   const gap = lines.length ? Math.round(W * 0.045) : Math.round(H * 0.05);
   const available = H - textBottom - gap - Math.round(H * 0.04);
-  const scale = Math.min(frame.screenshotScale, available / H);
-  const w = Math.round(W * scale),
-    h = Math.round(H * scale),
+  const scale = Math.min(
+    (W * frame.screenshotScale) / shotW,
+    available / shotH,
+  );
+  const w = Math.round(shotW * scale),
+    h = Math.round(shotH * scale),
     x = Math.round((W - w) / 2),
     y = textBottom + gap;
   const radius = Math.round(w * frame.cornerRadius),
