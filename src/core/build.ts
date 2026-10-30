@@ -45,7 +45,7 @@ import {
   hasFile,
   readJSON,
 } from "./config";
-import { snapshot } from "./snapshot";
+import { snapshot, snapshotInputs } from "./snapshot";
 import { run, Redactor, type CommandOptions } from "./process";
 import { invariant } from "./errors";
 import { doctor } from "./doctor";
@@ -462,20 +462,14 @@ export async function buildLocal(ctx: BuildContext) {
     output = join(root, "artifacts");
   await mkdir(output, { recursive: true });
   ctx.stage("snapshot");
+  const inputs = snapshotInputs(inspection, project.settings);
   const sourceHash = await snapshot(
     project.path,
     source,
-    inspection.native,
+    inputs.native,
     ctx.signal,
     true,
-    (["ios", "android"] as const)
-      .filter((p) => inspection.native[p])
-      .map((p) =>
-        relative(
-          project.path,
-          join(appRoot(project.path, project.settings), p),
-        ),
-      ),
+    inputs.requiredPaths,
   );
   const sourceApp = appRoot(source, project.settings),
     installRoot = await dependencyRoot(source, sourceApp);

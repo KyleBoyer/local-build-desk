@@ -181,7 +181,62 @@ On macOS, a **menu bar build monitor** appears while jobs are active, queued, or
 
 **App Store compliance** answers Apple's age rating, App Privacy, and price and availability questions. The **App Store** page asks every question (content levels, yes/no features, the data the app and its third-party code collect with purposes, linkage and tracking, US price and territories), shows the answers back as plain statements, and records an attestation (name, date and a digest of the answers) once you confirm them. The answers and attestation are saved into the listing file as `ageRating`, `appPrivacy`, `pricing` and `attestation`, beside the listing text, so they are reviewable in git; `ios-submit listing --attest NAME` attests from the command line after printing the same statements. `--apply` sends the answers only while the attestation matches them exactly; editing an answer requires attesting again, and the dry run reports unattested answers as a blocker. Age rating, price (a US price point with Apple's equalization) and availability use the App Store Connect API. Apple's public API has no App Privacy endpoints, so the desktop owner publishes those answers through App Store Connect's own web requests (`/iris/v1`) from a hidden App Store Connect page in the desk's Apple sign-in session; if that session has expired, the page opens for you to sign in. This uses an undocumented Apple interface that may change; a dry run reads the current privacy answers without prompting for sign-in. Sections left out of the listing stay manual and are listed in the dry run.
 
-**Preferences → Encrypted backup & restore** creates a portable `.lbdbackup` protected by a passphrase of at least 12 characters (AES-256-GCM with scrypt). It includes signing credentials, API connections, imported environment values, project settings, build history/artifact metadata, and version reservations. It excludes source code, artifact contents, logs, caches, browser sessions, and notification preferences. Keep the passphrase separately; it is not stored or recoverable by the app. Restore previews its contents and lets you map source folders. Machine-specific tool/storage paths reset by default. Existing credentials are preserved, imported credentials receive new IDs and are encrypted for the destination Mac, and counters never move below existing floors. Active historical jobs become interrupted/uncertain and restored uploads require explicit reconciliation. Transfer artifact files separately and use **Locate file** in build history; the original checksum and size must match.
+**Tests → Tests & screenshots** runs the selected Xcode scheme/test plan (XCTest, Swift Testing or XCUITest) in the isolated build snapshot. Enable **Block upload when checks fail or are missing** to require passing evidence before any store upload, including independent uploads and reused artifacts. Each device runs serially on a disposable simulator; existing simulators are left alone. Release tests retain the profile's configuration with testability enabled. A failing suite, zero executed tests, missing runtime or failed capture blocks a required policy. Logs, `.xcresult` reports, failure attachments and captured PNGs stay with the job. Policies are opt-in for existing projects; configuring the policy does not create tests for an app.
+
+Use **Discover targets** to select installed iPhone/iPad device types, an exact runtime and optionally a scheme/test plan. A capture plan launches the app with per-screen demo arguments/environment, checks accessibility identifiers or labels, performs `tap`, `type`, `wait`, `assertText` or swipe steps, then captures the foreground app. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Simulator captures cover iOS; Android can use a project-owned test command with an exit-code contract.
+
+A portable `ios-submit.json` can contain the same policy, for example:
+
+```json
+{
+  "settings": {
+    "releaseChecks": {
+      "enabled": true,
+      "required": true,
+      "runner": "xcode",
+      "destinations": [
+        { "deviceType": "iPhone 17 Pro Max", "runtime": "26.2" },
+        { "deviceType": "iPad Pro 13-inch (M4)", "runtime": "26.2" }
+      ],
+      "screenshots": {
+        "captures": [
+          {
+            "name": "home",
+            "launchArguments": ["--demo-data"],
+            "readyIdentifier": "home-screen"
+          },
+          {
+            "name": "settings",
+            "steps": [{ "action": "tap", "identifier": "settings-button" }],
+            "readyIdentifier": "settings-screen"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Choose device/runtime combinations installed on your Mac; the example values are not prerequisites. For a project-owned command, use `"runner": "command", "command": ["npm", "test"]` and omit destinations unless also capturing iOS screens. Commands run in the installed snapshot without a shell. Native iOS tests do not require Node or Expo.
+
+```sh
+ios-submit test-targets --project /path/to/app
+ios-submit test --project /path/to/app --platform ios --profile production
+ios-submit screenshots --project /path/to/app --profile production
+ios-submit build --project /path/to/app --platform ios --profile production --auto-submit
+ios-submit use-screenshots --job BUILD_JOB_ID
+ios-submit readiness --project /path/to/app --destination appstore
+ios-submit store-status --project /path/to/app
+ios-submit resume --job JOB_ID
+```
+
+`test` and `screenshots` are local validation jobs: they do not reserve store versions or upload. Capture-only results cannot approve an upload. To associate screenshots with a release, capture them during its production build, then choose **Use screenshots in listing** (or `use-screenshots`). This creates an excluded local listing overlay under `.local-build-desk/store`, preserving the original listing. Before a listing write, the app checks the selected build/version, capture source and PNG checksums. Hand-supplied screenshots remain supported and do not carry an automated provenance claim.
+
+**Readiness** checks the latest production IPA, current artifact checksum, toolchain, per-target profiles, Apple access, required test evidence and listing prerequisites. It shows built, uploaded, processed by Apple, assigned to internal TestFlight, and App Review as distinct states. A successful upload is not proof of processing or installation on a physical device. NFC, hardware folds and real-device permission flows still need device testing.
+
+**Resume safely** reconciles uncertain/processing uploads before another attempt. A verified artifact resumes as an independent upload; an earlier interrupted build restarts compilation with caches only if its source is unchanged. It does not continue an unverified partial archive. Listing writes also keep a write-ahead journal: an unanswered creation request is reconciled against Apple before another mutation. An ambiguous result stays blocked rather than creating a duplicate submission. Versions waiting for review or already released are reported as normal read-only states.
+
+**Preferences → Encrypted backup & restore** creates a portable `.lbdbackup` protected by a passphrase of at least 12 characters (AES-256-GCM with scrypt). It includes signing credentials, API connections, imported environment values, project settings and release-check policies, build history/artifact metadata, validation receipts, release journals, and version reservations. It excludes source code, artifact contents (including screenshots and test-result bundles), logs, caches, browser sessions, and notification preferences. Keep the passphrase separately; it is not stored or recoverable by the app. Restore previews its contents and lets you map source folders. Machine-specific tool/storage paths reset by default. Existing credentials are preserved, imported credentials receive new IDs and are encrypted for the destination Mac, and counters never move below existing floors. Active historical jobs become interrupted/uncertain and restored uploads require explicit reconciliation. Transfer artifact files separately and use **Locate file** in build history; the original checksum and size must match.
 
 **Build** and **Build & Upload** offer existing verified artifacts when source, configuration, environment, signing credentials, and toolchain fingerprints match. Reuse keeps the original version and does not reserve another build number. Already-uploaded artifacts open their existing result instead of uploading twice. Development clients may also offer native-compatible reuse using the project’s installed `@expo/fingerprint`; run Metro to load the current JavaScript. Production artifacts require an exact match. A clean build or **Build fresh** bypasses reuse. Builds made before fingerprint capture need one fresh build before they can be matched. Invocation-only/no-Keychain CI credentials do not create reusable fingerprints.
 

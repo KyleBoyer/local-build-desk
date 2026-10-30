@@ -6,11 +6,33 @@ import {
   readlink,
   readFile,
 } from "node:fs/promises";
-import { resolve, join, relative, isAbsolute, sep } from "node:path";
+import { resolve, join, relative, isAbsolute, sep, dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { run } from "./process";
 import { invariant } from "./errors";
 import { hasFile } from "./config";
+import type { Inspection, ProjectSettings } from "./types";
+
+/** Use the same native inputs for compilation, reuse, readiness and resume. */
+export function snapshotInputs(
+  inspection: Inspection,
+  settings: ProjectSettings,
+) {
+  const type = inspection.type ?? settings.projectType ?? "expo";
+  return {
+    native: type === "expo" ? inspection.native : { ios: true, android: true },
+    requiredPaths: inspection.capacitor
+      ? [inspection.capacitor.iosPath, inspection.capacitor.androidPath]
+      : type === "native-ios"
+        ? (inspection.containers ?? []).map((c) =>
+            dirname(c.path) === "." ? c.path : dirname(c.path),
+          )
+        : (["ios", "android"] as const)
+            .filter((p) => inspection.native[p])
+            .map((p) => join(settings.appDirectory ?? ".", p)),
+  };
+}
+
 const ignored = new Set([
   "node_modules",
   ".git",

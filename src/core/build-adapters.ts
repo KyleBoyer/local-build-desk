@@ -29,7 +29,7 @@ import {
   xcodegenSpecs,
   generateXcodeProjects,
 } from "./xcode-project";
-import { snapshot } from "./snapshot";
+import { snapshot, snapshotInputs } from "./snapshot";
 import { run, Redactor, type CommandOptions } from "./process";
 import { invariant } from "./errors";
 import { doctor } from "./doctor";
@@ -190,17 +190,14 @@ export async function buildNonExpo(ctx: BuildContext) {
     output = join(root, "artifacts");
   await mkdir(output, { recursive: true });
   ctx.stage("snapshot");
+  const inputs = snapshotInputs(inspection, project.settings);
   const sourceHash = await snapshot(
     project.path,
     source,
-    { ios: true, android: true },
+    inputs.native,
     ctx.signal,
     true,
-    inspection.capacitor
-      ? [inspection.capacitor.iosPath, inspection.capacitor.androidPath]
-      : (inspection.containers ?? []).flatMap((c) =>
-          dirname(c.path) === "." ? [c.path] : [dirname(c.path)],
-        ),
+    inputs.requiredPaths,
   );
   const app = appRoot(source, project.settings),
     redactor = new Redactor();

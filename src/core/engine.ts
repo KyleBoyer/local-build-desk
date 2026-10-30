@@ -1,6 +1,6 @@
 import { readinessReport } from "./readiness";
 import { loadListing, listingPlan, displayTypeFor } from "./app-store-listing";
-import { snapshot } from "./snapshot";
+import { snapshot, snapshotInputs } from "./snapshot";
 import { validateProvision } from "./signing";
 import { assertUploadChecks, simulatorCatalog } from "./release-validation";
 import { checkpoint, finishCheckpoint } from "./checkpoints";
@@ -751,6 +751,23 @@ export class Engine extends EventEmitter {
       destination,
     );
     const item = (id: string) => report.items.find((i) => i.id === id)!;
+    if (report.jobId) {
+      const job = this.store.get<Job>("jobs", report.jobId);
+      if (job.artifactId && item("artifact").status === "ready") {
+        const artifact = this.store.get<Artifact>("artifacts", job.artifactId);
+        try {
+          const digest = await hashArtifact(artifact.path);
+          invariant(
+            digest.sha256 === artifact.sha256 && digest.size === artifact.size,
+            "ARTIFACT_CHANGED",
+            "The IPA changed since it was built. Rebuild before uploading.",
+          );
+        } catch (error) {
+          item("artifact").status = "blocked";
+          item("artifact").detail = messageOf(error);
+        }
+      }
+    }
     try {
       const inspection = await inspectProject(project.path, project.settings);
       const signing = await this.vault.get(
@@ -805,23 +822,23 @@ export class Engine extends EventEmitter {
         "The Apple API key authenticated successfully.";
       if (report.jobId) {
         const job = this.store.get<Job>("jobs", report.jobId);
+        const inputs = snapshotInputs(inspection, project.settings);
         const currentHash = await snapshot(
           project.path,
           join(this.store.root, "readiness-snapshot"),
-          inspection.native,
+          inputs.native,
           undefined,
           false,
-          (inspection.containers ?? []).flatMap((c) =>
-            dirname(c.path) === "." ? [c.path] : [dirname(c.path)],
-          ),
+          inputs.requiredPaths,
         );
         if (job.facts?.sourceHash !== currentHash)
           report.items.push({
             id: "source",
             title: "Current source",
-            status: "blocked",
-            detail:
-              "The working tree changed after this artifact was built. Build fresh to test, capture and release the current source.",
+            status: report.delivery.uploaded ? "warning" : "blocked",
+            detail: report.delivery.uploaded
+              ? "The working tree changed after this release was uploaded. Its delivered artifact and check results still describe the earlier source."
+              : "The working tree changed after this artifact was built. Build fresh to test, capture and release the current source.",
           });
       }
       if (destination === "appstore") {
@@ -876,7 +893,25 @@ export class Engine extends EventEmitter {
           detail: messageOf(e),
         });
     }
-    report.canUpload = !report.items.some((i) => i.status === "blocked");
+    const selected = report.jobId && this.store.get<Job>("jobs", report.jobId);
+    const activeSubmission =
+      selected &&
+      this.store
+        .list<Job>("jobs")
+        .some(
+          (j) =>
+            j.artifactId === selected.artifactId &&
+            j.kind === "submit" &&
+            ["queued", "running"].includes(j.status),
+        );
+    report.canUpload =
+      !report.delivery.uploaded &&
+      !activeSubmission &&
+      !report.items.some(
+        (i) =>
+          i.status === "blocked" ||
+          (i.id === "signing" && i.status === "pending"),
+      );
     return report;
   }
   async resume(jobId: string): Promise<Job[]> {
@@ -905,15 +940,14 @@ export class Engine extends EventEmitter {
     const project = this.projectFor(job);
     if (job.facts?.sourceHash) {
       const inspection = await inspectProject(project.path, project.settings);
+      const inputs = snapshotInputs(inspection, project.settings);
       const current = await snapshot(
         project.path,
         join(this.store.root, "resume-check"),
-        inspection.native,
+        inputs.native,
         undefined,
         false,
-        (inspection.containers ?? []).flatMap((c) =>
-          dirname(c.path) === "." ? [c.path] : [dirname(c.path)],
-        ),
+        inputs.requiredPaths,
       );
       invariant(
         current === job.facts.sourceHash,
@@ -1193,6 +1227,7 @@ export class Engine extends EventEmitter {
     "localProfiles",
     "minimumIosSdk",
     "iosSdk",
+    "releaseChecks",
   ] as const;
   portableBuildSettings(projectId: string) {
     const project = this.store.get<Project>("projects", projectId);
@@ -1398,7 +1433,7 @@ export class Engine extends EventEmitter {
         status: "queued",
         stage: "queued",
         createdAt: now(),
-        autoSubmit: request.autoSubmit ?? false,
+        autoSubmit: !request.validationOnly && (request.autoSubmit ?? false),
         clean: request.clean ?? false,
         kind: request.validationOnly ? "test" : "build",
         checksMode: request.checksMode,
@@ -1678,6 +1713,8 @@ export class Engine extends EventEmitter {
         profile: job.profile,
         autoSubmit: job.autoSubmit,
         clean: job.clean,
+        validationOnly: job.kind === "test",
+        checksMode: job.checksMode,
       },
       job.projectSnapshot
         ? {
@@ -1717,6 +1754,7 @@ export class Engine extends EventEmitter {
       id: id(),
       kind: "submit",
       parentJobId: source.id,
+      checkpoints: [],
       status: "queued",
       stage: "queued",
       createdAt: now(),

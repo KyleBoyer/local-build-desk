@@ -682,9 +682,15 @@ export function ReadinessWorkflow({
               <h2>
                 {report.delivery.review
                   ? report.delivery.review.replaceAll("_", " ")
-                  : report.canUpload
-                    ? "Upload prerequisites satisfied"
-                    : "Work remains before release"}
+                  : report.delivery.assigned
+                    ? "Available in internal TestFlight"
+                    : report.delivery.processed
+                      ? "Apple processing complete"
+                      : report.delivery.uploaded
+                        ? "Uploaded · awaiting Apple processing"
+                        : report.canUpload
+                          ? "Upload prerequisites satisfied"
+                          : "Work remains before release"}
               </h2>
               <span className="mono subtle">
                 {new Date(report.checkedAt).toLocaleTimeString()}

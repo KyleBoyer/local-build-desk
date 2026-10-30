@@ -210,7 +210,11 @@ export async function exportedScreenshots(
   for (const name of names) {
     const matches = attachments.filter(
       (a) =>
-        a.suggestedHumanReadableName.includes(`store-${name}`) &&
+        // xcresulttool appends _<index>_<attachment-id>.png. Comparing the
+        // original name keeps "home" distinct from "home-detail"/"home_0".
+        a.suggestedHumanReadableName
+          .replace(/_\d+_[^_]+\.png$/, "")
+          .replace(/\.png$/, "") === `store-${name}` &&
         a.exportedFileName.endsWith(".png"),
     );
     invariant(
@@ -380,13 +384,17 @@ export async function runReleaseChecks(
                 d.name === lease.name &&
                 d.name.startsWith("Local Build Desk "),
             );
-          if (instance)
-            await run("xcrun", ["simctl", "delete", lease.id], {
+          if (instance) {
+            const deleted = await run("xcrun", ["simctl", "delete", lease.id], {
               ...options,
               signal: undefined,
               allowFailure: true,
               timeout: 60000,
-            });
+            }).catch(() => ({ code: 1 }));
+            // CoreSimulator may still be tearing down a crashed runner. Keep
+            // the lease so the next run can clean up rather than forgetting it.
+            if (deleted.code) continue;
+          }
           leases = leases.filter((l) => l.id !== lease.id);
         }
         ctx.store.setPreference("simulator-leases", leases);

@@ -15,14 +15,20 @@ export function readinessReport(
   destination: "testflight" | "appstore" = "testflight",
 ): ReleaseReadiness {
   const items: ReadinessItem[] = [];
-  const job = jobs
+  const builds = jobs
     .filter(
       (j) =>
         j.projectId === project.id &&
         j.kind === "build" &&
         j.platform === "ios",
     )
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const job =
+    builds.find(
+      (j) =>
+        j.storeEligible &&
+        artifacts.some((a) => a.id === j.artifactId && a.kind === "ipa"),
+    ) ?? builds[0];
   const artifact =
     job && artifacts.find((a) => a.id === job.artifactId && a.kind === "ipa");
   const add = (
@@ -105,7 +111,21 @@ export function readinessReport(
       "warning",
       "Tests are not configured. Enable required checks on the Tests screen to gate uploads.",
     );
-  const submission = job?.submission;
+  // Independent submission has its own job. The build's validation proof stays
+  // on the build; delivery belongs to the latest submission of that exact IPA.
+  const deliveryJob =
+    job &&
+    jobs
+      .filter(
+        (j) =>
+          j.projectId === project.id &&
+          j.artifactId &&
+          j.artifactId === job.artifactId &&
+          (j.submission ||
+            (j.kind === "submit" && ["queued", "running"].includes(j.status))),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const submission = deliveryJob?.submission;
   const uploaded =
     !!submission &&
     ["uploaded", "processing", "accepted", "draft"].includes(submission.state);
@@ -145,7 +165,17 @@ export function readinessReport(
     destination,
     checkedAt: new Date().toISOString(),
     items,
-    canUpload: !items.some((i) => i.status === "blocked"),
+    canUpload:
+      !uploaded &&
+      !(
+        deliveryJob?.kind === "submit" &&
+        ["queued", "running"].includes(deliveryJob.status)
+      ) &&
+      !items.some(
+        (i) =>
+          i.status === "blocked" ||
+          (i.id === "signing" && i.status === "pending"),
+      ),
     delivery: { built: !!artifact, uploaded, processed, assigned },
   };
 }

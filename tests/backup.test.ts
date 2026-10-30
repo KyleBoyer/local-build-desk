@@ -287,3 +287,114 @@ it("round-trips native project selections, local profiles and extension facts wh
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it("round-trips check policies, validation receipts and uncertain release journals", async () => {
+  const { releaseChecksSchema } =
+    await import("../src/core/release-check-schema");
+  const root = mkdtempSync(join(tmpdir(), "desk-check-backup-"));
+  const a = new Store(join(root, "a")),
+    b = new Store(join(root, "b"));
+  try {
+    const av = new Vault(a, encryption("A:")),
+      bv = new Vault(b, encryption("B:"));
+    const releaseChecks = releaseChecksSchema.parse({
+      runner: "command",
+      command: ["npm", "test"],
+    });
+    a.putProject({
+      id: "project",
+      name: "Fixture",
+      path: join(root, "source"),
+      createdAt: "now",
+      profiles: ["production"],
+      settings: { releaseChecks },
+    });
+    a.putJob({
+      id: "test-job",
+      projectId: "project",
+      projectName: "Fixture",
+      platform: "ios",
+      kind: "test",
+      profile: "production",
+      status: "running",
+      stage: "testing",
+      createdAt: "now",
+      autoSubmit: false,
+      clean: false,
+      validation: {
+        state: "running",
+        mode: "all",
+        sourceHash: "a".repeat(64),
+        fingerprint: "b".repeat(64),
+        policyDigest: "c".repeat(64),
+        configuration: "Release",
+        startedAt: "now",
+        runs: [],
+        screenshots: [],
+      },
+      checkpoints: [{ stage: "testing", state: "running", startedAt: "now" }],
+      checksMode: "all",
+      resumedFrom: "previous-test",
+    });
+    a.setPreference("release-journals", [
+      {
+        id: "journal",
+        projectId: "project",
+        appId: "app",
+        bundleId: "com.example.fixture",
+        version: "1.0",
+        manifestHash: "d".repeat(64),
+        state: "uncertain",
+        stage: "POST /appStoreVersions",
+        updatedAt: "now",
+        completed: [],
+        pending: {
+          key: "operation",
+          path: "/appStoreVersions",
+          startedAt: "now",
+          selectors: { versionString: "1.0" },
+          relationships: { app: "app" },
+        },
+      },
+    ]);
+    const payload = await decryptBackup(
+      await encryptBackup(
+        await captureBackup(a, av),
+        "check receipt backup passphrase",
+      ),
+      "check receipt backup passphrase",
+    );
+    await restorePayload(
+      b,
+      bv,
+      payload,
+      { project: join(root, "relocated") },
+      () => {},
+    );
+    const project = b.list<Project>("projects")[0]!;
+    expect(project.settings.releaseChecks).toEqual(releaseChecks);
+    const restored = b.get<Job>("jobs", "test-job");
+    expect(restored).toMatchObject({
+      kind: "test",
+      status: "interrupted",
+      resumedFrom: "previous-test",
+      checksMode: "all",
+      validation: { state: "interrupted" },
+    });
+    expect(restored.checkpoints?.[0]?.state).toBe("interrupted");
+    expect(b.preference<any[]>("release-journals", [])[0]).toMatchObject({
+      projectId: project.id,
+      state: "uncertain",
+      pending: { path: "/appStoreVersions" },
+    });
+    // Backups predating the journal field remain readable and restorable.
+    delete payload.releaseJournals;
+    await expect(
+      encryptBackup(payload, "legacy receipt backup passphrase"),
+    ).resolves.toBeInstanceOf(Buffer);
+  } finally {
+    a.close();
+    b.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

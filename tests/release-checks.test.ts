@@ -506,3 +506,146 @@ it("waits for asynchronously freed disk space, but not forever", async () => {
   aborted.abort();
   expect(await freeSpace(tmpdir(), huge, 60000, aborted.signal)).toBe(false);
 });
+
+it("distinguishes capture names that share prefixes or numeric suffixes", async () => {
+  const { rm } = await import("node:fs/promises");
+  const folder = await mkdtemp(join(tmpdir(), "lbd-capture-names-"));
+  try {
+    const names = ["home", "home-detail", "home_0", "home_0_1"];
+    await Promise.all(
+      names.map((name, index) =>
+        writeFile(join(folder, `${name}.png`), png(1320, 2868, index)),
+      ),
+    );
+    await writeFile(
+      join(folder, "manifest.json"),
+      JSON.stringify([
+        {
+          attachments: names.map((name) => ({
+            exportedFileName: `${name}.png`,
+            suggestedHumanReadableName: `store-${name}_0_3A36378A-3034-4782-BD1A-605666BF8B17.png`,
+          })),
+        },
+      ]),
+    );
+    const shots = await exportedScreenshots(folder, names, "iPhone", "27.2");
+    expect(shots.map((s) => s.name)).toEqual(names);
+    expect(new Set(shots.map((s) => s.sha256)).size).toBe(4);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+it("uses the production artifact and its independent submission for readiness", () => {
+  const project = {
+    id: "p1",
+    settings: {
+      ...settings,
+      appleConnectionId: "apple",
+      iosSigningId: "ios",
+      testFlightGroupId: "group",
+    },
+  } as Project;
+  const build = passing({ artifactId: "ipa", storeEligible: true });
+  const preview = passing({
+    id: "preview",
+    artifactId: "app",
+    profile: "development",
+    storeEligible: false,
+    createdAt: "2026-10-30T00:00:00Z",
+  });
+  const unrelated = passing({
+    id: "other",
+    artifactId: "other-ipa",
+    kind: "submit",
+    createdAt: "2026-10-31T00:00:00Z",
+    submission: {
+      state: "accepted",
+      destination: "TestFlight",
+      message: "available to internal group Team",
+    },
+  });
+  const submitted = passing({
+    id: "submission",
+    artifactId: "ipa",
+    kind: "submit",
+    createdAt: "2026-10-29T00:01:00Z",
+    submission: {
+      state: "accepted",
+      destination: "TestFlight",
+      message: "Processed by Apple and available to internal group Team.",
+    },
+  });
+  const artifact = {
+    id: "ipa",
+    kind: "ipa",
+    sha256: "f".repeat(64),
+    version: "1.2.0",
+    buildNumber: "7",
+  } as any;
+  const checks = ["Xcode", "iOS SDK", "Build storage"].map((name) => ({
+    name,
+    status: "ok",
+    detail: "Installed",
+  })) as any;
+  const report = readinessReport(
+    project,
+    [build, preview, submitted, unrelated],
+    [artifact],
+    checks,
+  );
+  expect(report.jobId).toBe(build.id);
+  expect(report.delivery).toEqual({
+    built: true,
+    uploaded: true,
+    processed: true,
+    assigned: true,
+  });
+  expect(report.canUpload).toBe(false);
+  expect(report.items.find((i) => i.id === "delivery")?.status).toBe("ready");
+  const queued = {
+    ...submitted,
+    status: "queued",
+    submission: undefined,
+  } as Job;
+  const active = readinessReport(project, [build, queued], [artifact], checks);
+  expect(active.delivery.uploaded).toBe(false);
+  expect(active.canUpload).toBe(false);
+});
+
+it("shares native snapshot inputs across builds, reuse and resume for each project type", async () => {
+  const { snapshotInputs } = await import("../src/core/snapshot");
+  const expo = { type: "expo", native: { ios: true, android: false } } as any;
+  expect(snapshotInputs(expo, { appDirectory: "apps/mobile" })).toEqual({
+    native: { ios: true, android: false },
+    requiredPaths: ["apps/mobile/ios"],
+  });
+  expect(
+    snapshotInputs(
+      {
+        type: "capacitor",
+        native: { ios: true, android: false },
+        capacitor: { iosPath: "custom/apple", androidPath: "custom/google" },
+      } as any,
+      {},
+    ),
+  ).toEqual({
+    native: { ios: true, android: true },
+    requiredPaths: ["custom/apple", "custom/google"],
+  });
+  expect(
+    snapshotInputs(
+      {
+        type: "native-ios",
+        containers: [
+          { path: "apps/ios/App.xcodeproj" },
+          { path: "Root.xcworkspace" },
+        ],
+      } as any,
+      {},
+    ),
+  ).toEqual({
+    native: { ios: true, android: true },
+    requiredPaths: ["apps/ios", "Root.xcworkspace"],
+  });
+});

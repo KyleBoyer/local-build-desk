@@ -1,6 +1,6 @@
 {
   "name": "local-build-desk",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Build and submit Expo apps from your Mac",
   "private": true,
   "type": "module",

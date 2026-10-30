@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { Vault } from "./vault";
 import { run } from "./process";
-import { snapshot } from "./snapshot";
+import { snapshot, snapshotInputs } from "./snapshot";
 import { inspectProject, resolveProfile, toolEnvironment } from "./config";
 import { doctor } from "./doctor";
 import type { Check, Inspection, Platform, Profile, Project } from "./types";
@@ -190,19 +190,14 @@ export async function inspectReuse(
     ...imported,
     ...profile.env,
   });
+  const inputs = snapshotInputs(inspection, project.settings);
   const sourceHash = await snapshot(
     project.path,
     join(tmpdir(), "desk-hash-" + randomUUID()),
-    inspection.native,
+    inputs.native,
     undefined,
     false,
-    inspection.capacitor
-      ? [inspection.capacitor.iosPath, inspection.capacitor.androidPath]
-      : inspection.type === "native-ios"
-        ? (inspection.containers ?? []).flatMap((c) =>
-            dirname(c.path) === "." ? [c.path] : [dirname(c.path)],
-          )
-        : [],
+    inputs.requiredPaths,
   );
   const checks = await doctor(
     project.settings,

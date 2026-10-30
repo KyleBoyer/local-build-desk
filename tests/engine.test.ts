@@ -404,3 +404,112 @@ it("loads a chosen listing file's saved answers and remembers the choice", async
     engine.readCompliance("listing-project", "/etc/passwd.json"),
   ).rejects.toThrow(/inside the project/);
 });
+
+it("retries checks as checks, preserving screenshot mode and avoiding a release build", async () => {
+  const job = {
+    id: "failed-check",
+    projectId: "project",
+    kind: "test",
+    profile: "production",
+    platform: "ios",
+    status: "failed",
+    autoSubmit: false,
+    clean: false,
+    checksMode: "screenshots",
+  } as Job;
+  store.putJob(job);
+  const build = vi.spyOn(engine, "build").mockResolvedValue([]);
+  try {
+    await engine.retry(job.id);
+    expect(build).toHaveBeenCalledWith(
+      expect.objectContaining({
+        validationOnly: true,
+        checksMode: "screenshots",
+        autoSubmit: false,
+      }),
+      undefined,
+    );
+  } finally {
+    build.mockRestore();
+  }
+});
+
+it("blocks independent upload before contacting Apple when required check evidence is absent", async () => {
+  const { hashArtifact } = await import("../src/core/build");
+  const { releaseChecksSchema } =
+    await import("../src/core/release-check-schema");
+  engine.saveSettings("project", {
+    releaseChecks: releaseChecksSchema.parse({
+      runner: "command",
+      command: ["npm", "test"],
+    }),
+  });
+  const build = {
+    id: "unchecked-build",
+    projectId: "project",
+    projectName: "Fixture",
+    kind: "build",
+    platform: "ios",
+    profile: "production",
+    status: "succeeded",
+    stage: "complete",
+    artifactId: "unchecked-ipa",
+    storeEligible: true,
+    autoSubmit: false,
+    clean: false,
+    createdAt: "2026-10-29T00:00:00Z",
+    checkpoints: [{ stage: "compile", state: "complete", startedAt: "then" }],
+  } as Job;
+  store.putJob(build);
+  store.putArtifact({
+    id: "unchecked-ipa",
+    jobId: build.id,
+    kind: "ipa",
+    platform: "ios",
+    path: join(root, "app.ipa"),
+    sha256: "a".repeat(64),
+    size: 1,
+    bundleId: "com.example.fixture",
+    version: "1.0",
+    buildNumber: "10",
+  });
+  vi.mocked(hashArtifact).mockResolvedValueOnce({
+    sha256: "a".repeat(64),
+    size: 1,
+  });
+  const remote = vi.spyOn(AppleAPI.prototype, "build");
+  try {
+    const submitted = await engine.submit("unchecked-ipa");
+    await finished([submitted.id]);
+    const failed = store.get<Job>("jobs", submitted.id);
+    expect(failed.status).toBe("failed");
+    expect(failed.error).toContain("Required release checks");
+    expect(failed.submission).toBeUndefined();
+    expect(failed.checkpoints?.map((c) => c.stage)).toEqual(["verify"]);
+    expect(remote).not.toHaveBeenCalled();
+    expect(store.get<Job>("jobs", build.id).checkpoints).toHaveLength(1);
+  } finally {
+    remote.mockRestore();
+  }
+});
+
+it("exports and imports release-check policies with portable settings", async () => {
+  const { releaseChecksSchema } =
+    await import("../src/core/release-check-schema");
+  const releaseChecks = releaseChecksSchema.parse({
+    runner: "command",
+    command: ["npm", "test"],
+  });
+  engine.saveSettings("project", {
+    releaseChecks,
+    xcodePath: "/machine-specific/Xcode.app",
+  });
+  const json = engine.portableBuildSettings("project");
+  expect(JSON.parse(json).settings.releaseChecks).toEqual(releaseChecks);
+  expect(json).not.toContain("machine-specific");
+  engine.saveSettings("project", {});
+  engine.loadBuildSettings("project", json);
+  expect(
+    store.get<Project>("projects", "project").settings.releaseChecks,
+  ).toEqual(releaseChecks);
+});
