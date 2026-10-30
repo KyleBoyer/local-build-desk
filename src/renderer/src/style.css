@@ -1116,6 +1116,8 @@ footer span:first-child {
 .job-detail .section-heading {
   margin-bottom: 16px;
 }
+.job-detail .section-heading h1 { font-size: 22px; margin: 0; display: flex; align-items: center; gap: 10px; }
+.detail-navigation { display: flex; align-items: center; margin-bottom: 20px; }
 .row-actions {
   display: flex;
   gap: 8px;
@@ -3314,9 +3316,6 @@ footer span:first-child {
   max-width: 100ch;
 }
 .store-release-workspace.has-selection {
-  display: grid;
-  grid-template-columns: minmax(245px, 0.7fr) minmax(0, 1.3fr);
-  gap: 24px;
   margin-top: 18px;
 }
 .store-release-list {
@@ -3376,8 +3375,6 @@ footer span:first-child {
   text-transform: capitalize;
 }
 .store-release-detail {
-  border-left: 1px solid var(--line);
-  padding-left: 24px;
   min-width: 0;
 }
 .store-release-detail .eyebrow {
@@ -3537,17 +3534,6 @@ footer span:first-child {
   max-height: 73vh;
   object-fit: contain;
   margin: 14px auto 0;
-}
-@media (max-width: 1100px) {
-  .store-release-workspace.has-selection {
-    grid-template-columns: 1fr;
-  }
-  .store-release-detail {
-    border-left: 0;
-    padding-left: 0;
-    border-top: 1px solid var(--line);
-    padding-top: 24px;
-  }
 }
 @media (max-width: 700px) {
   .store-channel-tabs {

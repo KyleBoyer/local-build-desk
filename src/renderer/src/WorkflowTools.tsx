@@ -298,6 +298,7 @@ export function ReleaseAssistant({
       ["succeeded", "needs-attention"].includes(j.status),
   );
   const [jobId, setJobId] = useState(choices[0]?.id ?? "");
+  const [browsingRelease, setBrowsingRelease] = useState(false);
   const [destination, setDestination] = useState<
     "testflight" | "appstore" | "play"
   >("testflight");
@@ -356,8 +357,11 @@ export function ReleaseAssistant({
           </p>
         </div>
       </div>
-      <SubmittedReleases project={project} />
-      <section className="section-card">
+      <SubmittedReleases
+        project={project}
+        onDetailChange={setBrowsingRelease}
+      />
+      <section className="section-card" hidden={browsingRelease}>
         <fieldset disabled={busy} className="workflow-fieldset">
           <div className="form-grid">
             <label>
@@ -403,6 +407,9 @@ export function ReleaseAssistant({
           <label className="workflow-notes">
             {destination === "testflight" ? "What to Test" : "What's New"}
             <textarea
+              aria-label={
+                destination === "testflight" ? "What to Test" : "What's New"
+              }
               rows={7}
               maxLength={destination === "play" ? 500 : 4000}
               value={notes[destination]}

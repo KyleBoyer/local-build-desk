@@ -175,6 +175,19 @@ test("Builds → Tests stays responsive with a 50,608-entry native build log", a
     finishedAt: "2026-10-30T12:10:00.000Z",
     buildNumber: "80",
   } as Job);
+  for (let i = 0; i < 45; i++)
+    store.putJob({
+      id: `history-${i}`,
+      projectId: "project",
+      projectName: "Fixture",
+      platform: "ios",
+      profile: "production",
+      kind: "build",
+      status: "succeeded",
+      stage: "verify",
+      createdAt: "2026-10-29T12:00:00.000Z",
+      buildNumber: String(79 - i),
+    } as Job);
   store.close();
   await mkdir(join(state, "jobs/large-log"), { recursive: true });
   await writeFile(
@@ -208,6 +221,23 @@ test("Builds → Tests stays responsive with a 50,608-entry native build log", a
       page.getByRole("heading", { name: "Fixture, ready when you are." }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Builds", exact: true }).click();
+    await expect(page.getByRole("log")).toHaveCount(0);
+    const olderBuild = page.locator('[data-detail-id="history-39"]');
+    await olderBuild.scrollIntoViewIfNeeded();
+    await olderBuild.focus();
+    const historyY = await page.evaluate(() => window.scrollY);
+    await olderBuild.press("Enter");
+    await expect(
+      page.getByRole("region", { name: "Build details", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".job-table")).toHaveCount(0);
+    expect(await page.evaluate(() => window.scrollY)).toBeLessThan(100);
+    await page
+      .getByRole("button", { name: "Back to build history", exact: true })
+      .click();
+    await expect(olderBuild).toBeFocused();
+    expect(await page.evaluate(() => window.scrollY)).toBe(historyY);
+    await page.locator('[data-detail-id="large-log"]').click();
     await expect(page.getByRole("log")).toContainText("native compile 50607");
     await expect(page.locator(".logs > div")).toHaveCount(LOG_PAGE_ENTRIES);
     // Page history and full-history search still reach output outside the tail.
@@ -246,6 +276,7 @@ test("Builds → Tests stays responsive with a 50,608-entry native build log", a
       );
       timings.push(Date.now() - started);
       await page.getByRole("button", { name: "Builds", exact: true }).click();
+      await page.locator('[data-detail-id="large-log"]').click();
       await expect(page.locator(".logs > div")).toHaveCount(LOG_PAGE_ENTRIES);
     }
     // Bursts also have a bounded DOM, even while the page is already full.
@@ -266,20 +297,18 @@ test("Builds → Tests stays responsive with a 50,608-entry native build log", a
     await expect(page.getByRole("log")).toContainText("live burst 4999");
     await expect(page.locator(".logs > div")).toHaveCount(LOG_PAGE_ENTRIES);
     await page.screenshot({ path: "test-results/large-log-builds.png" });
-    await test
-      .info()
-      .attach("builds-to-tests-timing.json", {
-        body: JSON.stringify(
-          {
-            entries: 50608,
-            visibleLimit: LOG_PAGE_ENTRIES,
-            navigationMs: timings,
-          },
-          null,
-          2,
-        ),
-        contentType: "application/json",
-      });
+    await test.info().attach("builds-to-tests-timing.json", {
+      body: JSON.stringify(
+        {
+          entries: 50608,
+          visibleLimit: LOG_PAGE_ENTRIES,
+          navigationMs: timings,
+        },
+        null,
+        2,
+      ),
+      contentType: "application/json",
+    });
     expect(errors).toEqual([]);
   } finally {
     await app.close();

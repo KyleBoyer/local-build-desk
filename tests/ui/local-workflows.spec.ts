@@ -122,6 +122,7 @@ test("build comparison, notification navigation, release notes and portable back
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await page.getByRole("button", { name: "Builds", exact: true }).click();
+    await page.locator('[data-detail-id="after"]').click();
     await page.getByText("What changed?", { exact: false }).click();
     const sdkRow = page.getByRole("row").filter({
       has: page.getByRole("rowheader", { name: "iOS SDK", exact: true }),
@@ -147,7 +148,7 @@ test("build comparison, notification navigation, release notes and portable back
       }),
     );
     await expect(
-      page.getByRole("heading", { name: "Build history" }),
+      page.getByRole("region", { name: "Build details", exact: true }),
     ).toBeVisible();
     await expect(page.locator(".job-detail")).toContainText("20");
     await page.getByRole("button", { name: "Release", exact: true }).click();

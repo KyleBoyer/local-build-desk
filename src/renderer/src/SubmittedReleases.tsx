@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useDetailNavigation } from "./useDetailNavigation";
 import {
   RefreshCw,
   ExternalLink,
@@ -6,6 +7,7 @@ import {
   X,
   ChevronRight,
   Clock3,
+  ArrowLeft,
 } from "lucide-react";
 import type { Project } from "../../core/types";
 import type {
@@ -148,7 +150,13 @@ function Thumbnail({
     </figure>
   );
 }
-export function SubmittedReleases({ project }: { project: Project }) {
+export function SubmittedReleases({
+  project,
+  onDetailChange,
+}: {
+  project: Project;
+  onDetailChange?: (open: boolean) => void;
+}) {
   const [snapshot, setSnapshot] = useState<StoreReleaseSnapshot>(),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
@@ -164,11 +172,16 @@ export function SubmittedReleases({ project }: { project: Project }) {
     [detailBusy, setDetailBusy] = useState(false),
     [detailError, setDetailError] = useState("");
   const [locale, setLocale] = useState("");
+  const navigation = useDetailNavigation(selected?.id);
+  useEffect(() => {
+    onDetailChange?.(!!selected);
+  }, [!!selected, onDetailChange]);
   const refreshRequest = useRef(0);
   const request = useRef(0),
     mounted = useRef(true);
   const refresh = useCallback(
     async (force = false) => {
+      onDetailChange?.(false);
       const sequence = ++refreshRequest.current;
       request.current++;
       setSelected(undefined);
@@ -195,7 +208,7 @@ export function SubmittedReleases({ project }: { project: Project }) {
           setBusy(false);
       }
     },
-    [project.id],
+    [project.id, onDetailChange],
   );
   useEffect(() => {
     mounted.current = true;
@@ -211,6 +224,8 @@ export function SubmittedReleases({ project }: { project: Project }) {
     project.settings.googleConnectionId,
   ]);
   const show = async (release: StoreRelease, language?: string) => {
+    if (selected?.id !== release.id) navigation.enter(release.id);
+    onDetailChange?.(true);
     const current = ++request.current;
     setSelected(release);
     setDetailBusy(true);
@@ -299,6 +314,7 @@ export function SubmittedReleases({ project }: { project: Project }) {
     groups.set(key, [...(groups.get(key) ?? []), image]);
   }
   const changeChannel = (next: StoreChannel) => {
+    onDetailChange?.(false);
     request.current++;
     setChannel(next);
     setSelected(undefined);
@@ -310,6 +326,7 @@ export function SubmittedReleases({ project }: { project: Project }) {
     <section
       className="section-card submitted-releases"
       aria-label="Submitted releases"
+      ref={navigation.root}
     >
       <div className="section-heading">
         <div>
@@ -321,7 +338,10 @@ export function SubmittedReleases({ project }: { project: Project }) {
         </div>
         <button
           className="button"
-          onClick={() => void refresh(true)}
+          onClick={() => {
+            if (selected) navigation.back();
+            void refresh(true);
+          }}
           disabled={busy}
         >
           <RefreshCw size={14} className={busy ? "spin" : ""} />
@@ -383,52 +403,71 @@ export function SubmittedReleases({ project }: { project: Project }) {
       <div
         className={`store-release-workspace ${selected ? "has-selection" : ""}`}
       >
-        <div
-          className="store-release-list"
-          aria-label={`${labels[channel]} releases`}
-        >
-          {!rows.length && !busy && (
-            <p className="muted">
-              {source?.error
-                ? "Store status is unavailable. Refresh after resolving the connection error."
-                : source?.connected
-                  ? "No releases were returned for this destination."
-                  : "Connect this store in Guided setup to see its releases."}
-            </p>
-          )}
-          {rows.map((release) => (
-            <button
-              className={`store-release-row ${selected?.id === release.id ? "selected" : ""}`}
-              key={release.id}
-              onClick={() => void show(release)}
-              aria-pressed={selected?.id === release.id}
-            >
-              <span>
-                <strong>{release.version ?? "Uploaded build"}</strong>
-                <span className="mono">
-                  {release.buildNumbers.length
-                    ? `Build ${release.buildNumbers.join(", ")}`
-                    : "No build attached"}
-                  {release.track ? ` · ${release.track}` : ""}
+        {!selected && (
+          <div
+            className="store-release-list"
+            aria-label={`${labels[channel]} releases`}
+          >
+            {!rows.length && !busy && (
+              <p className="muted">
+                {source?.error
+                  ? "Store status is unavailable. Refresh after resolving the connection error."
+                  : source?.connected
+                    ? "No releases were returned for this destination."
+                    : "Connect this store in Guided setup to see its releases."}
+              </p>
+            )}
+            {rows.map((release) => (
+              <button
+                className="store-release-row"
+                key={release.id}
+                data-detail-id={release.id}
+                onClick={() => void show(release)}
+              >
+                <span>
+                  <strong>{release.version ?? "Uploaded build"}</strong>
+                  <span className="mono">
+                    {release.buildNumbers.length
+                      ? `Build ${release.buildNumbers.join(", ")}`
+                      : "No build attached"}
+                    {release.track ? ` · ${release.track}` : ""}
+                  </span>
                 </span>
-              </span>
-              <span className="store-release-row-status">
-                <span className="store-status-badge">
-                  {human(release.status)}
+                <span className="store-release-row-status">
+                  <span className="store-status-badge">
+                    {human(release.status)}
+                  </span>
+                  {(release.uploadedAt || release.createdAt) && (
+                    <small>
+                      {release.uploadedAt ? "Uploaded" : "Version created"}{" "}
+                      {date(release.uploadedAt ?? release.createdAt)}
+                    </small>
+                  )}
+                  <ChevronRight size={14} />
                 </span>
-                {(release.uploadedAt || release.createdAt) && (
-                  <small>
-                    {release.uploadedAt ? "Uploaded" : "Version created"}{" "}
-                    {date(release.uploadedAt ?? release.createdAt)}
-                  </small>
-                )}
-                <ChevronRight size={14} />
-              </span>
-            </button>
-          ))}
-        </div>
+              </button>
+            ))}
+          </div>
+        )}
         {selected && (
           <div className="store-release-detail">
+            <div className="detail-navigation">
+              <button
+                className="button"
+                onClick={() => {
+                  onDetailChange?.(false);
+                  navigation.back();
+                  request.current++;
+                  setSelected(undefined);
+                  setDetail(undefined);
+                  setDetailBusy(false);
+                  setDetailError("");
+                }}
+              >
+                <ArrowLeft size={14} />
+                Back to submitted releases
+              </button>
+            </div>
             {detail?.cache && (
               <p className="muted">
                 {detail.cache.source === "cache"
@@ -445,7 +484,7 @@ export function SubmittedReleases({ project }: { project: Project }) {
             <div className="section-heading">
               <div>
                 <div className="eyebrow">{labels[selected.channel]}</div>
-                <h3>
+                <h3 data-detail-heading>
                   {selected.version ?? "Build"}
                   {selected.channel !== "play" && selected.buildNumbers.length
                     ? ` (${selected.buildNumbers.join(", ")})`

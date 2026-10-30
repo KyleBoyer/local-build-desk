@@ -1,6 +1,7 @@
 import { ValidationWorkflow, ReadinessWorkflow } from "./ValidationWorkflow";
 import { ProjectBuildSettings } from "./ProjectBuildSettings";
 import { BuildLogPanel } from "./BuildLogPanel";
+import { useDetailNavigation } from "./useDetailNavigation";
 import { WorkProgress } from "./WorkProgress";
 import {
   BuildChanges,
@@ -21,6 +22,7 @@ import {
 import {
   ArrowUpRight,
   ArrowRight,
+  ArrowLeft,
   ArrowDownToLine,
   Box,
   Check,
@@ -51,7 +53,6 @@ import {
   Play,
   Plus,
   RefreshCw,
-  Search,
   Settings2,
   ShieldCheck,
   Smartphone,
@@ -410,6 +411,7 @@ export function App() {
     [page, setPage] = useState<Page>("project"),
     [projectId, setProjectId] = useState("");
   const [visitedTests, setVisitedTests] = useState(false);
+  const [buildDetail, setBuildDetail] = useState(false);
   const [profile, setProfile] = useState("production"),
     [platform, setPlatform] = useState<Platform | "all">("ios"),
     [clean, setClean] = useState(false);
@@ -422,6 +424,24 @@ export function App() {
     [toast, setToast] = useState<{ text: string; error?: boolean }>(),
     [modal, setModal] = useState<string>(),
     [selectedJob, setSelectedJob] = useState<string>();
+  const buildNavigation = useDetailNavigation(
+    page === "builds" && buildDetail ? selectedJob : undefined,
+  );
+  const openJob = useCallback(
+    (job: Job, fromHistory = false) => {
+      buildNavigation.enter(job.id, fromHistory);
+      setProjectId(job.projectId);
+      setSelectedJob(job.id);
+      setBuildDetail(true);
+      setPage("builds");
+    },
+    [buildNavigation.enter],
+  );
+  const showBuildHistory = () => {
+    buildNavigation.back();
+    setBuildDetail(false);
+    setPage("builds");
+  };
   const project =
     state.projects.find((p) => p.id === projectId) ?? state.projects[0];
   useEffect(() => {
@@ -462,11 +482,10 @@ export function App() {
   }, [notify]);
   const openCheckedJob = useCallback(
     (job: Job) => {
-      setSelectedJob(job.id);
-      setPage("builds");
+      openJob(job);
       void refresh();
     },
-    [refresh],
+    [refresh, openJob],
   );
   useEffect(() => {
     void refresh();
@@ -477,14 +496,12 @@ export function App() {
           setState(next);
           const job = next.jobs.find((j) => j.id === e.jobId);
           if (job) {
-            setProjectId(job.projectId);
-            setSelectedJob(job.id);
-            setPage("builds");
+            openJob(job);
           }
         });
       }
     });
-  }, [refresh]);
+  }, [refresh, openJob]);
   useEffect(() => {
     if (toast) {
       const timeout = setTimeout(() => setToast(undefined), 8000);
@@ -598,11 +615,11 @@ export function App() {
         autoSubmit,
         clean,
       });
-      setSelectedJob(jobs[0].id);
-      setPage("builds");
+      openJob(jobs[0]);
       notify("Build added to your local queue.");
     });
   const localJobs = state.jobs.filter((j) => j.projectId === project?.id),
+    currentBuild = localJobs.find((j) => j.id === selectedJob),
     running = state.jobs.filter((j) =>
       ["running", "queued"].includes(j.status),
     );
@@ -649,6 +666,7 @@ export function App() {
             onChange={(e) => {
               setProjectId(e.target.value);
               setSelectedJob(undefined);
+              setBuildDetail(false);
             }}
           >
             {!state.projects.length && (
@@ -686,6 +704,10 @@ export function App() {
                 className={page === p ? "active" : ""}
                 onClick={() => {
                   if (p === "tests") setVisitedTests(true);
+                  if (p === "builds") {
+                    showBuildHistory();
+                    return;
+                  }
                   setPage(p);
                 }}
               >
@@ -730,7 +752,21 @@ export function App() {
             Workspace <ChevronRight size={13} />
             <span>{project?.name ?? "Getting started"}</span>
             <ChevronRight size={13} />
-            <strong>{pageNames[page]}</strong>
+            {page === "builds" && buildDetail ? (
+              <>
+                <button className="text-button" onClick={showBuildHistory}>
+                  Builds
+                </button>
+                <ChevronRight size={13} />
+                <strong>
+                  {currentBuild?.buildNumber
+                    ? `#${currentBuild.buildNumber}`
+                    : selectedJob?.slice(0, 8)}
+                </strong>
+              </>
+            ) : (
+              <strong>{pageNames[page]}</strong>
+            )}
           </div>
           <div className="topbar-right">
             <span className="local-pill">
@@ -1145,10 +1181,7 @@ export function App() {
                     Recent builds{" "}
                     <span className="count">{localJobs.length}</span>
                   </h2>
-                  <button
-                    className="text-button"
-                    onClick={() => setPage("builds")}
-                  >
+                  <button className="text-button" onClick={showBuildHistory}>
                     View all
                     <ArrowRight size={14} />
                   </button>
@@ -1157,10 +1190,7 @@ export function App() {
                   <JobTable
                     jobs={localJobs.slice(0, 5)}
                     selected={selectedJob}
-                    onSelect={(j) => {
-                      setSelectedJob(j.id);
-                      setPage("builds");
-                    }}
+                    onSelect={openJob}
                   />
                 ) : (
                   <div className="empty-row">
@@ -1204,8 +1234,7 @@ export function App() {
                     profile,
                     autoSubmit: true,
                   });
-                  setSelectedJob(jobs[0].id);
-                  setPage("builds");
+                  openJob(jobs[0]);
                 }}
               />
             ) : (
@@ -1222,62 +1251,79 @@ export function App() {
               </Empty>
             ))}
           {page === "builds" && (
-            <>
-              <div className="page-heading">
-                <div>
-                  <div className="eyebrow">EVERY BUILD, ON YOUR TERMS</div>
-                  <h1>Build history</h1>
-                  <p>
-                    Inspect the process. Keep the artifact. Ship when it’s
-                    ready.
-                  </p>
-                </div>
-                <Button
-                  primary
-                  disabled={!project}
-                  onClick={() => setPage("project")}
-                >
-                  <Plus size={15} />
-                  New build
-                </Button>
-              </div>
-              {localJobs.length ? (
-                <div className="builds-layout">
-                  <section className="history-panel">
-                    <JobTable
-                      jobs={localJobs}
-                      selected={selectedJob}
-                      onSelect={(j) => setSelectedJob(j.id)}
+            <section
+              ref={buildNavigation.root}
+              aria-label={buildDetail ? "Build details" : "Build history"}
+            >
+              {buildDetail ? (
+                <>
+                  <div className="detail-navigation">
+                    <Button onClick={showBuildHistory}>
+                      <ArrowLeft size={14} />
+                      Back to build history
+                    </Button>
+                  </div>
+                  {currentBuild ? (
+                    <JobDetail
+                      job={currentBuild}
+                      artifacts={state.artifacts}
+                      action={action}
+                      onSelect={openJob}
                     />
-                  </section>
-                  <JobDetail
-                    job={
-                      localJobs.find((j) => j.id === selectedJob) ??
-                      localJobs[0]
-                    }
-                    artifacts={state.artifacts}
-                    action={action}
-                    onSelect={(job) => setSelectedJob(job.id)}
-                  />
-                </div>
+                  ) : (
+                    <p role="status">Loading build…</p>
+                  )}
+                </>
               ) : (
-                <section className="large-empty">
-                  <Empty
-                    icon={<Layers3 size={27} />}
-                    heading="Your build history is waiting."
-                    action={
-                      <Button onClick={() => setPage("project")}>
-                        Go to project
-                        <ArrowRight size={15} />
-                      </Button>
-                    }
-                  >
-                    Run your first build to see stage progress, logs, and signed
-                    artifacts here.
-                  </Empty>
-                </section>
+                <>
+                  <div className="page-heading">
+                    <div>
+                      <div className="eyebrow">EVERY BUILD, ON YOUR TERMS</div>
+                      <h1>Build history</h1>
+                      <p>
+                        Inspect the process. Keep the artifact. Ship when it’s
+                        ready.
+                      </p>
+                    </div>
+                    <Button
+                      primary
+                      disabled={!project}
+                      onClick={() => setPage("project")}
+                    >
+                      <Plus size={15} />
+                      New build
+                    </Button>
+                  </div>
+                  {localJobs.length ? (
+                    <div className="builds-layout">
+                      <section className="history-panel">
+                        <JobTable
+                          jobs={localJobs}
+                          selected={selectedJob}
+                          onSelect={(j) => openJob(j, true)}
+                        />
+                      </section>
+                    </div>
+                  ) : (
+                    <section className="large-empty">
+                      <Empty
+                        icon={<Layers3 size={27} />}
+                        heading="Your build history is waiting."
+                        action={
+                          <Button onClick={() => setPage("project")}>
+                            Go to project
+                            <ArrowRight size={15} />
+                          </Button>
+                        }
+                      >
+                        Run your first build to see stage progress, logs, and
+                        signed artifacts here.
+                      </Empty>
+                    </section>
+                  )}
+                </>
               )}
-            </>
+            </section>
           )}
           {page === "signing" && (
             <>
@@ -1669,8 +1715,7 @@ export function App() {
             {...reuseChoice}
             onUse={(job) => {
               setReuseChoice(undefined);
-              setSelectedJob(job.id);
-              setPage("builds");
+              openJob(job);
             }}
             onFresh={() => {
               const submit = reuseChoice.autoSubmit;
@@ -1757,9 +1802,13 @@ function JobTable({
             key={j.id}
             className={selected === j.id ? "selected" : ""}
             onClick={() => onSelect(j)}
+            data-detail-id={j.id}
             tabIndex={0}
             onKeyDown={(e) => {
-              if (e.key === "Enter") onSelect(j);
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(j);
+              }
             }}
             aria-label={`${j.platform} ${j.profile} ${j.status} build`}
           >
@@ -1830,7 +1879,7 @@ function JobDetail({
       <div className="section-heading">
         <div>
           <PlatformIcon platform={job.platform} size={20} />
-          <h2>
+          <h1 data-detail-heading>
             {job.platform === "ios" ? "iOS" : "Android"}{" "}
             {job.kind === "submit"
               ? "submission"
@@ -1842,7 +1891,7 @@ function JobDetail({
                 ? ` #${job.buildNumber}`
                 : ` ${job.id.slice(0, 8)}`}
             </span>
-          </h2>
+          </h1>
         </div>
         <div className="row-actions">
           {["running", "queued"].includes(job.status) && (

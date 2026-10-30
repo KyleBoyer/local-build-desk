@@ -67,6 +67,9 @@ test("shows remote review/TestFlight/Play releases and their correct assets in b
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await page.getByRole("button", { name: "Release", exact: true }).click();
+    await page
+      .getByLabel("What to Test", { exact: true })
+      .fill("Keep this unsaved release draft");
     const history = page.getByRole("region", {
       name: "Submitted releases",
       exact: true,
@@ -80,7 +83,12 @@ test("shows remote review/TestFlight/Play releases and their correct assets in b
       .click();
     await expect(
       history.getByText("waiting for review", { exact: true }),
-    ).toHaveCount(2);
+    ).toHaveCount(1);
+    await expect(history.locator(".store-release-list")).toHaveCount(0);
+    await expect(page.getByLabel("What to Test", { exact: true })).toBeHidden();
+    await expect(
+      history.getByRole("button", { name: "Back to submitted releases" }),
+    ).toBeVisible();
     const image = history.getByAltText("review-home.png", { exact: true });
     await expect(image).toBeVisible();
     await expect
@@ -104,6 +112,18 @@ test("shows remote review/TestFlight/Play releases and their correct assets in b
       path: "test-results/submitted-app-review.png",
       fullPage: true,
     });
+    await history
+      .getByRole("button", { name: "Back to submitted releases" })
+      .click();
+    await expect(
+      history.locator(".store-release-row").filter({ hasText: "Build 3" }),
+    ).toBeFocused();
+    await expect(
+      page.getByLabel("What to Test", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel("What to Test", { exact: true })).toHaveValue(
+      "Keep this unsaved release draft",
+    );
     await history.getByRole("tab", { name: /TestFlight/ }).click();
     await history
       .locator(".store-release-row")
@@ -159,6 +179,20 @@ test("shows remote review/TestFlight/Play releases and their correct assets in b
     ).toBeVisible();
     await expect(
       page.getByRole("region", { name: "Submitted releases" }),
+    ).toBeVisible();
+    await history
+      .locator(".store-release-row")
+      .filter({ hasText: "Build 3" })
+      .click();
+    await expect(history.locator(".store-release-list")).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Listing file", exact: true }),
+    ).toBeHidden();
+    await history
+      .getByRole("button", { name: "Back to submitted releases" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Listing file", exact: true }),
     ).toBeVisible();
     const writes = await app.evaluate(
       () => (globalThis as any).__storeHistoryWrites,

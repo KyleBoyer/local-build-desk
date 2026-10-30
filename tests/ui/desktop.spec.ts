@@ -139,7 +139,7 @@ test("desktop import, profile selection, toolchain, migration, queue, and keyboa
     await page.getByRole("button", { name: "Project", exact: true }).click();
     await page.getByRole("button", { name: "Build", exact: true }).click();
     await expect(
-      page.getByRole("heading", { name: "Build history" }),
+      page.getByRole("region", { name: "Build details", exact: true }),
     ).toBeVisible();
     await expect(page.getByRole("log")).toBeVisible();
     await expect(page.locator(".job-error")).toBeVisible({ timeout: 45000 });

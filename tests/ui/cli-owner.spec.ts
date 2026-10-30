@@ -168,7 +168,7 @@ test("the desktop tray opens the selected build and restores a hidden window", a
       action.click();
     }, jobId);
     await expect(
-      page.getByRole("heading", { name: "Build history" }),
+      page.getByRole("region", { name: "Build details", exact: true }),
     ).toBeVisible();
     expect(
       await app.evaluate(({ BrowserWindow }) =>

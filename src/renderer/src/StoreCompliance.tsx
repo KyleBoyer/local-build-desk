@@ -31,6 +31,7 @@ const yesNoKeys = Object.keys(
 const purposeKeys = Object.keys(PURPOSES) as (keyof typeof PURPOSES)[];
 
 export function StoreCompliance({ project }: { project: Project }) {
+  const [browsingRelease, setBrowsingRelease] = useState(false);
   const [view, setView] = useState<ComplianceView>();
   const [listing, setListing] = useState("");
   const [rating, setRating] = useState<Partial<AgeRating>>({});
@@ -151,8 +152,11 @@ export function StoreCompliance({ project }: { project: Project }) {
           </p>
         </div>
       </div>
-      <SubmittedReleases project={project} />
-      <section className="section-card">
+      <SubmittedReleases
+        project={project}
+        onDetailChange={setBrowsingRelease}
+      />
+      <section className="section-card" hidden={browsingRelease}>
         <fieldset disabled={busy} className="workflow-fieldset">
           <h2>Listing file</h2>
           <div className="row-actions">
