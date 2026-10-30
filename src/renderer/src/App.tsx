@@ -1,6 +1,6 @@
 import { ValidationWorkflow, ReadinessWorkflow } from "./ValidationWorkflow";
 import { ProjectBuildSettings } from "./ProjectBuildSettings";
-import { useLogFollow } from "./useLogFollow";
+import { BuildLogPanel } from "./BuildLogPanel";
 import { WorkProgress } from "./WorkProgress";
 import {
   BuildChanges,
@@ -72,7 +72,6 @@ import type {
   DesktopAPI,
   Inspection,
   Job,
-  LogEntry,
   Platform,
   Profile,
   Project,
@@ -1805,23 +1804,6 @@ function JobDetail({
   action: (fn: () => Promise<unknown>, success?: string) => Promise<void>;
   onSelect: (job: Job) => void;
 }) {
-  const [logs, setLogs] = useState<LogEntry[]>([]),
-    [search, setSearch] = useState("");
-  const logsRef = useLogFollow(job.id, logs.length, !!search);
-  useEffect(() => {
-    let active = true;
-    api.logs(job.id).then((v) => {
-      if (active) setLogs(v);
-    });
-    const stop = api.onEvent((e) => {
-      if (e.type === "log" && e.jobId === job.id && e.entry)
-        setLogs((v) => [...v, e.entry!]);
-    });
-    return () => {
-      active = false;
-      stop();
-    };
-  }, [job.id]);
   const stages =
     job.kind === "submit"
       ? ["verify", "upload"]
@@ -1971,8 +1953,6 @@ function JobDetail({
           progress={job.stage === "processing" ? undefined : job.progress}
           startedAt={
             job.stageStartedAt ??
-            [...logs].reverse().find((entry) => entry.text === `→ ${job.stage}`)
-              ?.time ??
             (job.stage === "processing"
               ? job.submission?.uploadedAt
               : (job.startedAt ?? job.createdAt))
@@ -2046,41 +2026,7 @@ function JobDetail({
           </div>
         </div>
       )}
-      <div className="log-toolbar">
-        <span>
-          <Terminal size={14} />
-          BUILD OUTPUT <span className="mono subtle">{logs.length} lines</span>
-        </span>
-        <label className="log-search">
-          <Search size={13} />
-          <input
-            aria-label="Search build logs"
-            placeholder="Filter output…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </label>
-      </div>
-      <div ref={logsRef} className="logs" role="log" aria-label="Build output">
-        {logs
-          .filter((l) => l.text.toLowerCase().includes(search.toLowerCase()))
-          .map((l, i) => (
-            <div
-              className={l.text.startsWith("ERROR") ? "error-line" : ""}
-              key={i}
-            >
-              <time>
-                {new Date(l.time).toLocaleTimeString(undefined, {
-                  hour12: false,
-                })}
-              </time>
-              <pre>{l.text}</pre>
-            </div>
-          ))}
-        {!logs.length && (
-          <span className="subtle">Waiting for the local runner…</span>
-        )}
-      </div>
+      <BuildLogPanel key={job.id} jobId={job.id} />
       {output.length > 0 && (
         <div className="artifact-list">
           <div className="section-heading">

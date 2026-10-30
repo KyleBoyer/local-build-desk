@@ -386,6 +386,8 @@ Submitted project/account/key/invitation requests are recorded before clicking. 
 
 Build logs follow the tail only while at least 90% of the panel is visible and the reader is near its bottom. Appending logs scrolls only that panel. Hidden/sliver-visible panels, filtered logs, and scrolling up to read earlier output pause automatic following.
 
+The desktop log viewer reads bounded windows asynchronously and shows up to 300 entries at a time, including during live output. **Older output**, **Newer output**, and **Latest output** navigate retained history without loading the entire file into the renderer. Search scans the full saved log, with **Older matches** for additional results. Very long entries are shortened in the viewer; **Show complete log** reveals the original JSONL file. Leaving the page or changing the search cancels its pending read. CLI `logs` continues to return the complete retained output.
+
 ### Store records, capability assignments, and the first Play upload
 
 Guided setup now includes **Store app record & first upload**. Enter the store name, language and SKU (Apple), or App/Game and Free/Paid (Play), once. The app prepares the provider form in its own sandboxed browser and shows a scoped approval before creating a record. Apple records are reused by bundle ID; Play records can be associated from the exact package on a dashboard or app-list row. Sign-in/MFA, enrollment and agreement/declaration acceptance remain visible owner steps. Apple documents app-record creation as a [website operation](https://developer.apple.com/documentation/appstoreconnectapi/apps); Google documents standard Play App Signing enrollment as a [console operation](https://developers.google.com/android-publisher/api-ref/rest/v3/appsigning/enrollApp).

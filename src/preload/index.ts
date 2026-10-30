@@ -52,6 +52,8 @@ const names = [
   "cancel",
   "retry",
   "logs",
+  "logPage",
+  "cancelLogRead",
   "submit",
   "reconcile",
   "reveal",

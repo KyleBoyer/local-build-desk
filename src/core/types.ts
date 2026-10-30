@@ -327,6 +327,27 @@ export interface LogEntry {
   stage: Stage;
   text: string;
 }
+export const LOG_PAGE_ENTRIES = 300;
+export const LOG_PAGE_TEXT_BUDGET = 256 * 1024;
+export const LOG_ENTRY_TEXT_LIMIT = 16000;
+export interface LogRow {
+  /** Byte offset of the complete JSONL record; also identifies live entries. */
+  offset: number;
+  entry: LogEntry;
+}
+export interface LogPageRequest {
+  before?: number;
+  search?: string;
+}
+export interface LogPage {
+  rows: LogRow[];
+  before: number;
+  end: number;
+  hasEarlier: boolean;
+  shortened: number;
+  skipped: number;
+  path: string;
+}
 export interface WorkProgress {
   kind: "upload" | "download" | "work" | "processing";
   label: string;
@@ -423,6 +444,7 @@ export interface DeskEvent {
   progress?: WorkProgress;
   jobId?: string;
   entry?: LogEntry;
+  logOffset?: number;
   update?: UpdateStatus;
 }
 export interface DesktopAPI {
@@ -547,6 +569,8 @@ export interface DesktopAPI {
   cancel(jobId: string): Promise<void>;
   retry(jobId: string): Promise<Job[]>;
   logs(jobId: string): Promise<LogEntry[]>;
+  logPage(jobId: string, request?: LogPageRequest): Promise<LogPage>;
+  cancelLogRead(jobId: string): Promise<void>;
   submit(artifactId: string): Promise<Job>;
   reconcile(jobId: string): Promise<void>;
   reveal(path: string): Promise<void>;

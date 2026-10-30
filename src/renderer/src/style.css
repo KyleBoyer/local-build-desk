@@ -1238,6 +1238,21 @@ footer span:first-child {
 .logs .subtle {
   font-size: 10px;
 }
+.log-paging {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.log-paging .muted {
+  font-size: 10px;
+}
+.log-paging .button {
+  font-size: 10px;
+  padding: 6px 8px;
+}
 .submission-state {
   display: flex;
   gap: 10px;

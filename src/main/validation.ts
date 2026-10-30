@@ -210,6 +210,17 @@ export const methods = {
   cancel: z.tuple([identifier]),
   retry: z.tuple([identifier]),
   logs: z.tuple([identifier]),
+  logPage: z.tuple([
+    identifier.regex(/^[A-Za-z0-9_-]+$/),
+    z
+      .object({
+        before: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+        search: z.string().max(300).optional(),
+      })
+      .strict()
+      .optional(),
+  ]),
+  cancelLogRead: z.tuple([identifier.regex(/^[A-Za-z0-9_-]+$/)]),
   submit: z.tuple([identifier]),
   reconcile: z.tuple([identifier]),
   reveal: z.tuple([text]),

@@ -84,6 +84,29 @@ it("processes a persistent queue with live logs and separate per-platform jobs",
   const [a, b] = jobs.map((j) => store.get<Job>("jobs", j.id));
   expect(b.startedAt! < a.finishedAt!).toBe(true);
 });
+it("serves bounded desktop log pages with stable live offsets and cancels superseded reads", async () => {
+  const events: { entry?: { text: string }; logOffset?: number }[] = [];
+  engine.on("event", (e) => {
+    if (e.type === "log") events.push(e);
+  });
+  const [job] = await engine.build({
+    projectId: "project",
+    platform: "ios",
+    profile: "production",
+  });
+  await finished([job.id]);
+  const page = await engine.logPage(job.id);
+  for (const event of events)
+    expect(
+      page.rows.find((r) => r.offset === event.logOffset)?.entry.text,
+    ).toBe(event.entry?.text);
+  await expect(engine.logPage("unknown")).rejects.toThrow();
+  const first = engine.logPage(job.id, { search: "nothing" });
+  const rejected = expect(first).rejects.toThrow(/abort/i);
+  const second = engine.logPage(job.id);
+  await rejected;
+  expect((await second).rows.length).toBeGreaterThan(0);
+});
 it("cancels a running job and continues the queue", async () => {
   const jobs = await engine.build({
     projectId: "project",

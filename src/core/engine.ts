@@ -1,4 +1,6 @@
 import { StoreReadCache } from "./store-read-cache";
+import { readLogPage } from "./log-reader";
+import type { LogPageRequest } from "./types";
 import {
   appleReleases,
   appleReleaseDetail,
@@ -62,6 +64,7 @@ import {
   writeFileSync,
   readdirSync,
   mkdirSync as requireMkdir,
+  statSync,
 } from "node:fs";
 import { resolve, join, dirname, extname, relative, sep } from "node:path";
 import {
@@ -1629,6 +1632,8 @@ export class Engine extends EventEmitter {
   private reconciliations = new Map<string, Promise<void>>();
   private reconciliationControllers = new Map<string, AbortController>();
   private controllers = new Map<string, AbortController>();
+  private logReads = new Map<string, AbortController>();
+  private logOffsets = new Map<string, number>();
   private toolchainControllers = new Map<string, AbortController>();
   private toolchainOperations = new Map<
     string,
@@ -2207,13 +2212,20 @@ export class Engine extends EventEmitter {
     const entry: LogEntry = { time: now(), stage: job.stage, text };
     const folder = join(this.store.root, "jobs", job.id);
     if (!existsSync(folder)) return;
-    appendFileSync(join(folder, "logs.jsonl"), JSON.stringify(entry) + "\n", {
+    const path = join(folder, "logs.jsonl");
+    const offset =
+      this.logOffsets.get(job.id) ??
+      (existsSync(path) ? statSync(path).size : 0);
+    const line = JSON.stringify(entry) + "\n";
+    appendFileSync(path, line, {
       mode: 0o600,
     });
+    this.logOffsets.set(job.id, offset + Buffer.byteLength(line));
     this.emit("event", {
       type: "log",
       jobId: job.id,
       entry,
+      logOffset: offset,
     } satisfies DeskEvent);
   }
   logs(jobId: string): LogEntry[] {
@@ -2231,6 +2243,29 @@ export class Engine extends EventEmitter {
             }
           })
       : [];
+  }
+  async logPage(jobId: string, request?: LogPageRequest) {
+    this.store.get<Job>("jobs", jobId);
+    invariant(
+      /^[A-Za-z0-9_-]{1,128}$/.test(jobId),
+      "LOG_JOB",
+      "Unsupported build ID.",
+    );
+    this.cancelLogRead(jobId);
+    const controller = new AbortController();
+    this.logReads.set(jobId, controller);
+    try {
+      return await readLogPage(
+        join(this.store.root, "jobs", jobId, "logs.jsonl"),
+        request,
+        controller.signal,
+      );
+    } finally {
+      if (this.logReads.get(jobId) === controller) this.logReads.delete(jobId);
+    }
+  }
+  cancelLogRead(jobId: string) {
+    this.logReads.get(jobId)?.abort();
   }
   cancel(jobId: string) {
     const job = this.store.get<Job>("jobs", jobId);
@@ -3442,6 +3477,7 @@ export class Engine extends EventEmitter {
   }
   async shutdown() {
     this.closing = true;
+    for (const controller of this.logReads.values()) controller.abort();
     if (this.pollTimer) clearInterval(this.pollTimer);
     for (const item of [
       ...this.deviceOperations.values(),
