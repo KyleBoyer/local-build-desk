@@ -5,6 +5,11 @@ import { settingsSchema } from "../main/validation";
 import { id, now } from "../core/database";
 import { invariant } from "../core/errors";
 import {
+  configFileIn,
+  isInvocationVariable,
+  withCurrentNames,
+} from "../core/naming";
+import {
   bindRuntimeCredentials,
   type BuildInvocation,
 } from "../core/runtime-context";
@@ -75,7 +80,9 @@ function configAt(
   env: NodeJS.ProcessEnv,
 ) {
   const file =
-    flags.config ?? env.IOS_SUBMIT_CONFIG ?? resolve(source, "ios-submit.json");
+    flags.config ??
+    env.LOCAL_BUILD_DESK_CONFIG ??
+    configFileIn(resolve(source));
   invariant(
     typeof file === "string",
     "CONFIG",
@@ -83,7 +90,7 @@ function configAt(
   );
   if (!existsSync(file)) {
     invariant(
-      !flags.config && !env.IOS_SUBMIT_CONFIG,
+      !flags.config && !env.LOCAL_BUILD_DESK_CONFIG,
       "CONFIG",
       "Invocation configuration file not found.",
     );
@@ -99,12 +106,12 @@ function configAt(
 }
 export function captureInvocationEnvironment(
   argv: string[],
-  env: NodeJS.ProcessEnv,
+  raw: NodeJS.ProcessEnv,
 ): Record<string, string> {
   const result: Record<string, string> = {};
+  const env = withCurrentNames(raw);
   for (const [key, value] of Object.entries(env))
-    if (key.startsWith("IOS_SUBMIT_") && value !== undefined)
-      result[key] = value;
+    if (isInvocationVariable(key) && value !== undefined) result[key] = value;
   const flag = (name: string) => {
     const entry = argv.find((value) => value.startsWith(`--${name}=`));
     const index = argv.indexOf(`--${name}`);
@@ -116,25 +123,26 @@ export function captureInvocationEnvironment(
   const source = flag("source") ?? flag("project") ?? process.cwd();
   const config =
     flag("config") ??
-    env.IOS_SUBMIT_CONFIG ??
-    resolve(source, "ios-submit.json");
+    env.LOCAL_BUILD_DESK_CONFIG ??
+    configFileIn(resolve(source));
   const visit = (value: any) => {
     if (!value || typeof value !== "object") return;
     for (const [key, item] of Object.entries(value)) {
       if (
         ["env", "base64Env", "fileEnv"].includes(key) &&
         typeof item === "string" &&
-        env[item] !== undefined
+        raw[item] !== undefined
       )
-        result[item] = env[item]!;
+        result[item] = raw[item]!;
       else visit(item);
     }
   };
   if (existsSync(config)) visit(json(readFileSync(config, "utf8")));
-  const creds = flag("credential-config") ?? env.IOS_SUBMIT_CREDENTIAL_CONFIG;
+  const creds =
+    flag("credential-config") ?? env.LOCAL_BUILD_DESK_CREDENTIAL_CONFIG;
   if (creds && existsSync(creds)) visit(json(readFileSync(creds, "utf8")));
-  if (env.IOS_SUBMIT_CREDENTIALS_JSON)
-    visit(json(env.IOS_SUBMIT_CREDENTIALS_JSON));
+  if (env.LOCAL_BUILD_DESK_CREDENTIALS_JSON)
+    visit(json(env.LOCAL_BUILD_DESK_CREDENTIALS_JSON));
   return result;
 }
 const internalCredential = z.discriminatedUnion("kind", [
@@ -181,9 +189,10 @@ const internalCredential = z.discriminatedUnion("kind", [
 export async function resolveInvocation(
   engine: Engine,
   flags: InvocationFlags,
-  environment: NodeJS.ProcessEnv = process.env,
+  rawEnvironment: NodeJS.ProcessEnv = process.env,
   fallback?: Project,
 ): Promise<BuildInvocation> {
+  const environment = withCurrentNames(rawEnvironment);
   const projects = engine.state().projects;
   const find = (key: unknown) => {
     if (typeof key !== "string") return undefined;
@@ -192,7 +201,7 @@ export async function resolveInvocation(
     const matches = projects.filter((p) => p.path === resolve(key));
     const selected =
       flags["app-directory"] ??
-      environment.IOS_SUBMIT_APP_DIRECTORY ??
+      environment.LOCAL_BUILD_DESK_APP_DIRECTORY ??
       configAt(flags, String(flags.source ?? key), environment).value.settings
         ?.appDirectory;
     if (selected)
@@ -211,11 +220,11 @@ export async function resolveInvocation(
   const template =
     find(
       flags["settings-from"] ??
-        environment.IOS_SUBMIT_SETTINGS_FROM ??
+        environment.LOCAL_BUILD_DESK_SETTINGS_FROM ??
         flags.project,
     ) ?? fallback;
   invariant(
-    !(flags["settings-from"] ?? environment.IOS_SUBMIT_SETTINGS_FROM) ||
+    !(flags["settings-from"] ?? environment.LOCAL_BUILD_DESK_SETTINGS_FROM) ||
       template,
     "PROJECT_REQUIRED",
     "The --settings-from project must already be imported.",
@@ -223,7 +232,7 @@ export async function resolveInvocation(
   const source = resolve(
     String(
       flags.source ??
-        environment.IOS_SUBMIT_SOURCE ??
+        environment.LOCAL_BUILD_DESK_SOURCE ??
         template?.path ??
         flags.project ??
         process.cwd(),
@@ -233,7 +242,7 @@ export async function resolveInvocation(
   const settings: any = { ...template?.settings, ...config.value.settings };
   for (const key of Object.keys(settingsSchema.shape)) {
     const envName =
-      "IOS_SUBMIT_" +
+      "LOCAL_BUILD_DESK_" +
       key.replace(/[A-Z]/g, (value) => "_" + value).toUpperCase();
     if (environment[envName] !== undefined)
       settings[key] = booleanSettings.includes(key)
@@ -283,15 +292,16 @@ export async function resolveInvocation(
   );
   let spec: any = { ...config.value.credentials };
   const credentialFile =
-    flags["credential-config"] ?? environment.IOS_SUBMIT_CREDENTIAL_CONFIG;
+    flags["credential-config"] ??
+    environment.LOCAL_BUILD_DESK_CREDENTIAL_CONFIG;
   let credentialRoot = config.root;
   if (credentialFile) {
     const path = resolve(String(credentialFile));
     spec = { ...spec, ...json(readCredentialFile(path).toString("utf8")) };
     credentialRoot = dirname(path);
   }
-  if (environment.IOS_SUBMIT_CREDENTIALS_JSON)
-    spec = { ...spec, ...json(environment.IOS_SUBMIT_CREDENTIALS_JSON) };
+  if (environment.LOCAL_BUILD_DESK_CREDENTIALS_JSON)
+    spec = { ...spec, ...json(environment.LOCAL_BUILD_DESK_CREDENTIALS_JSON) };
   const envRef = (prefix: string, binary = false): any =>
     !!environment[prefix + "_BASE64"]
       ? { base64Env: prefix + "_BASE64" }
@@ -316,26 +326,30 @@ export async function resolveInvocation(
     ["android", "keyPassword", "ANDROID_KEY_PASSWORD"],
     ["android", "alias", "ANDROID_KEY_ALIAS"],
   ])
-    assign(kind, key, envRef("IOS_SUBMIT_" + envName));
+    assign(kind, key, envRef("LOCAL_BUILD_DESK_" + envName));
   // An explicitly empty P12 password is valid; empty unconfigured credential
   // groups are ignored so template-only CI keeps using its stored credentials.
-  if (spec.ios && environment.IOS_SUBMIT_IOS_P12_PASSWORD !== undefined)
-    assign("ios", "password", { env: "IOS_SUBMIT_IOS_P12_PASSWORD" });
-  if (environment.IOS_SUBMIT_IOS_PROFILES_BASE64)
+  if (spec.ios && environment.LOCAL_BUILD_DESK_IOS_P12_PASSWORD !== undefined)
+    assign("ios", "password", { env: "LOCAL_BUILD_DESK_IOS_P12_PASSWORD" });
+  if (environment.LOCAL_BUILD_DESK_IOS_PROFILES_BASE64)
     assign(
       "ios",
       "profiles",
-      json(environment.IOS_SUBMIT_IOS_PROFILES_BASE64).map((value: string) => ({
-        base64: value,
-      })),
+      json(environment.LOCAL_BUILD_DESK_IOS_PROFILES_BASE64).map(
+        (value: string) => ({
+          base64: value,
+        }),
+      ),
     );
-  if (environment.IOS_SUBMIT_IOS_PROFILES_PATHS)
+  if (environment.LOCAL_BUILD_DESK_IOS_PROFILES_PATHS)
     assign(
       "ios",
       "profiles",
-      json(environment.IOS_SUBMIT_IOS_PROFILES_PATHS).map((value: string) => ({
-        file: value,
-      })),
+      json(environment.LOCAL_BUILD_DESK_IOS_PROFILES_PATHS).map(
+        (value: string) => ({
+          file: value,
+        }),
+      ),
     );
   const read = (value: any, binary = false): string => {
     if (typeof value === "string") return value;
@@ -403,8 +417,8 @@ export async function resolveInvocation(
     }
   const buildEnv = {
     ...config.value.environment,
-    ...(environment.IOS_SUBMIT_ENVIRONMENT_JSON
-      ? json(environment.IOS_SUBMIT_ENVIRONMENT_JSON)
+    ...(environment.LOCAL_BUILD_DESK_ENVIRONMENT_JSON
+      ? json(environment.LOCAL_BUILD_DESK_ENVIRONMENT_JSON)
       : {}),
   };
   if (Object.keys(buildEnv).length)
@@ -418,12 +432,12 @@ export async function resolveInvocation(
   const noKeychain =
     flags["use-keychain"] !== true &&
     (flags["no-keychain"] === true ||
-      environment.IOS_SUBMIT_NO_KEYCHAIN === "true" ||
+      environment.LOCAL_BUILD_DESK_NO_KEYCHAIN === "true" ||
       credentials.length > 0);
   const bound = bindRuntimeCredentials(settings, credentials, noKeychain);
   const buildNumberValue =
     flags["build-number"] ??
-    environment.IOS_SUBMIT_BUILD_NUMBER ??
+    environment.LOCAL_BUILD_DESK_BUILD_NUMBER ??
     config.value.buildNumber;
   const buildNumber =
     buildNumberValue === undefined ? undefined : Number(buildNumberValue);
@@ -439,7 +453,9 @@ export async function resolveInvocation(
   for (const platform of ["ios", "android"]) {
     const value =
       flags[platform + "-concurrency"] ??
-      environment["IOS_SUBMIT_" + platform.toUpperCase() + "_CONCURRENCY"];
+      environment[
+        "LOCAL_BUILD_DESK_" + platform.toUpperCase() + "_CONCURRENCY"
+      ];
     if (value !== undefined) concurrency[platform] = Number(value);
     if (concurrency[platform] !== undefined)
       invariant(

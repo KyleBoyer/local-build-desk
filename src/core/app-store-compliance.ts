@@ -336,7 +336,7 @@ export async function compliancePlan(
     plan.blockers.push(
       c.attestation
         ? "The compliance answers changed since they were attested. Review and attest them again."
-        : "The compliance answers aren't attested yet. Review them and attest (ios-submit listing --attest NAME, or in Local Build Desk).",
+        : "The compliance answers aren't attested yet. Review them and attest (local-build-desk listing --attest NAME, or in Local Build Desk).",
     );
 
   if (c.ageRating) {

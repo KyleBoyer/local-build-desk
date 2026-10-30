@@ -27,7 +27,9 @@ android-auto-roll-plan.md
 # Local configuration and credentials
 .env*
 /ios-submit.json
+/local-build-desk.json
 /ios-submit.local.json
+/local-build-desk.local.json
 credentials.json
 credentials.local.json
 service-account*.json

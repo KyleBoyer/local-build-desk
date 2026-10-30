@@ -250,7 +250,7 @@ export class AppleAPI {
 export interface GoogleUploadOptions {
   /** Commit a completed release instead of a draft. Internal track only. */
   rollout?: boolean;
-  /** Whether ios-submit uploaded this version code for the same app. */
+  /** Whether Local Build Desk uploaded this version code for the same app. */
   uploadedByDesk?: (versionCode: string) => boolean;
   /** "What's new" text for the new release, per language. */
   releaseNotes?: { language: string; text: string }[];
@@ -563,7 +563,7 @@ export class GoogleAPI {
         release.status === "draft" &&
         !release.versionCodes?.map(String).includes(artifact.buildNumber),
     );
-    // A rollout supersedes only drafts ios-submit itself uploaded for older
+    // A rollout supersedes only drafts Local Build Desk itself uploaded for older
     // version codes. A draft a person made in Play Console is never discarded.
     const stale = (release: any) => {
       const codes: string[] = (release.versionCodes ?? []).map(String);
@@ -593,7 +593,7 @@ export class GoogleAPI {
     }
     if (superseded.length)
       options.log?.(
-        `Superseding earlier ios-submit draft${superseded.length > 1 ? "s" : ""} ${superseded.join(", ")} on ${track} with this release.`,
+        `Superseding earlier Local Build Desk draft${superseded.length > 1 ? "s" : ""} ${superseded.join(", ")} on ${track} with this release.`,
       );
     const total = (await stat(artifact.path)).size;
     invariant(
@@ -918,7 +918,7 @@ export class GoogleAPI {
                     .map((key) => [key, canonical(value[key])]),
                 )
               : value;
-        // A rollout drops superseded ios-submit drafts; a completed release
+        // A rollout drops superseded Local Build Desk drafts; a completed release
         // also replaces every other release on the internal track.
         const superseded = new Set(options.supersededVersionCodes ?? []);
         const isOwn = (item: any) =>
@@ -934,7 +934,7 @@ export class GoogleAPI {
                 ),
             ),
           "GOOGLE_TRACK_CHANGED",
-          "The staged edit removes a draft ios-submit did not supersede. No commit or second upload was attempted.",
+          "The staged edit removes a draft Local Build Desk did not supersede. No commit or second upload was attempted.",
         );
         const expected = !rollout
           ? baselineReleases

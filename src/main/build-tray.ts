@@ -186,11 +186,12 @@ export class BuildTray {
           {
             label: "Copy status command",
             click: () =>
-              clipboard.writeText(`ios-submit status --job ${job.id}`),
+              clipboard.writeText(`local-build-desk status --job ${job.id}`),
           },
           {
             label: "Copy logs command",
-            click: () => clipboard.writeText(`ios-submit logs --job ${job.id}`),
+            click: () =>
+              clipboard.writeText(`local-build-desk logs --job ${job.id}`),
           },
         ],
       })),

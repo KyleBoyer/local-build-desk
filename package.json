@@ -6,7 +6,8 @@
   "type": "module",
   "main": "out/main/index.js",
   "bin": {
-    "ios-submit": "bin/ios-submit.mjs"
+    "local-build-desk": "bin/local-build-desk.mjs",
+    "ios-submit": "bin/local-build-desk.mjs"
   },
   "scripts": {
     "dev": "electron-vite dev",

@@ -234,7 +234,7 @@ test("a disconnected CLI client does not abandon its queued native build", async
     const owner = h.launch(
       ["build", "--project", join(h.root, "first"), "--platform", "ios"],
       {
-        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+        LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
           FIXTURE_WAIT_FOR_QUEUED: "true",
         }),
       },
@@ -275,7 +275,7 @@ test("parallel CI clients keep independent environments, outputs and exit codes 
     const owner = h.launch(
       ["build", "--source", join(h.root, "first"), "--platform", "ios"],
       {
-        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+        LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
           FIXTURE_FAIL: "true",
           FIXTURE_WAIT_FOR_SECOND: "true",
           TOKEN: "owner-private-token",
@@ -288,7 +288,7 @@ test("parallel CI clients keep independent environments, outputs and exit codes 
     const client = h.launch(
       ["build", "--source", join(h.root, "second"), "--platform", "android"],
       {
-        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+        LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
           TOKEN: "client-private-token",
         }),
       },
@@ -327,7 +327,7 @@ test("interrupting the owning command cancels its job while another client finis
     const owner = h.launch(
       ["build", "--source", join(h.root, "first"), "--platform", "ios"],
       {
-        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+        LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
           FIXTURE_WAIT_FOR_QUEUED: "true",
         }),
       },
@@ -359,7 +359,7 @@ test("closing a temporary account window does not terminate the active CLI owner
     const owner = h.launch(
       ["build", "--project", join(h.root, "first"), "--platform", "ios"],
       {
-        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+        LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
           FIXTURE_CLOSE_AUX_WINDOW: "true",
         }),
       },
@@ -385,7 +385,7 @@ test("a forwarded CLI whose reader has already exited still finishes instead of 
     const owner = h.launch(
       ["build", "--project", join(h.root, "first"), "--platform", "ios"],
       {
-        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+        LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
           FIXTURE_WAIT_FOR_QUEUED: "true",
         }),
       },
@@ -393,7 +393,7 @@ test("a forwarded CLI whose reader has already exited still finishes instead of 
     await expect
       .poll(() => owner.output(), { timeout: 20000 })
       .toContain("fixture-active");
-    // As with `ios-submit status | true`: the pipe closes before any output.
+    // As with `local-build-desk status | true`: the pipe closes before any output.
     const client = h.launch(["status"]);
     client.child.stdout!.destroy();
     const exit = await Promise.race([

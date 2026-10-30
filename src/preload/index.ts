@@ -36,6 +36,7 @@ const names = [
   "releaseNoteDraft",
   "notificationSettings",
   "testNotification",
+  "cliCommand",
   "compareBuild",
   "xcodeInstallations",
   "installXcode",

@@ -177,6 +177,7 @@ export const methods = {
   ]),
   notificationSettings: z.tuple([z.boolean().optional()]),
   testNotification: z.tuple([]),
+  cliCommand: z.tuple([z.boolean().optional()]),
   compareBuild: z.tuple([identifier]),
   xcodeInstallations: z.tuple([identifier]),
   installXcode: z.tuple([identifier, text, z.boolean().optional()]),

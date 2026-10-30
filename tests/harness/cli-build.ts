@@ -2,7 +2,10 @@ export const hashArtifact = async () => "fixture";
 export async function buildLocal(ctx: any) {
   if (process.platform === "darwin" && app.dock?.isVisible())
     throw new Error("CLI test unexpectedly created a Dock icon");
-  if (process.env.IOS_SUBMIT_ENVIRONMENT_JSON)
+  if (
+    process.env.LOCAL_BUILD_DESK_ENVIRONMENT_JSON ||
+    process.env.IOS_SUBMIT_ENVIRONMENT_JSON
+  )
     throw new Error(
       "Caller secrets leaked into the shared process environment",
     );

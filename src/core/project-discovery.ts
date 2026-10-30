@@ -1,6 +1,7 @@
 import { settingsSchema } from "./settings-schema";
 import { readFile, readdir, realpath } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
+import { configFileIn } from "./naming";
 import type { ProjectSettings, ProjectType } from "./types";
 export interface ProjectApplication {
   directory: string;
@@ -67,19 +68,17 @@ export async function projectSettings(
   root: string,
   settings: ProjectSettings = {},
 ): Promise<ProjectSettings> {
-  const content = await readFile(join(root, "ios-submit.json"), "utf8").catch(
-    (error) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    },
-  );
+  const content = await readFile(configFileIn(root), "utf8").catch((error) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
   let portable: any = {};
   if (content !== undefined) {
     try {
       portable = JSON.parse(content);
     } catch {
       throw new Error(
-        "Invalid ios-submit.json. Fix its JSON syntax before importing or building.",
+        `Invalid ${basename(configFileIn(root))}. Fix its JSON syntax before importing or building.`,
       );
     }
   }

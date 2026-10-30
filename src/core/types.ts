@@ -102,7 +102,7 @@ export interface ProjectSettings {
   playReleaseNotes?: string;
   /** Language for playReleaseNotes. Missing means en-US. */
   playReleaseNotesLanguage?: string;
-  /** App Store listing JSON (relative to the project) used by `ios-submit listing`. */
+  /** App Store listing JSON (relative to the project) used by `local-build-desk listing`. */
   appStoreListing?: string;
   ascAppId?: string;
   setupAppleComplete?: boolean;
@@ -197,7 +197,7 @@ export interface Submission {
   baselineReleases?: unknown[];
   /** The upload committed a completed internal release instead of a draft. */
   rollout?: boolean;
-  /** ios-submit drafts that the rollout release replaced. */
+  /** Local Build Desk drafts that the rollout release replaced. */
   supersededVersionCodes?: string[];
   lastCheckedAt?: string;
   state:
@@ -423,6 +423,16 @@ export interface DeskState {
   artifacts: Artifact[];
   dataPath: string;
 }
+export interface CLICommandStatus {
+  enabled: boolean;
+  state:
+    "pending" | "installed" | "removed" | "blocked" | "unsupported" | "error";
+  /** The installed command file. */
+  path?: string;
+  /** The shell profile that adds its directory to PATH. */
+  profile?: string;
+  message: string;
+}
 export interface UpdateStatus {
   state:
     | "disabled"
@@ -539,6 +549,7 @@ export interface DesktopAPI {
     enabled?: boolean,
   ): Promise<{ enabled: boolean; supported: boolean; error?: string }>;
   testNotification(): Promise<void>;
+  cliCommand(enabled?: boolean): Promise<CLICommandStatus>;
   compareBuild(jobId: string): Promise<BuildComparison>;
   xcodeInstallations(
     projectId: string,

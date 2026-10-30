@@ -1593,8 +1593,8 @@ export function App() {
                   <strong>The same engine, from your terminal.</strong>
                   <p>
                     <code>
-                      ios-submit build --project /path/to/app --platform all
-                      --profile production
+                      local-build-desk build --project /path/to/app --platform
+                      all --profile production
                     </code>
                   </p>
                 </div>

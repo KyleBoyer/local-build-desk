@@ -1,6 +1,6 @@
 # Local Build Desk
 
-An Electron / React / TypeScript app that builds Expo, Capacitor, and native iOS apps on your Mac and uploads directly to App Store Connect and Google Play. The desktop and `ios-submit` CLI share one queue, credential vault, and SQLite database. Routine operations do not use EAS Build or EAS Submit.
+An Electron / React / TypeScript app that builds Expo, Capacitor, and native iOS apps on your Mac and uploads directly to App Store Connect and Google Play. The desktop and `local-build-desk` CLI share one queue, credential vault, and SQLite database. Routine operations do not use EAS Build or EAS Submit.
 
 ## Run
 
@@ -46,7 +46,7 @@ Non-Expo apps have editable **Local build profiles**:
 
 Profiles support inheritance, configuration, distribution, simulator/debug selection, environment values, scheme, Android variant/build type, and automatic build-number increments. Existing native settings determine the app identity and marketing version. A newly generated Capacitor platform starts from the package’s version. Version overrides affect only the copied native project, and embedded extensions are verified against the same reserved version/build number.
 
-Export/import portable settings from the project screen, or provide `ios-submit.json` / `--config FILE`:
+Export/import portable settings from the project screen, or provide `local-build-desk.json` / `--config FILE`:
 
 ```json
 {
@@ -108,9 +108,9 @@ For an existing app, import its existing EAS upload keystore. The app will not s
 
 Choose **Connect account** for the app-owned Google guide: it prepares Cloud project creation, API enablement, service-account/key provisioning, and app-scoped Play permissions, with explicit approvals before new access. You can also import an existing JSON key. The Google Cloud CLI fallback signs in through Google’s supported external browser, encrypts the generated key, and continues into the same guided Play permission flow. Both paths verify access to the intended Android package before replacing the saved connection. Organization policies can restrict key creation. Enrollment and app declarations remain owner steps. **Store app record & first upload** can build the first AAB locally and prepare its console upload as an internal draft, pausing for required agreements. The default track is `internal`; see **Guided Google provisioning** below.
 
-Uploads to `internal` roll out to internal testers automatically (`playAutoRollout`, on by default): the new build is committed as a `completed` release that replaces the previous internal release, and the job reports `accepted`. Earlier drafts that ios-submit itself uploaded for lower version codes are superseded and logged; any other draft (made in Play Console, or with a higher or unknown version code) still stops the upload before any binary bytes are sent. If Google only allows drafts because the app has never been published, the same staged bundle is committed as a draft with an explanation. Accounts that require `changesNotSentForReview=true` get the release committed and reported as waiting for **Send for review** in Play Console. If managed publishing is on, a committed release still waits for **Publish changes**; the edits API does not expose that setting, so ios-submit re-reads the track and notes the possibility. Set `playAutoRollout` to `false` (desktop toggle under Connections, `--set playAutoRollout=false`, `--play-auto-rollout=false`, `IOS_SUBMIT_PLAY_AUTO_ROLLOUT=false`, or `"settings": { "playAutoRollout": false }`) to restore draft uploads. Other tracks always upload drafts; automatic rollout never applies to closed, open or production tracks. Whether a draft was uploaded by ios-submit is looked up in the app database by package name and version code, not by project or checkout path, so CI runs from fresh checkouts recognize earlier uploads as long as they share the app's data directory (the default `~/Library/Application Support/Local Build Desk`; build-number counters live there too).
+Uploads to `internal` roll out to internal testers automatically (`playAutoRollout`, on by default): the new build is committed as a `completed` release that replaces the previous internal release, and the job reports `accepted`. Earlier drafts that local-build-desk itself uploaded for lower version codes are superseded and logged; any other draft (made in Play Console, or with a higher or unknown version code) still stops the upload before any binary bytes are sent. If Google only allows drafts because the app has never been published, the same staged bundle is committed as a draft with an explanation. Accounts that require `changesNotSentForReview=true` get the release committed and reported as waiting for **Send for review** in Play Console. If managed publishing is on, a committed release still waits for **Publish changes**; the edits API does not expose that setting, so local-build-desk re-reads the track and notes the possibility. Set `playAutoRollout` to `false` (desktop toggle under Connections, `--set playAutoRollout=false`, `--play-auto-rollout=false`, `LOCAL_BUILD_DESK_PLAY_AUTO_ROLLOUT=false`, or `"settings": { "playAutoRollout": false }`) to restore draft uploads. Other tracks always upload drafts; automatic rollout never applies to closed, open or production tracks. Whether a draft was uploaded by local-build-desk is looked up in the app database by package name and version code, not by project or checkout path, so CI runs from fresh checkouts recognize earlier uploads as long as they share the app's data directory (the default `~/Library/Application Support/Local Build Desk`; build-number counters live there too).
 
-Release notes ("What's new") can be attached to each uploaded release with `--release-notes TEXT`, `IOS_SUBMIT_PLAY_RELEASE_NOTES`, or `playReleaseNotes` (up to 500 characters). The language defaults to `en-US`; set `playReleaseNotesLanguage` (for example `es-419`) to match a language in your store listing.
+Release notes ("What's new") can be attached to each uploaded release with `--release-notes TEXT`, `LOCAL_BUILD_DESK_PLAY_RELEASE_NOTES`, or `playReleaseNotes` (up to 500 characters). The language defaults to `en-US`; set `playReleaseNotesLanguage` (for example `es-419`) to match a language in your store listing.
 
 In draft mode, uploads create drafts on the selected track. Existing active releases are preserved. An unrelated existing draft stops upload before any binary bytes are sent, with an instruction to resolve it in Play Console. Google permits one open edit per account/app, so account checks are serialized and blocked while an upload needs reconciliation. Recovery inspects the original edit before opening another one and verifies the exact AAB checksum and preserved releases. If Google discarded the edit, the app confirms the version is absent before allowing a resend of the existing artifact. Recovery commits in the same mode (draft or rollout) as the original upload. Accounts that reject `changesNotSentForReview` use Google’s default commit mode for the same draft; the app does not change listings or roll out production releases.
 
@@ -123,41 +123,45 @@ Select the installed Xcode and exact SDK for each project. Builds use `DEVELOPER
 Download/verification failures pause automation until **Retry automation**. Downloaded archives, extracted applications, and license approval survive restart. Apple sign-in/MFA and any new agreement remain visible handoffs.
 
 ```sh
-ios-submit toolchain --project /path/to/app --minimum-ios-sdk 27.2
-ios-submit toolchain --project /path/to/app --xcode-archive /path/to/Xcode.xip
+local-build-desk toolchain --project /path/to/app --minimum-ios-sdk 27.2
+local-build-desk toolchain --project /path/to/app --xcode-archive /path/to/Xcode.xip
 # After reviewing the bundled agreement:
-ios-submit toolchain --project /path/to/app --xcode-archive /path/to/Xcode.app --accept-xcode-license
+local-build-desk toolchain --project /path/to/app --xcode-archive /path/to/Xcode.app --accept-xcode-license
 ```
 
 ## Bring an existing EAS project
 
 Use `eas credentials` once to download signing credentials into `credentials.json`. In **Connections → Migration**, import that file and its referenced certificate/profile/keystore files, local `.env` files or a JSON map of environment values, and the last reserved EAS build numbers. EAS Secret values must come from their original source.
 
-Local and EAS remote counters are independent. `ios-submit versions --project /path/to/app` shows the local authority and next minimum for each identity. Before returning to EAS, stop local jobs and run `versions --project /path/to/app --platform ios --handoff-eas`. This one-time operation raises EAS to at least the highest local reservation, verifies the remote value, and pauses local reservations across checkouts. EAS’s next auto-increment is then above local builds. After EAS jobs finish, run `versions --project /path/to/app --platform ios --resume-local` to import its last reservation and resume locally. An uncertain handoff keeps local builds paused until reconciled. Failed pre-upload jobs release uncommitted number leases; numbers committed at upload and legacy counter floors are never reused. Routine local builds never consult EAS.
+Local and EAS remote counters are independent. `local-build-desk versions --project /path/to/app` shows the local authority and next minimum for each identity. Before returning to EAS, stop local jobs and run `versions --project /path/to/app --platform ios --handoff-eas`. This one-time operation raises EAS to at least the highest local reservation, verifies the remote value, and pauses local reservations across checkouts. EAS’s next auto-increment is then above local builds. After EAS jobs finish, run `versions --project /path/to/app --platform ios --resume-local` to import its last reservation and resume locally. An uncertain handoff keeps local builds paused until reconciled. Failed pre-upload jobs release uncommitted number leases; numbers committed at upload and legacy counter floors are never reused. Routine local builds never consult EAS.
 
 The project’s `app.json` / `app.config.*`, Expo plugins, app identity, and EAS profile names are preserved. Local selections live in the desktop database. Sources are copied into a job directory, including uncommitted tracked files and eligible untracked modules; installation and prebuild happen there. Native folders tracked by Git are preserved. Toolchain overrides can force generated or maintained-native mode.
 
 ## CLI
 
-After `npm run build`, use `node bin/ios-submit.mjs`, `npm run cli --`, or `npm link` to install the `ios-submit` command. It launches the same Electron backend for Keychain access. If the desktop is open, requests use its local owner-only Unix socket and the same queue.
+The installed app puts a `local-build-desk` command on your PATH when it launches from **Applications**. It uses a user directory already on PATH (`~/.local/bin`, `~/bin`, or a writable `/usr/local/bin`); otherwise it creates `~/.local/bin` and adds it to `~/.zprofile` or `~/.bash_profile` in a marked block. The command is a small script that runs the app's own CLI, so it always matches the installed version and follows `local-build-desk update`. It never replaces a `local-build-desk` it didn't write. Turn it off in **Preferences → Command line**, which removes the script and the profile lines.
+
+From a source checkout, after `npm run build`, use `node bin/local-build-desk.mjs`, `npm run cli --`, or `npm link`. Every CLI entry point launches the same Electron backend for Keychain access. If the desktop is open, requests use its local owner-only Unix socket and the same queue.
+
+The CLI was previously named `ios-submit`. Its configuration file `ios-submit.json` and `IOS_SUBMIT_*` environment variables still work as aliases. When both are present, `local-build-desk.json` and `LOCAL_BUILD_DESK_*` take precedence.
 
 ```sh
-ios-submit doctor --project /path/to/app
-ios-submit inspect --project /path/to/app --profile production --platform ios
-ios-submit migrate --project /path/to/app --credentials /path/to/credentials.json --ios-last-used 12 --android-last-used 8
-ios-submit build --project /path/to/app --platform all --profile production
-ios-submit build --project /path/to/app --platform ios --profile production --auto-submit --build-directory /Volumes/Builds/LocalBuildDesk
-ios-submit status
-ios-submit status --job JOB_ID --wait --timeout 1800
-ios-submit logs --job JOB_ID
-ios-submit cancel --job JOB_ID
-ios-submit submit --artifact ARTIFACT_ID --wait
-ios-submit reconcile --job JOB_ID
-ios-submit connect-google --project /path/to/app --key /path/to/existing-service-account.json
-ios-submit install-tool --project /path/to/app --tool android --accept-android-license
+local-build-desk doctor --project /path/to/app
+local-build-desk inspect --project /path/to/app --profile production --platform ios
+local-build-desk migrate --project /path/to/app --credentials /path/to/credentials.json --ios-last-used 12 --android-last-used 8
+local-build-desk build --project /path/to/app --platform all --profile production
+local-build-desk build --project /path/to/app --platform ios --profile production --auto-submit --build-directory /Volumes/Builds/LocalBuildDesk
+local-build-desk status
+local-build-desk status --job JOB_ID --wait --timeout 1800
+local-build-desk logs --job JOB_ID
+local-build-desk cancel --job JOB_ID
+local-build-desk submit --artifact ARTIFACT_ID --wait
+local-build-desk reconcile --job JOB_ID
+local-build-desk connect-google --project /path/to/app --key /path/to/existing-service-account.json
+local-build-desk install-tool --project /path/to/app --tool android --accept-android-license
 ```
 
-`ios-submit update` installs the latest signed release of Local Build Desk, which is also the CLI. It checks GitHub releases, downloads and verifies the update, and reports how it applies: a CLI-only run installs it when the command exits; when the desktop or menu-bar monitor owns the queue, the app restarts into it, or installs it at its next quit if builds or setup tasks are running. `ios-submit update --check` only reports the newest version. Self-update needs the packaged app, for example `"/Applications/Local Build Desk.app/Contents/MacOS/Local Build Desk" --desk-cli update`. A source checkout reports this and is updated with `git pull`, `npm install`, and `npm run build`.
+`local-build-desk update` installs the latest signed release of Local Build Desk, which is also the CLI. It checks GitHub releases, downloads and verifies the update, and reports how it applies: a CLI-only run installs it when the command exits; when the desktop or menu-bar monitor owns the queue, the app restarts into it, or installs it at its next quit if builds or setup tasks are running. `local-build-desk update --check` only reports the newest version. Self-update needs the packaged app, for example `"/Applications/Local Build Desk.app/Contents/MacOS/Local Build Desk" --desk-cli update`. A source checkout reports this and is updated with `git pull`, `npm install`, and `npm run build`.
 
 The CLI exits **0** for success, **1** for failure, and **2** while Apple processing is pending. `--wait` on `build`, `submit`, or `status` waits for processing; `--timeout` is in seconds (default 1800). `status` refreshes pending jobs directly from Apple, so it works without the desktop open. A refresh failure is reported with a recovery action. Upload completion and accepted processing remain separate states. `status` distinguishes accepted builds and Play drafts. An uncertain upload must be reconciled before retrying; retries never blindly upload a second copy. Existing successful artifacts can be uploaded without rebuilding. `cancel --job` works through the shared engine. Interrupting a headless owner stops and awaits its child processes; during normal completion, the owner waits for forwarded CLI requests before closing the shared engine.
 
@@ -179,21 +183,21 @@ On macOS, a **menu bar build monitor** appears while jobs are active, queued, or
 
 **Release** prepares TestFlight What to Test, App Store draft What’s New, optional localized listing fields, or Google Play notes for the next upload. Draft notes from recorded git commits, edit them, then review the exact current/proposed Apple values before applying. Apple previews expire after ten minutes, are invalidated by changed remote metadata/connections, and are consumed once. An uncertain write requires a fresh preview instead of a blind retry. Creating a missing App Store version is opt-in and selects manual release. Saving metadata does not submit for App Review or release to production. Play notes are saved locally and used by subsequent uploads; they do not modify existing releases.
 
-**App Store listing** (`ios-submit listing --project PATH --listing FILE`) keeps an iOS App Store listing in a JSON file in your repository: name, subtitle, privacy policy URL, categories, content rights, description, keywords, promotional text, support/marketing URLs, What's New (skipped on an app's first version), copyright, App Review contact and notes, iPhone and iPad screenshots (PNG paths relative to the file, up to ten per display type; for example 1320×2868 for iPhone and 2064×2752 for iPad), and in-app purchases to review with the version: product IDs, or product JSON files (`productId`, `type` CONSUMABLE or NON_CONSUMABLE, `appleReferenceName`, `displayName`, `appleDescription`, `appleReviewNotes`, `applePrice` in US dollars such as `"0.99"`, and an `appleReviewScreenshot` PNG) that let `--apply` create a missing purchase with its localization, price, availability in every territory, and review screenshot. Without flags it prints a dry run: each field's current and proposed value, whether screenshots differ (by checksum), the processed build it would attach (the newest of the project's version, or `--build-number N`), and what still blocks App Review. `--apply` writes the listing, replaces only the screenshot sets that differ (matching iPhone/iPad sets and uploads still being processed are left alone), waits up to five minutes for Apple to process them, attaches the build, and creates missing in-app purchases. `--submit-for-review` does the same, refuses while anything blocks review, then submits ready in-app purchases and the version for App Review. Versions are created with manual release, so an approval never publishes the app by itself.
+**App Store listing** (`local-build-desk listing --project PATH --listing FILE`) keeps an iOS App Store listing in a JSON file in your repository: name, subtitle, privacy policy URL, categories, content rights, description, keywords, promotional text, support/marketing URLs, What's New (skipped on an app's first version), copyright, App Review contact and notes, iPhone and iPad screenshots (PNG paths relative to the file, up to ten per display type; for example 1320×2868 for iPhone and 2064×2752 for iPad), and in-app purchases to review with the version: product IDs, or product JSON files (`productId`, `type` CONSUMABLE or NON_CONSUMABLE, `appleReferenceName`, `displayName`, `appleDescription`, `appleReviewNotes`, `applePrice` in US dollars such as `"0.99"`, and an `appleReviewScreenshot` PNG) that let `--apply` create a missing purchase with its localization, price, availability in every territory, and review screenshot. Without flags it prints a dry run: each field's current and proposed value, whether screenshots differ (by checksum), the processed build it would attach (the newest of the project's version, or `--build-number N`), and what still blocks App Review. `--apply` writes the listing, replaces only the screenshot sets that differ (matching iPhone/iPad sets and uploads still being processed are left alone), waits up to five minutes for Apple to process them, attaches the build, and creates missing in-app purchases. `--submit-for-review` does the same, refuses while anything blocks review, then submits ready in-app purchases and the version for App Review. Versions are created with manual release, so an approval never publishes the app by itself.
 
 **Submitted releases**, in both **Release** and **App Store**, reads the connected stores instead of relying on local build history. It shows the latest 25 Apple versions and TestFlight builds, the exact build attached to App Review, processing/internal/external beta states, Beta App Review, testing groups, expiry dates, submitted descriptions/notes and screenshots for the selected version and language. Select a thumbnail to enlarge it. Captures retained with a matching local TestFlight build are labeled **Local build captures**; TestFlight itself does not have store screenshots attached.
 
 Google Play shows the current releases on each track, version codes, rollout fraction, release notes and current localized listing assets (icon, feature graphic, phone and tablet screenshots). Google's Publishing API exposes track/rollout state, not the Play Console review workflow; **completed** is a track status, not a claim that Google approved a pending review. Google listing assets are shared across tracks and are not historical screenshots per version. Use **Open console** for review details the API does not expose. Refresh timestamps and per-store errors keep partial or unavailable results explicit. Google reads use a temporary, uncommitted edit serialized with this app's uploads and are blocked while a local upload outcome is unresolved; no releases or listings are changed.
 
-The CLI exposes the same metadata through `ios-submit store-releases --project PATH [--refresh]` and `ios-submit store-release --project PATH --release-id ID [--locale en-US] [--refresh]`. Image previews are fetched by the main process through expiring project-bound handles, using HTTPS store CDNs without forwarding account credentials; the renderer receives only bounded PNG/JPEG/WebP data.
+The CLI exposes the same metadata through `local-build-desk store-releases --project PATH [--refresh]` and `local-build-desk store-release --project PATH --release-id ID [--locale en-US] [--refresh]`. Image previews are fetched by the main process through expiring project-bound handles, using HTTPS store CDNs without forwarding account credentials; the renderer receives only bounded PNG/JPEG/WebP data.
 
-**App Store compliance** answers Apple's age rating, App Privacy, and price and availability questions. The **App Store** page asks every question (content levels, yes/no features, the data the app and its third-party code collect with purposes, linkage and tracking, US price and territories), shows the answers back as plain statements, and records an attestation (name, date and a digest of the answers) once you confirm them. The answers and attestation are saved into the listing file as `ageRating`, `appPrivacy`, `pricing` and `attestation`, beside the listing text, so they are reviewable in git; `ios-submit listing --attest NAME` attests from the command line after printing the same statements. `--apply` sends the answers only while the attestation matches them exactly; editing an answer requires attesting again, and the dry run reports unattested answers as a blocker. Age rating, price (a US price point with Apple's equalization) and availability use the App Store Connect API. Apple's public API has no App Privacy endpoints, so the desktop owner publishes those answers through App Store Connect's own web requests (`/iris/v1`) from a hidden App Store Connect page in the desk's Apple sign-in session; if that session has expired, the page opens for you to sign in. This uses an undocumented Apple interface that may change; a dry run reads the current privacy answers without prompting for sign-in. Sections left out of the listing stay manual and are listed in the dry run.
+**App Store compliance** answers Apple's age rating, App Privacy, and price and availability questions. The **App Store** page asks every question (content levels, yes/no features, the data the app and its third-party code collect with purposes, linkage and tracking, US price and territories), shows the answers back as plain statements, and records an attestation (name, date and a digest of the answers) once you confirm them. The answers and attestation are saved into the listing file as `ageRating`, `appPrivacy`, `pricing` and `attestation`, beside the listing text, so they are reviewable in git; `local-build-desk listing --attest NAME` attests from the command line after printing the same statements. `--apply` sends the answers only while the attestation matches them exactly; editing an answer requires attesting again, and the dry run reports unattested answers as a blocker. Age rating, price (a US price point with Apple's equalization) and availability use the App Store Connect API. Apple's public API has no App Privacy endpoints, so the desktop owner publishes those answers through App Store Connect's own web requests (`/iris/v1`) from a hidden App Store Connect page in the desk's Apple sign-in session; if that session has expired, the page opens for you to sign in. This uses an undocumented Apple interface that may change; a dry run reads the current privacy answers without prompting for sign-in. Sections left out of the listing stay manual and are listed in the dry run.
 
 **Tests → Tests & screenshots** runs the selected Xcode scheme/test plan (XCTest, Swift Testing or XCUITest) in the isolated build snapshot. Enable **Block upload when checks fail or are missing** to require passing evidence before any store upload, including independent uploads and reused artifacts. Each device runs serially on a disposable simulator; existing simulators are left alone. Release tests retain the profile's configuration with testability enabled. A failing suite, zero executed tests, missing runtime or failed capture blocks a required policy. Logs, `.xcresult` reports, failure attachments and captured PNGs stay with the job. Policies are opt-in for existing projects; configuring the policy does not create tests for an app.
 
 Use **Discover targets** to select installed iPhone/iPad device types, an exact runtime and optionally a scheme/test plan. A capture plan launches the app with per-screen demo arguments/environment, checks accessibility identifiers or labels, performs `tap`, `type`, `wait`, `assertText` or swipe steps, then captures the foreground app. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Simulator captures cover iOS; Android can use a project-owned test command with an exit-code contract.
 
-A portable `ios-submit.json` can contain the same policy, for example:
+A portable `local-build-desk.json` can contain the same policy, for example:
 
 ```json
 {
@@ -228,14 +232,14 @@ A portable `ios-submit.json` can contain the same policy, for example:
 Choose device/runtime combinations installed on your Mac; the example values are not prerequisites. For a project-owned command, use `"runner": "command", "command": ["npm", "test"]` and omit destinations unless also capturing iOS screens. Commands run in the installed snapshot without a shell. Native iOS tests do not require Node or Expo.
 
 ```sh
-ios-submit test-targets --project /path/to/app
-ios-submit test --project /path/to/app --platform ios --profile production
-ios-submit screenshots --project /path/to/app --profile production
-ios-submit build --project /path/to/app --platform ios --profile production --auto-submit
-ios-submit use-screenshots --job BUILD_JOB_ID
-ios-submit readiness --project /path/to/app --destination appstore
-ios-submit store-status --project /path/to/app
-ios-submit resume --job JOB_ID
+local-build-desk test-targets --project /path/to/app
+local-build-desk test --project /path/to/app --platform ios --profile production
+local-build-desk screenshots --project /path/to/app --profile production
+local-build-desk build --project /path/to/app --platform ios --profile production --auto-submit
+local-build-desk use-screenshots --job BUILD_JOB_ID
+local-build-desk readiness --project /path/to/app --destination appstore
+local-build-desk store-status --project /path/to/app
+local-build-desk resume --job JOB_ID
 ```
 
 `test` and `screenshots` are local validation jobs: they do not reserve store versions or upload. Capture-only results cannot approve an upload. To associate screenshots with a release, capture them during its production build, then choose **Use screenshots in listing** (or `use-screenshots`). This creates an excluded local listing overlay under `.local-build-desk/store`, preserving the original listing. Before a listing write, the app checks the selected build/version, capture source and PNG checksums. Hand-supplied screenshots remain supported and do not carry an automated provenance claim.
@@ -271,7 +275,7 @@ Supported build-profile behavior includes inheritance, platform overrides, envir
 
 Generated native projects get versions in the copied Expo config. Maintained native projects retain their native configuration and are verified against the expected identity/version. Custom multi-flavor Gradle commands must yield one artifact. Dynamic bundle IDs must resolve consistently. Signing multiple iOS targets requires matching profiles for every resolved bundle identifier; native iOS/Capacitor setup resolves build-setting variables and prepares embedded-target profiles. Workspace dependencies or symlinks outside the imported project root need a self-contained project root; external symlinks are rejected.
 
-External tester invitation/review and production rollout remain outside this release. Localized release/listing metadata can be prepared in the Release assistant, and the full App Store listing with `ios-submit listing` (below). Uploading to TestFlight is not an App Store production release.
+External tester invitation/review and production rollout remain outside this release. Localized release/listing metadata can be prepared in the Release assistant, and the full App Store listing with `local-build-desk listing` (below). Uploading to TestFlight is not an App Store production release.
 
 ## Verification
 
@@ -307,23 +311,23 @@ Setup stores nonsecret progress separately from the provider's persistent browse
 
 ## CI and arbitrary checkouts
 
-The shared engine defaults to **one iOS and one Android job at the same time**. Each job gets its own source snapshot, output folder, temporary signing keychain, and credential context. Shared dependency/native caches and macOS keychain/profile changes are locked. Configure 1–8 slots per platform with `--ios-concurrency` / `--android-concurrency`, `IOS_SUBMIT_IOS_CONCURRENCY` / `IOS_SUBMIT_ANDROID_CONCURRENCY`, or `concurrency` in the invocation config. These are engine-wide limits while that instance runs. A Forgejo runner also needs capacity ≥2 to dispatch two jobs concurrently.
+The shared engine defaults to **one iOS and one Android job at the same time**. Each job gets its own source snapshot, output folder, temporary signing keychain, and credential context. Shared dependency/native caches and macOS keychain/profile changes are locked. Configure 1–8 slots per platform with `--ios-concurrency` / `--android-concurrency`, `LOCAL_BUILD_DESK_IOS_CONCURRENCY` / `LOCAL_BUILD_DESK_ANDROID_CONCURRENCY`, or `concurrency` in the invocation config. These are engine-wide limits while that instance runs. A Forgejo runner also needs capacity ≥2 to dispatch two jobs concurrently.
 
 ```sh
-ios-submit build --settings-from SAVED_PROJECT_ID --source /ci/app-ios --platform ios --profile production --auto-submit --wait
-ios-submit build --settings-from SAVED_PROJECT_ID --source /ci/app-android --platform android --profile production --auto-submit --wait
-ios-submit doctor --settings-from SAVED_PROJECT_ID --source /ci/app-ios --platform ios
-ios-submit inspect --source /any/checkout --platform android
-ios-submit build --source /any/checkout --config /runner/ios-submit.json --platform ios --build-number 90
+local-build-desk build --settings-from SAVED_PROJECT_ID --source /ci/app-ios --platform ios --profile production --auto-submit --wait
+local-build-desk build --settings-from SAVED_PROJECT_ID --source /ci/app-android --platform android --profile production --auto-submit --wait
+local-build-desk doctor --settings-from SAVED_PROJECT_ID --source /ci/app-ios --platform ios
+local-build-desk inspect --source /any/checkout --platform android
+local-build-desk build --source /any/checkout --config /runner/local-build-desk.json --platform ios --build-number 90
 ```
 
 `--project` accepts a saved ID/path or an arbitrary source checkout. `--settings-from` explicitly requires a saved template; `--source` chooses different code. Build/doctor/inspect do not register new projects or update template settings. Install the checkout’s npm dependencies first so its installed Expo tooling can evaluate dynamic configuration. Native compilation, hooks and prebuild use the snapshot. A headless CLI owner stays alive for forwarded requests and queued/running jobs even when its own command fails; each client streams its own output and returns its own exit code. CLI runs do not create Dock icons. Ctrl-C in the owning command cancels its own build and returns 130 after other clients finish; it does not cancel their jobs.
 
-Settings precedence is **flags > environment > configuration > stored template**. Use `--config FILE` (default `SOURCE/ios-submit.json`) with `{ "settings": { ... } }`. Every `ProjectSettings` field supports `--set name=value` and `IOS_SUBMIT_UPPER_SNAKE_CASE`, for example `IOS_SUBMIT_XCODE_PATH`, `IOS_SUBMIT_MINIMUM_IOS_SDK`, `IOS_SUBMIT_JAVA_HOME`, `IOS_SUBMIT_ANDROID_SDK`, `IOS_SUBMIT_BUILD_DIRECTORY`, `IOS_SUBMIT_ANDROID_SDK_LICENSE_ACCEPTED=true`, and `IOS_SUBMIT_PLAY_AUTO_ROLLOUT=false`. Common fields also have dedicated flags (`--xcode`, `--ios-sdk`, `--minimum-ios-sdk`, `--java-home`, `--android-sdk`, `--track`, `--play-auto-rollout`, `--asc-app-id`). `IOS_SUBMIT_SOURCE`, `IOS_SUBMIT_SETTINGS_FROM`, and `IOS_SUBMIT_CONFIG` select the invocation. CLI options never alter the global Xcode selection.
+Settings precedence is **flags > environment > configuration > stored template**. Use `--config FILE` (default `SOURCE/local-build-desk.json`) with `{ "settings": { ... } }`. Every `ProjectSettings` field supports `--set name=value` and `LOCAL_BUILD_DESK_UPPER_SNAKE_CASE`, for example `LOCAL_BUILD_DESK_XCODE_PATH`, `LOCAL_BUILD_DESK_MINIMUM_IOS_SDK`, `LOCAL_BUILD_DESK_JAVA_HOME`, `LOCAL_BUILD_DESK_ANDROID_SDK`, `LOCAL_BUILD_DESK_BUILD_DIRECTORY`, `LOCAL_BUILD_DESK_ANDROID_SDK_LICENSE_ACCEPTED=true`, and `LOCAL_BUILD_DESK_PLAY_AUTO_ROLLOUT=false`. Common fields also have dedicated flags (`--xcode`, `--ios-sdk`, `--minimum-ios-sdk`, `--java-home`, `--android-sdk`, `--track`, `--play-auto-rollout`, `--asc-app-id`). `LOCAL_BUILD_DESK_SOURCE`, `LOCAL_BUILD_DESK_SETTINGS_FROM`, and `LOCAL_BUILD_DESK_CONFIG` select the invocation. CLI options never alter the global Xcode selection.
 
 ### Credentials without the app vault
 
-Supply a `credentials` object in the config, `--credential-config FILE`, or `IOS_SUBMIT_CREDENTIALS_JSON`. Refer to secrets by environment variable or temporary path; keep only references in committed files:
+Supply a `credentials` object in the config, `--credential-config FILE`, or `LOCAL_BUILD_DESK_CREDENTIALS_JSON`. Refer to secrets by environment variable or temporary path; keep only references in committed files:
 
 ```json
 {
@@ -357,22 +361,22 @@ Supply a `credentials` object in the config, `--credential-config FILE`, or `IOS
 }
 ```
 
-Include only the credential kinds required by that platform. An Apple API key plus an existing P12 can fetch/create matching profiles when `profiles` is empty. CI requires the existing certificate/private key; it never silently replaces signing identities. Offline builds can provide P12+profiles without an API key. References accept `{ "env": "NAME" }`, `{ "base64Env": "NAME" }`, `{ "file": "relative-or-absolute-path" }`, and `{ "fileEnv": "PATH_VARIABLE" }`. Binary values become base64 in memory; files referenced from configs resolve relative to the config file. `environment` values also accept references; `IOS_SUBMIT_ENVIRONMENT_JSON` overrides them.
+Include only the credential kinds required by that platform. An Apple API key plus an existing P12 can fetch/create matching profiles when `profiles` is empty. CI requires the existing certificate/private key; it never silently replaces signing identities. Offline builds can provide P12+profiles without an API key. References accept `{ "env": "NAME" }`, `{ "base64Env": "NAME" }`, `{ "file": "relative-or-absolute-path" }`, and `{ "fileEnv": "PATH_VARIABLE" }`. Binary values become base64 in memory; files referenced from configs resolve relative to the config file. `environment` values also accept references; `LOCAL_BUILD_DESK_ENVIRONMENT_JSON` overrides them.
 
 Convenience environment variables avoid writing a config for credentials:
 
-| Kind        | Variables (prefix each with `IOS_SUBMIT_`)                                                                                  |
+| Kind        | Variables (prefix each with `LOCAL_BUILD_DESK_`)                                                                            |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Apple       | `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_TEAM_ID`, `ASC_KEY_P8`                                                                  |
 | iOS signing | `IOS_P12_BASE64` or `IOS_P12_PATH`, `IOS_P12_PASSWORD`, optional `IOS_PROFILES_BASE64` / `IOS_PROFILES_PATHS` (JSON arrays) |
 | Google      | `GOOGLE_JSON`, `GOOGLE_JSON_BASE64`, or `GOOGLE_JSON_PATH`                                                                  |
 | Android     | `ANDROID_KEYSTORE_BASE64` or `ANDROID_KEYSTORE_PATH`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS` |
 
-The Apple P8 also accepts `_BASE64` / `_PATH` suffixes. Explicit credentials disable the app’s vault by default (`--no-keychain` or `IOS_SUBMIT_NO_KEYCHAIN=true` makes this explicit). `--use-keychain` permits mixing invocation and stored credentials. This concerns Local Build Desk’s encrypted vault: iOS signing still uses a temporary macOS signing keychain. Invocation secrets, including Apple key IDs, are redacted from output and are never written into the project/job records or encrypted vault. Only `IOS_SUBMIT_*` and explicitly referenced variables cross the owner-only CLI socket; unrelated client environment values are excluded. Temporary signing files are deleted after use. Reprovide credentials to `submit`, `status --job`, or `reconcile --job` after an app restart; the app fails clearly instead of attempting Keychain access for a previous ephemeral job.
+The Apple P8 also accepts `_BASE64` / `_PATH` suffixes. Explicit credentials disable the app’s vault by default (`--no-keychain` or `LOCAL_BUILD_DESK_NO_KEYCHAIN=true` makes this explicit). `--use-keychain` permits mixing invocation and stored credentials. This concerns Local Build Desk’s encrypted vault: iOS signing still uses a temporary macOS signing keychain. Invocation secrets, including Apple key IDs, are redacted from output and are never written into the project/job records or encrypted vault. Only `LOCAL_BUILD_DESK_*` and explicitly referenced variables cross the owner-only CLI socket; unrelated client environment values are excluded. Temporary signing files are deleted after use. Reprovide credentials to `submit`, `status --job`, or `reconcile --job` after an app restart; the app fails clearly instead of attempting Keychain access for a previous ephemeral job.
 
 ### Counters and inspection
 
-The database remains authoritative across desktop and CI checkouts. Number leases are reserved in an atomic SQLite transaction. Failed/cancelled/interrupted native builds release uncommitted leases. A successful build-only artifact keeps its lease; reaching upload commits the number permanently, including uncertain upload outcomes. Released gaps above the committed/store floor can be reused; higher uploads can make older unuploaded artifacts stale. `--build-number N` (or `IOS_SUBMIT_BUILD_NUMBER`) explicitly reserves N, rejects collisions/stale numbers, and can initialize a new identity. Legacy counters are never lowered. `versions` reports both the committed floor and highest outstanding reservation.
+The database remains authoritative across desktop and CI checkouts. Number leases are reserved in an atomic SQLite transaction. Failed/cancelled/interrupted native builds release uncommitted leases. A successful build-only artifact keeps its lease; reaching upload commits the number permanently, including uncertain upload outcomes. Released gaps above the committed/store floor can be reused; higher uploads can make older unuploaded artifacts stale. `--build-number N` (or `LOCAL_BUILD_DESK_BUILD_NUMBER`) explicitly reserves N, rejects collisions/stale numbers, and can initialize a new identity. Legacy counters are never lowered. `versions` reports both the committed floor and highest outstanding reservation.
 
 Use `status`, `status --job ID`, `logs --job ID`, `inspect`, and `versions` for supported inspection; direct SQL/schema edits are unnecessary. The store checkpoints its WAL on clean shutdown so a read-only SQLite connection can open the self-contained database afterward. While the app is running, read the live WAL with a normal read-only SQLite connection or use the CLI socket; do not copy only `desk.sqlite` for backups while writes are active.
 
@@ -422,7 +426,7 @@ Credentials, provider sessions, local databases, acceptance evidence, native art
 
 Toolchain paths come from project settings, environment variables, standard macOS locations, and discovery. Existing Xcode installations use their installed device SDK unless you configure a minimum or exact SDK. Automatic Xcode download requires an explicit target SDK; no particular SDK release is imposed on new projects. Android SDK/NDK packages are inferred from the imported project's React Native/Gradle configuration.
 
-Do not commit `ios-submit.json` if it contains local paths or credential material. CI configuration should use environment references as shown above. Publishing and notarizing distributable desktop binaries use the separate signed-release setup below; local packaging stays credential-free.
+Do not commit `local-build-desk.json` if it contains local paths or credential material. CI configuration should use environment references as shown above. Publishing and notarizing distributable desktop binaries use the separate signed-release setup below; local packaging stays credential-free.
 
 ## Signed GitHub releases
 
@@ -486,11 +490,11 @@ Closing the desktop window leaves the owner in the menu bar while monitoring is 
 CLI equivalents:
 
 ```sh
-ios-submit monitor --start --listen 192.168.1.20 --port 43178 --pair
-ios-submit monitor                          # status, certificate and devices
-ios-submit monitor --pair                   # new one-time pairing code/QR data
-ios-submit monitor --ssl custom --cert /secure/server.crt --key /secure/server.key
-ios-submit monitor --stop
+local-build-desk monitor --start --listen 192.168.1.20 --port 43178 --pair
+local-build-desk monitor                          # status, certificate and devices
+local-build-desk monitor --pair                   # new one-time pairing code/QR data
+local-build-desk monitor --ssl custom --cert /secure/server.crt --key /secure/server.key
+local-build-desk monitor --stop
 ```
 
 Use your Mac's actual private address. The dashboard rejects public listen addresses and unexpected Host/Origin headers. It is intended for a private network or VPN, not direct Internet exposure. For a local HTTPS reverse proxy (for example Tailscale Serve), bind to `127.0.0.1`, select HTTP for the proxy's upstream, and set **HTTPS reverse-proxy origin** to its exact HTTPS origin. In the CLI, use `--listen 127.0.0.1 --ssl off --origin https://your-mac.your-tailnet.ts.net`. Configure the proxy separately to preserve that Host and restrict access to your private network. Plain HTTP on a LAN sends monitoring data and session cookies without transport encryption; use it only when that is acceptable or TLS terminates at your private proxy.

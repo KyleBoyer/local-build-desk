@@ -8,6 +8,7 @@ import {
   realpath,
 } from "node:fs/promises";
 import { join, resolve, relative, dirname } from "node:path";
+import { configFileIn } from "./naming";
 import { tmpdir } from "node:os";
 import { hasFile, readJSON, toolEnvironment, inheritedProfile } from "./config";
 import { snapshot } from "./snapshot";
@@ -280,7 +281,7 @@ export async function inspectOtherProject(
 ): Promise<Inspection> {
   settings = await projectSettings(root, settings);
   const type = await detectProjectType(root, settings);
-  const local = await readJSON(join(root, "ios-submit.json"), {});
+  const local = await readJSON(configFileIn(root), {});
   const effective = { ...local.settings, ...settings };
   const profiles = effective.localProfiles ?? defaultLocalProfiles;
   const specs = await xcodegenSpecs(appRoot(root, effective));

@@ -28,9 +28,11 @@ import { Vault, cleanupStaleSecrets } from "../core/vault";
 import { AccountSetupManager } from "./account-setup";
 import { Updater } from "./updater";
 import { JobNotifications } from "./notifications";
+import { CLICommand, installable, loginShellPath } from "./cli-command";
 import { BuildTray } from "./build-tray";
 import { methods, type Method } from "./validation";
 import { captureInvocationEnvironment } from "../cli/invocation";
+import { CONFIG_FILE, LEGACY_ENV_PREFIX } from "../core/naming";
 import { runCLI } from "../cli/commands";
 import { appleWebSession } from "./apple-web";
 import { ACCOUNT_PARTITIONS, keepSessions } from "./session-keeper";
@@ -46,7 +48,7 @@ const cliIndex = process.argv.indexOf("--desk-cli");
 const cliArgs = cliIndex >= 0 ? process.argv.slice(cliIndex + 1) : undefined;
 const monitorDaemon = process.argv.includes("--desk-monitor-daemon");
 let desktopRequested = false;
-// A reader that exits early (`ios-submit status | true`) closes the pipe. An
+// A reader that exits early (`local-build-desk status | true`) closes the pipe. An
 // unhandled EPIPE would stall Electron's main process; drop the output instead
 // and still exit with the command's own code.
 if (cliArgs)
@@ -84,8 +86,12 @@ if (cliArgs) {
     "ANDROID_SDK_ROOT",
     "DEVELOPER_DIR",
   ]);
-  for (const name of Object.keys(forwardedEnvironment))
-    if (!system.has(name)) delete process.env[name];
+  for (const name of Object.keys(process.env))
+    if (
+      (name in forwardedEnvironment || name.startsWith(LEGACY_ENV_PREFIX)) &&
+      !system.has(name)
+    )
+      delete process.env[name];
 }
 const hideTestUI =
   !!process.env.LOCAL_BUILD_DESK_DATA_DIR &&
@@ -97,6 +103,7 @@ let mobile: MobileMonitor;
 let accountSetup: AccountSetupManager;
 let updater: Updater;
 let notifications: JobNotifications;
+let cliCommand: CLICommand;
 let buildTray: BuildTray | undefined;
 let window: BrowserWindow | undefined;
 /** App Store Connect's web API for App Privacy, in the desk's Apple sign-in. */
@@ -318,6 +325,22 @@ function startOwner() {
       );
       app.once("will-quit", () => buildTray?.dispose());
       if (!cliArgs) {
+        cliCommand = new CLICommand(
+          store,
+          async () => {
+            const shell = process.env.SHELL || "/bin/zsh";
+            return {
+              home: homedir(),
+              executable: process.execPath,
+              loginPath: await loginShellPath(shell),
+              shell,
+            };
+          },
+          app.isPackaged &&
+            !hideTestUI &&
+            installable(process.execPath, homedir()),
+        );
+        void cliCommand.sync();
         notifications = new JobNotifications(
           store,
           (jobId) => void openBuild(jobId),
@@ -775,10 +798,18 @@ function registerIPC() {
           return { ok: true, value: updater.status() };
         if (method === "notificationSettings")
           return { ok: true, value: notifications.settings(values[0]) };
+        if (method === "cliCommand")
+          return {
+            ok: true,
+            value:
+              values[0] === undefined && cliCommand.status().state !== "pending"
+                ? cliCommand.status()
+                : await cliCommand.sync(values[0]),
+          };
         if (method === "exportBuildSettings") {
           const selected = await dialog.showSaveDialog(window!, {
             title: "Export portable build settings",
-            defaultPath: "ios-submit.json",
+            defaultPath: CONFIG_FILE,
             filters: [{ name: "Build settings", extensions: ["json"] }],
           });
           if (selected.canceled || !selected.filePath)

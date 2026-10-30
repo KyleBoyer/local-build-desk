@@ -150,7 +150,12 @@ it.each([
   ["--set", { set: ["playAutoRollout=false"] }, {}],
   ["--play-auto-rollout", { "play-auto-rollout": "false" }, {}],
   [
-    "IOS_SUBMIT_PLAY_AUTO_ROLLOUT",
+    "LOCAL_BUILD_DESK_PLAY_AUTO_ROLLOUT",
+    {},
+    { LOCAL_BUILD_DESK_PLAY_AUTO_ROLLOUT: "false" },
+  ],
+  [
+    "the legacy IOS_SUBMIT_PLAY_AUTO_ROLLOUT",
     {},
     { IOS_SUBMIT_PLAY_AUTO_ROLLOUT: "false" },
   ],
@@ -186,7 +191,7 @@ it("never rolls out non-internal tracks", async () => {
   });
   expect(options.rollout).toBe(false);
 });
-it("identifies drafts ios-submit uploaded by bundle ID and version code", async () => {
+it("identifies drafts Local Build Desk uploaded by bundle ID and version code", async () => {
   builtArtifact("44", true);
   builtArtifact("43", false);
   const { options } = await submitWith();
@@ -232,9 +237,9 @@ it("reconciles a staged upload in its persisted rollout mode", async () => {
 it.each([
   ["--release-notes", { "release-notes": " Bug fixes " }, {}],
   [
-    "IOS_SUBMIT_PLAY_RELEASE_NOTES",
+    "LOCAL_BUILD_DESK_PLAY_RELEASE_NOTES",
     {},
-    { IOS_SUBMIT_PLAY_RELEASE_NOTES: "Bug fixes" },
+    { LOCAL_BUILD_DESK_PLAY_RELEASE_NOTES: "Bug fixes" },
   ],
 ])("passes release notes from %s to the upload", async (_name, flags, env) => {
   const { options } = await submitWith(flags, env);

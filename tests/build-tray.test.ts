@@ -189,7 +189,9 @@ it("offers CLI commands without opening a GUI and never copies errors or raw too
       ),
     ).toBe(false);
     details.find((item: any) => item.label === "Copy status command").click();
-    expect(native.copied).toHaveBeenCalledWith("ios-submit status --job one");
+    expect(native.copied).toHaveBeenCalledWith(
+      "local-build-desk status --job one",
+    );
   } finally {
     monitor.dispose();
   }

@@ -148,7 +148,7 @@ it("replaces existing internal releases with the new completed release", async (
   ]);
 });
 
-it("supersedes a stale ios-submit draft with a lower version code", async () => {
+it("supersedes a stale Local Build Desk draft with a lower version code", async () => {
   const baseline = [
     { status: "completed", versionCodes: ["40"] },
     { status: "draft", versionCodes: ["44"] },
@@ -170,7 +170,9 @@ it("supersedes a stale ios-submit draft with a lower version code", async () => 
   );
   expect(result.state).toBe("accepted");
   expect(edits.at(-1)).toEqual(["edit1", baseline, ["44"]]);
-  expect(logs.join("\n")).toMatch(/Superseding earlier ios-submit draft 44/);
+  expect(logs.join("\n")).toMatch(
+    /Superseding earlier Local Build Desk draft 44/,
+  );
   expect(calls.find((call) => call.method === "PUT")!.body.releases).toEqual([
     { name: "1.1.0 (46)", versionCodes: ["46"], status: "completed" },
   ]);

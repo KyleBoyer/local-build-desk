@@ -1,5 +1,6 @@
 import type { MobileMonitor } from "../mobile/server";
 import type { Updater } from "../main/updater";
+import { isInvocationVariable, withCurrentNames } from "../core/naming";
 import { detectProjectType, appRoot } from "../core/project-adapters";
 import { xcodeContainers, xcodegenSpecs } from "../core/xcode-project";
 import { hasFile } from "../core/config";
@@ -121,51 +122,52 @@ async function refreshProcessing(
 }
 export const help = `Local Build Desk — compile and upload from this Mac
 
-  ios-submit monitor [--start] [--listen PRIVATE_IP] [--port 43178] [--ssl self-signed|custom|off] [--cert PEM --key PEM] [--origin HTTPS_URL] [--pair] [--stop]
-  ios-submit doctor [--project PATH] [--platform ios|android|all]
-  ios-submit inspect --project PATH [--profile production] [--platform ios] [--store]
-  ios-submit signing-info --project PATH
-  ios-submit toolchain --project PATH [--minimum-ios-sdk 27.2] [--xcode PATH] [--ios-sdk VERSION]
+  local-build-desk monitor [--start] [--listen PRIVATE_IP] [--port 43178] [--ssl self-signed|custom|off] [--cert PEM --key PEM] [--origin HTTPS_URL] [--pair] [--stop]
+  local-build-desk doctor [--project PATH] [--platform ios|android|all]
+  local-build-desk inspect --project PATH [--profile production] [--platform ios] [--store]
+  local-build-desk signing-info --project PATH
+  local-build-desk toolchain --project PATH [--minimum-ios-sdk 27.2] [--xcode PATH] [--ios-sdk VERSION]
     [--xcode-archive PATH] [--accept-xcode-license]
-  ios-submit versions --project PATH [--platform ios|android|all] [--handoff-eas | --resume-local]
-  ios-submit connect-google --project PATH --key SERVICE_ACCOUNT_JSON
-  ios-submit install-tool --project PATH --tool android|ios-platform|node|cocoapods|xcodegen|gcloud [--accept-android-license]
-  ios-submit build --project PATH --platform ios|android|all --profile production [--auto-submit] [--clean]
+  local-build-desk versions --project PATH [--platform ios|android|all] [--handoff-eas | --resume-local]
+  local-build-desk connect-google --project PATH --key SERVICE_ACCOUNT_JSON
+  local-build-desk install-tool --project PATH --tool android|ios-platform|node|cocoapods|xcodegen|gcloud [--accept-android-license]
+  local-build-desk build --project PATH --platform ios|android|all --profile production [--auto-submit] [--clean]
     [--build-directory PATH] stores snapshots and native caches on another disk
-  ios-submit test --project PATH [--profile production] [--platform ios|android]
-  ios-submit screenshots --project PATH [--profile production]
-  ios-submit test-targets --project PATH
-  ios-submit readiness --project PATH [--destination testflight|appstore]
-  ios-submit resume --job JOB_ID
-  ios-submit store-status --project PATH
-  ios-submit store-releases --project PATH [--refresh]
-  ios-submit store-release --project PATH --release-id ID [--locale en-US] [--refresh]
-  ios-submit use-screenshots --job JOB_ID
-  ios-submit submit --artifact ARTIFACT_ID [--wait] [--timeout 1800]
-  ios-submit status [--job JOB_ID] [--wait] [--timeout 1800]
-  ios-submit logs --job JOB_ID
-  ios-submit cancel --job JOB_ID
-  ios-submit reconcile --job JOB_ID
-  ios-submit listing --project PATH [--listing FILE] [--version X.Y] [--build-number N] [--attest NAME] [--apply] [--submit-for-review]
+  local-build-desk test --project PATH [--profile production] [--platform ios|android]
+  local-build-desk screenshots --project PATH [--profile production]
+  local-build-desk test-targets --project PATH
+  local-build-desk readiness --project PATH [--destination testflight|appstore]
+  local-build-desk resume --job JOB_ID
+  local-build-desk store-status --project PATH
+  local-build-desk store-releases --project PATH [--refresh]
+  local-build-desk store-release --project PATH --release-id ID [--locale en-US] [--refresh]
+  local-build-desk use-screenshots --job JOB_ID
+  local-build-desk submit --artifact ARTIFACT_ID [--wait] [--timeout 1800]
+  local-build-desk status [--job JOB_ID] [--wait] [--timeout 1800]
+  local-build-desk logs --job JOB_ID
+  local-build-desk cancel --job JOB_ID
+  local-build-desk reconcile --job JOB_ID
+  local-build-desk listing --project PATH [--listing FILE] [--version X.Y] [--build-number N] [--attest NAME] [--apply] [--submit-for-review]
     shows what the App Store listing would change; --apply writes text, screenshots and the build;
     --submit-for-review also sends the version (and its in-app purchases) to App Review;
     --attest NAME confirms the listing's age rating, App Privacy and pricing answers so they can be applied
-  ios-submit migrate --project PATH [--credentials FILE] [--env FILE] [--ios-last-used N] [--android-last-used N]
-  ios-submit update [--check] [--timeout 1800]
+  local-build-desk migrate --project PATH [--credentials FILE] [--env FILE] [--ios-last-used N] [--android-last-used N]
+  local-build-desk update [--check] [--timeout 1800]
     installs the latest signed release of the app and CLI; --check only reports it
 
 Project selection: --project-type expo|capacitor|native-ios (omit for auto-detection), --app-directory PATH,
 --ios-target PATH --scheme NAME --configuration NAME, --web-build-script SCRIPT.
 
 CI: --settings-from PROJECT_ID --source CHECKOUT uses a saved settings template without importing the checkout.
---config FILE (default SOURCE/ios-submit.json), --set field=value, and IOS_SUBMIT_* env override stored settings.
---credential-config FILE or IOS_SUBMIT_CREDENTIALS_JSON supplies ephemeral credentials; Keychain is disabled by default.
+--config FILE (default SOURCE/local-build-desk.json), --set field=value, and LOCAL_BUILD_DESK_* env override stored settings.
+The former ios-submit names (ios-submit command, ios-submit.json, IOS_SUBMIT_*) are still accepted.
+--credential-config FILE or LOCAL_BUILD_DESK_CREDENTIALS_JSON supplies ephemeral credentials; Keychain is disabled by default.
 --build-number N overrides the next local number. --ios-concurrency N / --android-concurrency N configure 1–8 slots each.
 
 Use the desktop Signing and Connections screens to import credentials and assign them to a project.
 Build & Upload sends to App Store Connect, or rolls Google Play internal-track uploads out to internal testers
-(--play-auto-rollout=false or IOS_SUBMIT_PLAY_AUTO_ROLLOUT=false keeps drafts). Other tracks get drafts; it does not release to production.
---release-notes TEXT (or IOS_SUBMIT_PLAY_RELEASE_NOTES) sets Google Play "What's new" text, up to 500 characters.
+(--play-auto-rollout=false or LOCAL_BUILD_DESK_PLAY_AUTO_ROLLOUT=false keeps drafts). Other tracks get drafts; it does not release to production.
+--release-notes TEXT (or LOCAL_BUILD_DESK_PLAY_RELEASE_NOTES) sets Google Play "What's new" text, up to 500 characters.
 Build, submit, and status exit 2 while Apple processing is pending, 1 on failure, and 0 on success. Add --wait to build/submit/status to wait for Apple; --timeout is in seconds.
 `;
 export async function runCLI(
@@ -329,9 +331,9 @@ export async function runCLI(
             status.state === "current"
               ? `Local Build Desk ${status.currentVersion} is up to date.`
               : status.state === "available"
-                ? `Local Build Desk ${status.version} is available. Run ios-submit update to install it.`
+                ? `Local Build Desk ${status.version} is available. Run local-build-desk update to install it.`
                 : status.state === "downloading" || status.state === "ready"
-                  ? `Local Build Desk is downloading ${status.version}. Run ios-submit update to install it.`
+                  ? `Local Build Desk is downloading ${status.version}. Run local-build-desk update to install it.`
                   : `Could not update: ${status.error ?? status.state}`,
         });
         return status.state === "error" ? CLI_EXIT.failure : CLI_EXIT.success;
@@ -407,7 +409,7 @@ export async function runCLI(
       v.config ||
       v["credential-config"] ||
       v["no-keychain"] ||
-      Object.keys(env).some((key) => key.startsWith("IOS_SUBMIT_"));
+      Object.keys(withCurrentNames(env)).some(isInvocationVariable);
     if (
       invocationCommand &&
       (hasInvocation || command === "build" || command === "doctor")

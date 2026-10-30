@@ -1,7 +1,7 @@
 import { MobilePreferences } from "./MobilePreferences";
 import { SubmittedReleases } from "./SubmittedReleases";
 import { useEffect, useState } from "react";
-import type { BuildComparison, Job } from "../../core/types";
+import type { BuildComparison, CLICommandStatus, Job } from "../../core/types";
 const api = window.desk;
 export function BuildChanges({ job }: { job: Job }) {
   const [comparison, setComparison] = useState<BuildComparison>();
@@ -149,10 +149,69 @@ export function DeskPreferences() {
         {result && <p role="status">{result}</p>}
         {error && <p role="alert">{error}</p>}
       </section>
+      <CommandLinePreferences />
       <MobilePreferences />
       <SavedSignIns />
       <BackupTools />
     </>
+  );
+}
+
+/** The `local-build-desk` command that the installed app keeps on PATH. */
+function CommandLinePreferences() {
+  const [status, setStatus] = useState<CLICommandStatus>();
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api
+      .cliCommand()
+      .then(setStatus)
+      .catch((e) => setError(e.message));
+  }, []);
+  const unsupported = status?.state === "unsupported";
+  return (
+    <section className="section-card" aria-labelledby="cli-command-heading">
+      <div className="section-heading">
+        <h2 id="cli-command-heading">Command line</h2>
+        <span className="mono subtle">local-build-desk</span>
+      </div>
+      <p className="muted">
+        Run builds, uploads, and status checks from Terminal with the same queue
+        and credentials as this app.
+      </p>
+      <label className="check-label">
+        <input
+          type="checkbox"
+          checked={status?.enabled ?? false}
+          disabled={!status || unsupported || status.state === "pending"}
+          onChange={(e) => {
+            setError("");
+            setStatus(
+              status && {
+                ...status,
+                enabled: e.target.checked,
+                state: "pending",
+              },
+            );
+            void api
+              .cliCommand(e.target.checked)
+              .then(setStatus)
+              .catch((e) => setError(e.message));
+          }}
+        />
+        Install the <code>local-build-desk</code> command in my PATH
+      </label>
+      {status && (
+        <p
+          className="muted"
+          role={
+            ["blocked", "error"].includes(status.state) ? "alert" : undefined
+          }
+        >
+          {status.message}
+        </p>
+      )}
+      {error && <p role="alert">{error}</p>}
+    </section>
   );
 }
 

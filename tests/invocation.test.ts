@@ -83,7 +83,7 @@ it("keeps binary, password, key ID, and environment credentials in memory with n
   const source = join(root, "checkout");
   await mkdir(source);
   await writeFile(
-    join(source, "ios-submit.json"),
+    join(source, "local-build-desk.json"),
     JSON.stringify({
       credentials: {
         apple: {
@@ -156,15 +156,15 @@ it("supports Google JSON and Android binary temp files, and rejects malformed se
     engine,
     { source: root },
     {
-      IOS_SUBMIT_GOOGLE_JSON: JSON.stringify({
+      LOCAL_BUILD_DESK_GOOGLE_JSON: JSON.stringify({
         type: "service_account",
         client_email: "ci@example.com",
         private_key: "test-private-key",
       }),
-      IOS_SUBMIT_ANDROID_KEYSTORE_PATH: keyFile,
-      IOS_SUBMIT_ANDROID_STORE_PASSWORD: "secret-store",
-      IOS_SUBMIT_ANDROID_KEY_PASSWORD: "secret-key",
-      IOS_SUBMIT_ANDROID_KEY_ALIAS: "upload",
+      LOCAL_BUILD_DESK_ANDROID_KEYSTORE_PATH: keyFile,
+      LOCAL_BUILD_DESK_ANDROID_STORE_PASSWORD: "secret-store",
+      LOCAL_BUILD_DESK_ANDROID_KEY_PASSWORD: "secret-key",
+      LOCAL_BUILD_DESK_ANDROID_KEY_ALIAS: "upload",
     },
   );
   const vault = new RunVault(store, engine.vault, invocation.context);
@@ -180,7 +180,7 @@ it("supports Google JSON and Android binary temp files, and rejects malformed se
     resolveInvocation(
       engine,
       { source: root },
-      { IOS_SUBMIT_GOOGLE_JSON: "SECRET-BROKEN-JSON" },
+      { LOCAL_BUILD_DESK_GOOGLE_JSON: "SECRET-BROKEN-JSON" },
     ),
   ).rejects.toThrow("secret contents are excluded");
   expect(encrypt).not.toHaveBeenCalled();
@@ -240,7 +240,7 @@ it("redacts JSON string values without corrupting boolean fields that match a se
       (text) => (output += text),
       {
         environment: {
-          IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+          LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
             FLAG: "true",
             TOKEN: "private-token",
           }),
@@ -251,4 +251,50 @@ it("redacts JSON string values without corrupting boolean fields that match a se
   const result = JSON.parse(output);
   expect(result.requiresInvocationCredentials).toBe(true);
   expect(result.error).toBe("[REDACTED]");
+});
+it("prefers the current config file and environment names over their ios-submit aliases", async () => {
+  const source = join(root, "checkout");
+  await mkdir(source);
+  await writeFile(
+    join(source, "ios-submit.json"),
+    JSON.stringify({ settings: { track: "alpha", scheme: "Legacy" } }),
+  );
+  const legacyOnly = await resolveInvocation(engine, { source }, {});
+  expect(legacyOnly.project.settings).toMatchObject({
+    track: "alpha",
+    scheme: "Legacy",
+  });
+  await writeFile(
+    join(source, "local-build-desk.json"),
+    JSON.stringify({ settings: { track: "beta" } }),
+  );
+  const invocation = await resolveInvocation(
+    engine,
+    { source },
+    {
+      IOS_SUBMIT_IOS_SDK: "27.0",
+      LOCAL_BUILD_DESK_IOS_SDK: "27.2",
+      IOS_SUBMIT_MINIMUM_IOS_SDK: "26.0",
+    },
+  );
+  expect(invocation.project.settings).toMatchObject({
+    track: "beta",
+    iosSdk: "27.2",
+    minimumIosSdk: "26.0",
+  });
+  expect(invocation.project.settings.scheme).toBeUndefined();
+});
+it("forwards current and legacy invocation variables under current names, never app-internal ones", () => {
+  expect(
+    captureInvocationEnvironment(["build"], {
+      IOS_SUBMIT_TRACK: "beta",
+      LOCAL_BUILD_DESK_IOS_SDK: "27.2",
+      LOCAL_BUILD_DESK_DATA_DIR: "/tmp/desk",
+      LOCAL_BUILD_DESK_TEST_UI: "hidden",
+      UNRELATED: "value",
+    }),
+  ).toEqual({
+    LOCAL_BUILD_DESK_TRACK: "beta",
+    LOCAL_BUILD_DESK_IOS_SDK: "27.2",
+  });
 });

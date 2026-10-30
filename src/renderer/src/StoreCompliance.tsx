@@ -18,7 +18,7 @@ const api = window.desk;
 // Apple's compliance questions for a project's App Store listing: age rating,
 // App Privacy, and price and availability. Answers are saved into the
 // project's listing file; attesting records who confirmed exactly these
-// answers. `ios-submit listing --apply` sends only attested answers to Apple.
+// answers. `local-build-desk listing --apply` sends only attested answers to Apple.
 
 type Level = AgeRating["contests"];
 type PrivacyItem = Extract<AppPrivacy, { collected: true }>["data"][number];
@@ -115,7 +115,7 @@ export function StoreCompliance({ project }: { project: Project }) {
         load(v);
         setMessage(
           attest
-            ? `Attested by ${name.trim()}. ios-submit listing --apply will send these answers to Apple.`
+            ? `Attested by ${name.trim()}. local-build-desk listing --apply will send these answers to Apple.`
             : "Saved. Review the statements below and attest before they can be sent to Apple.",
         );
       })
@@ -183,7 +183,7 @@ export function StoreCompliance({ project }: { project: Project }) {
             </button>
           </div>
           <p className="muted">
-            The same file `ios-submit listing` reads (for example
+            The same file `local-build-desk listing` reads (for example
             assets/store/en-US/apple-listing.json). Other fields in it are kept.
           </p>
         </fieldset>
@@ -463,8 +463,8 @@ export function StoreCompliance({ project }: { project: Project }) {
             </p>
           )}
           <p className="muted">
-            Attesting doesn't contact Apple. `ios-submit listing --apply` sends
-            attested answers; it refuses if they were edited afterwards.
+            Attesting doesn't contact Apple. `local-build-desk listing --apply`
+            sends attested answers; it refuses if they were edited afterwards.
           </p>
         </fieldset>
         {error && (

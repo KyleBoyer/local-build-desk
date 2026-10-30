@@ -281,7 +281,7 @@ export class Store {
       invariant(
         this.authority(identity) === "local",
         "COUNTER_EAS_AUTHORITY",
-        "This app identity's counter is handed to EAS. Run ios-submit versions --project PATH --resume-local after EAS builds finish before building locally again.",
+        "This app identity's counter is handed to EAS. Run local-build-desk versions --project PATH --resume-local after EAS builds finish before building locally again.",
       );
       let last = this.highWater(identity);
       if (last === undefined && initial !== undefined) {

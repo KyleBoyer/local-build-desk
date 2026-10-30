@@ -148,7 +148,7 @@ test("desktop import, profile selection, toolchain, migration, queue, and keyboa
     await page.screenshot({ path: "test-results/desktop-build-error.png" });
     const cli = await promisify(execFile)(
       process.execPath,
-      [resolve("bin/ios-submit.mjs"), "status"],
+      [resolve("bin/local-build-desk.mjs"), "status"],
       { env },
     );
     expect(JSON.parse(cli.stdout).projects[0].name).toBe("Fixture App");
