@@ -37,6 +37,9 @@ async function fixture(root: string) {
   return path;
 }
 test("desktop import, profile selection, toolchain, migration, queue, and keyboard dialog flow", async () => {
+  // This real-toolchain smoke test has independent 30s doctor and 45s native
+  // failure budgets. A cold CI Mac needs room for both plus UI interactions.
+  test.setTimeout(120000);
   const root = await mkdtemp(join(tmpdir(), "desk-ui-test-"));
   const projectPath = await fixture(root);
   const env: NodeJS.ProcessEnv = {

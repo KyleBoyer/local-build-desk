@@ -50,18 +50,21 @@ const active = (j: MonitorJob) =>
   ["running", "queued"].includes(j.status) ||
   j.submission?.state === "processing";
 const failed = (j: MonitorJob) =>
+  (j.status === "needs-attention" && j.submission?.state !== "processing") ||
   ["failed", "interrupted", "cancelled"].includes(j.status) ||
   ["rejected", "uncertain"].includes(j.submission?.state ?? "");
 const label = (j: MonitorJob) =>
   j.submission?.state === "processing"
     ? "Apple processing"
-    : j.submission?.state === "accepted"
-      ? "Store accepted"
-      : j.submission?.state === "draft"
-        ? "Play draft"
-        : j.status === "running"
-          ? human(j.stage)
-          : human(j.status);
+    : j.status === "needs-attention"
+      ? "Needs attention"
+      : j.submission?.state === "accepted"
+        ? "Store accepted"
+        : j.submission?.state === "draft"
+          ? "Play draft"
+          : j.status === "running"
+            ? human(j.stage)
+            : human(j.status);
 const bytes = (value: number) =>
   value >= 1024 ** 3
     ? `${(value / 1024 ** 3).toFixed(2)} GB`
@@ -1477,6 +1480,12 @@ function Releases({
               : "Connect this store in Local Build Desk on the Mac."}
           </p>
         )}
+      {snapshot && (
+        <p className="m-store-note">
+          Store last checked {time(detail?.checkedAt ?? snapshot.checkedAt)}.
+          Refresh to check for changes.
+        </p>
+      )}
       {snapshot && !selected && (
         <button
           className="m-button m-wide"

@@ -197,6 +197,7 @@ export class BuildTray {
             },
             {
               label: "Open Local Build Desk",
+              enabled: !!this.actions.openDesk,
               click: () => this.actions.openDesk?.(),
             },
             {

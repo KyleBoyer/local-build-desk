@@ -311,7 +311,7 @@ function startOwner() {
           showLogs: (jobId) =>
             shell.showItemInFolder(join(dataRoot, "jobs", jobId, "logs.jsonl")),
           monitor: () => mobile.status(),
-          openDesk: () => void showDesktop(),
+          openDesk: cliArgs ? undefined : () => void showDesktop(),
           quit: () => app.quit(),
         },
         hideTestUI || process.platform !== "darwin",

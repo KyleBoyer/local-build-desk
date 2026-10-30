@@ -188,9 +188,33 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
         j = e.store.get("jobs", "job");
       e.store.putJob({
         ...j,
+        status: "needs-attention",
+        submission: {
+          state: "accepted",
+          destination: "TestFlight",
+          message: "Tester distribution needs attention",
+        },
+      });
+      e.emit("event", { type: "state" });
+    });
+    await expect(
+      phone.getByRole("heading", { name: "Needs a look" }),
+    ).toBeVisible();
+    await expect(
+      phone
+        .locator(".m-badge.danger")
+        .filter({ hasText: "Needs attention" })
+        .first(),
+    ).toBeVisible();
+    await app.evaluate(() => {
+      const e = (globalThis as any).__mobileEngine,
+        j = e.store.get("jobs", "job");
+      e.store.putJob({
+        ...j,
         status: "succeeded",
         stage: "complete",
         progress: undefined,
+        submission: undefined,
       });
       e.emit("event", { type: "state" });
     });
