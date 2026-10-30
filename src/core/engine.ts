@@ -991,8 +991,11 @@ export class Engine extends EventEmitter {
         }
       }
       for (const [key, record] of this.storeImages)
-        if (record.expires < Date.now() || record.projectId === projectId)
-          this.storeImages.delete(key);
+        if (record.expires < Date.now()) this.storeImages.delete(key);
+      // Keep handles from concurrent desktop/mobile views valid, with a bound
+      // on transient image metadata retained by the owner process.
+      while (this.storeImages.size > 2800)
+        this.storeImages.delete(this.storeImages.keys().next().value!);
       for (const source of sources.slice(0, 200)) {
         let available = !!source.local;
         if (source.url)

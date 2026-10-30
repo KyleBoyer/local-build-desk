@@ -1,3 +1,4 @@
+import type { MobileMonitor } from "../mobile/server";
 import { detectProjectType, appRoot } from "../core/project-adapters";
 import { xcodeContainers, xcodegenSpecs } from "../core/xcode-project";
 import { hasFile } from "../core/config";
@@ -43,6 +44,7 @@ export interface CLIRuntime {
   pollIntervalMs?: number;
   /** App Store Connect's web API in the desk's signed-in session (desktop owner only). */
   appleWeb?: AppleWebSession;
+  monitor?: MobileMonitor;
 }
 function pendingProcessing(job: Job) {
   return job.submission?.state === "processing";
@@ -112,6 +114,7 @@ async function refreshProcessing(
 }
 export const help = `Local Build Desk — compile and upload from this Mac
 
+  ios-submit monitor [--start] [--listen PRIVATE_IP] [--port 43178] [--ssl self-signed|custom|off] [--cert PEM --key PEM] [--origin HTTPS_URL] [--pair] [--stop]
   ios-submit doctor [--project PATH] [--platform ios|android|all]
   ios-submit inspect --project PATH [--profile production] [--platform ios] [--store]
   ios-submit signing-info --project PATH
@@ -170,6 +173,14 @@ export async function runCLI(
       args: argv,
       allowPositionals: true,
       options: {
+        listen: { type: "string" },
+        port: { type: "string" },
+        ssl: { type: "string" },
+        cert: { type: "string" },
+        origin: { type: "string" },
+        pair: { type: "boolean" },
+        stop: { type: "boolean" },
+        start: { type: "boolean" },
         "release-id": { type: "string" },
         locale: { type: "string" },
         destination: { type: "string" },
@@ -250,6 +261,7 @@ export async function runCLI(
       "key",
       "credentials",
       "listing",
+      "cert",
     ] as const)
       if (v[key]) v[key] = resolve(cwd, v[key]!);
     for (const key of ["project", "settings-from"] as const)
@@ -285,6 +297,44 @@ export async function runCLI(
             : value;
     const output = (value: unknown) =>
       rawWrite(JSON.stringify(redactValue(value), null, 2) + "\n");
+    if (command === "monitor") {
+      invariant(
+        runtime.monitor,
+        "MONITOR_OWNER",
+        "Update Local Build Desk to configure mobile monitoring.",
+      );
+      if (v.stop)
+        output(
+          await runtime.monitor.configure({
+            ...runtime.monitor.status().config,
+            enabled: false,
+          }),
+        );
+      else if (v.start || v.listen || v.port || v.ssl || v.origin || v.cert) {
+        const current = runtime.monitor.status().config;
+        const next = {
+          ...current,
+          enabled: true,
+          host: v.listen ?? current.host,
+          port: v.port === undefined ? current.port : Number(v.port),
+          tls: (v.ssl ?? current.tls) as typeof current.tls,
+          publicOrigin: v.origin ?? current.publicOrigin,
+        };
+        invariant(
+          !!v.cert === !!v.key,
+          "MONITOR_CERT",
+          "Pass --key with the PEM private-key file when importing --cert.",
+        );
+        output(
+          await runtime.monitor.configure(
+            next,
+            v.cert ? { certificatePath: v.cert, keyPath: v.key! } : undefined,
+          ),
+        );
+      } else output(runtime.monitor.status());
+      if (v.pair) output(await runtime.monitor.pairing());
+      return runtime.monitor.status().error ? 1 : 0;
+    }
     let project: Project | undefined;
     let invocation: BuildInvocation | undefined;
     const invocationCommand = [

@@ -458,6 +458,8 @@ it("binds store images and release selection to the imported project's current c
     ).rejects.toThrow(/no longer/);
     const detail = await engine.storeReleaseDetails("project", "appstore:v");
     expect(detail.images[0]?.available).toBe(true);
+    // Another desktop/phone details request must not expire this view.
+    await engine.storeReleaseDetails("project", "appstore:v");
     const fetcher = vi.fn(async () => new Response(png));
     vi.stubGlobal("fetch", fetcher);
     await expect(

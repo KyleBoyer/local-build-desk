@@ -418,3 +418,99 @@ test("a forwarded CLI whose reader has already exited still finishes instead of 
     await h.cleanup();
   }
 });
+
+test("enabling mobile monitoring from the CLI starts one background owner, preserves completed builds, and stops cleanly", async () => {
+  const h = await harness();
+  try {
+    const net = await import("node:net"),
+      s = net.createServer();
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    const port = (s.address() as any).port;
+    await new Promise<void>((r) => s.close(() => r()));
+    const enable = h.launch([
+      "monitor",
+      "--listen",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--ssl",
+      "off",
+    ]);
+    expect(await enable.exit, enable.output()).toBe(0);
+    const ownerPath = join(h.root, "data/owner.lock");
+    let owner = 0;
+    await expect
+      .poll(
+        async () => {
+          try {
+            owner = Number(
+              await (
+                await import("node:fs/promises")
+              ).readFile(ownerPath, "utf8"),
+            );
+            return (await fetch(`http://127.0.0.1:${port}/`)).status;
+          } catch {
+            return 0;
+          }
+        },
+        { timeout: 20000 },
+      )
+      .toBe(200);
+    expect(owner).not.toBe(enable.child.pid);
+    const build = h.launch([
+      "build",
+      "--project",
+      join(h.root, "second"),
+      "--platform",
+      "ios",
+    ]);
+    expect(await build.exit, build.output()).toBe(0);
+    expect(
+      Number(
+        await (await import("node:fs/promises")).readFile(ownerPath, "utf8"),
+      ),
+    ).toBe(owner);
+    const status = h.launch(["status"]);
+    expect(await status.exit, status.output()).toBe(0);
+    expect(status.output()).toContain('"status": "succeeded"');
+    expect((await fetch(`http://127.0.0.1:${port}/`)).status).toBe(200);
+    const pairing = h.launch(["monitor", "--pair"]);
+    expect(await pairing.exit, pairing.output()).toBe(0);
+    const code = pairing.output().match(/"code": "([A-Z0-9-]+)"/)![1];
+    const paired = await fetch(`http://127.0.0.1:${port}/api/pair`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: `http://127.0.0.1:${port}`,
+      },
+      body: JSON.stringify({ code, name: "CLI test phone" }),
+    });
+    expect(paired.status).toBe(200);
+    const stop = h.launch(["monitor", "--stop"]);
+    expect(await stop.exit, stop.output()).toBe(0);
+    await expect
+      .poll(
+        async () => {
+          try {
+            await (await import("node:fs/promises")).stat(ownerPath);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { timeout: 15000 },
+      )
+      .toBe(false);
+    await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+  } finally {
+    try {
+      const pid = Number(
+        await (
+          await import("node:fs/promises")
+        ).readFile(join(h.root, "data/owner.lock"), "utf8"),
+      );
+      if (pid) process.kill(pid, "SIGTERM");
+    } catch {}
+    await h.cleanup();
+  }
+});

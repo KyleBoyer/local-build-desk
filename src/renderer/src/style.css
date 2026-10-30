@@ -3545,3 +3545,20 @@ footer span:first-child {
     flex-wrap: wrap;
   }
 }
+
+.mobile-settings-layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:32px; margin-top:24px; }
+.monitor-desktop-status { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:11px; }
+.monitor-desktop-status.online { color:var(--green); }
+.monitor-pairing-panel { border-left:1px solid var(--line); padding-left:28px; text-align:center; }
+.monitor-url { display:flex; align-items:center; justify-content:center; gap:6px; font-size:11px; overflow-wrap:anywhere; margin-bottom:18px; }
+.monitor-qr { display:block; width:230px; height:230px; margin:0 auto 16px; border-radius:8px; }
+.monitor-pair-code { font:22px var(--mono); color:var(--accent); letter-spacing:2px; }
+.monitor-pairing-panel p { font-size:11px; line-height:1.8; }
+.monitor-qr-empty { min-height:215px; display:flex; align-items:center; justify-content:center; flex-direction:column; color:var(--subtle); }
+.monitor-certificate-files { display:flex; flex-wrap:wrap; gap:10px; }
+.monitor-certificate-files small { flex-basis:100%; line-height:1.7; }
+.monitor-fingerprint { display:block; overflow-wrap:anywhere; color:var(--accent); padding:12px 0; font-size:12px; }
+.monitor-devices-heading { margin:28px 0 10px; }
+.monitor-device-list > div { display:flex; align-items:center; justify-content:space-between; padding:14px 0; border-top:1px solid var(--line); gap:15px; }
+.monitor-device-list span { display:block; margin-top:5px; color:var(--muted); font-size:11px; }
+@media(max-width:1200px){.mobile-settings-layout{grid-template-columns:1fr 280px;gap:22px;}.monitor-pairing-panel{padding-left:20px;}}

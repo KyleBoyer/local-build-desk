@@ -1,3 +1,4 @@
+import { monitorConfigSchema } from "../mobile/config";
 import { z } from "zod";
 const text = z.string().max(4096),
   identifier = z.string().min(1).max(128),
@@ -142,6 +143,14 @@ export const methods = {
     z.enum(["testflight", "appstore"]).optional(),
   ]),
   resume: z.tuple([identifier]),
+  mobileStatus: z.tuple([]),
+  configureMobileMonitor: z.tuple([
+    monitorConfigSchema,
+    z.object({ certificatePath: text, keyPath: text }).strict().optional(),
+  ]),
+  mobilePairing: z.tuple([]),
+  revokeMobileDevice: z.tuple([identifier.optional()]),
+  copyMobileLink: z.tuple([]),
   readStoreStatus: z.tuple([identifier]),
   storeReleases: z.tuple([identifier]),
   storeReleaseDetails: z.tuple([

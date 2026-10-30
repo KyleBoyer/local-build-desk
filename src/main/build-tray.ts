@@ -1,3 +1,4 @@
+import type { MonitorStatus } from "../mobile/types";
 import {
   clipboard,
   Menu,
@@ -82,6 +83,9 @@ export class BuildTray {
     private actions: {
       openBuild?: (jobId: string) => void;
       showLogs: (jobId: string) => void;
+      monitor?: () => MonitorStatus;
+      openDesk?: () => void;
+      quit?: () => void;
     },
     private disabled = process.platform !== "darwin",
   ) {
@@ -91,7 +95,8 @@ export class BuildTray {
   refresh() {
     if (this.disabled || this.disposed) return;
     const jobs = monitoredJobs(this.jobs());
-    if (!jobs.length) {
+    const monitor = this.actions.monitor?.();
+    if (!jobs.length && !monitor?.config.enabled) {
       this.clear();
       return;
     }
@@ -107,13 +112,18 @@ export class BuildTray {
     const running = jobs.filter((job) => job.status === "running").length;
     const queued = jobs.filter((job) => job.status === "queued").length;
     const processing = jobs.length - running - queued;
-    const summary = [
-      running ? `${running} active` : "",
-      queued ? `${queued} queued` : "",
-      processing ? `${processing} processing` : "",
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    const summary =
+      !jobs.length && monitor?.config.enabled
+        ? monitor.running
+          ? `Mobile monitor · ${monitor.clients} connected`
+          : "Mobile monitor needs attention"
+        : [
+            running ? `${running} active` : "",
+            queued ? `${queued} queued` : "",
+            processing ? `${processing} processing` : "",
+          ]
+            .filter(Boolean)
+            .join(" · ");
     const now = Date.now();
     const template: MenuItemConstructorOptions[] = [
       { id: "summary", label: `Local Build Desk · ${summary}`, enabled: false },
@@ -176,6 +186,32 @@ export class BuildTray {
           },
         ],
       })),
+      ...(monitor?.config.enabled
+        ? [
+            ...(jobs.length ? [{ type: "separator" as const }] : []),
+            {
+              label: monitor.running
+                ? `Phone dashboard · ${monitor.clients} connected`
+                : (monitor.error ?? "Mobile monitor unavailable"),
+              enabled: false,
+            },
+            {
+              label: "Open Local Build Desk",
+              click: () => this.actions.openDesk?.(),
+            },
+            {
+              label: "Copy phone dashboard address",
+              enabled: !!monitor.url,
+              click: () => {
+                if (monitor.url) clipboard.writeText(monitor.url);
+              },
+            },
+            {
+              label: "Quit Local Build Desk",
+              click: () => this.actions.quit?.(),
+            },
+          ]
+        : []),
       { type: "separator" },
       {
         label: "Updates every second · percentages appear when available",
@@ -184,7 +220,8 @@ export class BuildTray {
     ];
     // Mutate existing native menu items while it is open. Replacing the whole
     // menu on every progress tick interrupts mouse/keyboard navigation.
-    const structure = jobs.map((job) => job.id).join(",");
+    const structure =
+      jobs.map((job) => job.id).join(",") + ":" + !!monitor?.config.enabled;
     if (this.menu && structure === this.structure)
       this.updateMenu(this.menu, template);
     else {
@@ -192,7 +229,9 @@ export class BuildTray {
       this.menu = Menu.buildFromTemplate(template);
       this.tray.setContextMenu(this.menu);
     }
-    this.tray.setTitle(String(jobs.length), { fontType: "monospacedDigit" });
+    this.tray.setTitle(jobs.length ? String(jobs.length) : "", {
+      fontType: "monospacedDigit",
+    });
     this.tray.setToolTip(
       `Local Build Desk · ${summary}\n${jobs.map((job) => `${short(job.projectName)} · ${jobTrayProgress(job, now)}`).join("\n")}`,
     );

@@ -454,3 +454,27 @@ Installed signed builds update themselves from these releases with `electron-upd
 The publisher creates a draft with all of these files and publishes it only after verifying the checksums. It never overwrites an existing release. If a publication is interrupted and leaves a draft, inspect that draft and its assets before deleting/retrying or bumping the version. Signing/notarization failures remain failed workflow runs; no public release is created.
 
 `npm run package` remains unsigned and credential-free for local development. `npm run release:mac` builds the ARM64 app with the separate strict `electron-builder.release.cjs` configuration and requires the release signing/notarization environment. GitHub release credentials do not contain any imported Expo project's signing keystore or provisioning profiles.
+
+## Monitor from your phone
+
+**Preferences → Mobile monitoring** starts an optional, read-only web dashboard. Choose one of this Mac's Wi-Fi/LAN or private VPN IPv4 addresses and a port, then scan the pairing QR code with your phone. HTTPS with a generated self-signed certificate is the default. Custom PEM certificates/private keys and plain HTTP are also available. Certificate keys are encrypted using the same macOS Keychain-backed vault provider as signing credentials; temporary generation files are removed.
+
+On the first HTTPS visit, your browser will report that the self-signed certificate is untrusted. Check its SHA-256 fingerprint against the certificate details in Preferences before manually trusting it. Browser and Home Screen behavior varies with certificate trust; a certificate already trusted by your phone or an HTTPS reverse proxy gives a smoother first visit. No certificate or trust profile is silently installed. The custom certificate must contain the selected IP address in its subject alternative names. Self-signed certificates cover this Mac's current private addresses, are reused across restarts, and renew when near expiry or the selected address changes.
+
+The dashboard shows active and queued builds, real byte/percentage progress when available, elapsed time, searchable retained logs, full build history, test results/captures, verified artifact metadata/checksums, and current App Store review/TestFlight/Google Play records with screenshot previews. It follows desktop and CLI jobs through the same engine. Store status refreshes when you open/refresh Releases; Apple's processing watcher remains in the owner. Google Play does not expose its review workflow state, so the dashboard identifies track state and current listing assets explicitly. Build, upload, signing and account controls remain in the Mac app.
+
+Pairing codes expire after five minutes and work once. Each paired browser receives an HttpOnly, SameSite cookie for 30 days (Secure with HTTPS); only its hash is saved on the Mac. Forget a device in Preferences to invalidate its session and live connection. The URL contains the one-time code only in its fragment, which the phone removes immediately. Up to 20 devices can be paired. Logs receive additional path/secret redaction and bounded incremental reads; project settings, credential material and source snapshots are excluded from mobile state.
+
+Closing the desktop window leaves the owner in the menu bar while monitoring is enabled. CLI commands exit normally while that owner continues serving the dashboard. Launching the app again opens its desktop window in the existing owner. **Stop monitor** closes the listener; an idle background owner then exits. **Quit Local Build Desk** shuts everything down. The Mac must remain awake and connected; this feature does not install a login item or prevent sleep.
+
+CLI equivalents:
+
+```sh
+ios-submit monitor --start --listen 192.168.1.20 --port 43178 --pair
+ios-submit monitor                          # status, certificate and devices
+ios-submit monitor --pair                   # new one-time pairing code/QR data
+ios-submit monitor --ssl custom --cert /secure/server.crt --key /secure/server.key
+ios-submit monitor --stop
+```
+
+Use your Mac's actual private address. The dashboard rejects public listen addresses and unexpected Host/Origin headers. It is intended for a private network or VPN, not direct Internet exposure. For a local HTTPS reverse proxy (for example Tailscale Serve), bind to `127.0.0.1`, select HTTP for the proxy's upstream, and set **HTTPS reverse-proxy origin** to its exact HTTPS origin. In the CLI, use `--listen 127.0.0.1 --ssl off --origin https://your-mac.your-tailnet.ts.net`. Configure the proxy separately to preserve that Host and restrict access to your private network. Plain HTTP on a LAN sends monitoring data and session cookies without transport encryption; use it only when that is acceptable or TLS terminates at your private proxy.

@@ -1,4 +1,10 @@
 import type {
+  MonitorConfig,
+  MonitorStatus,
+  MonitorPairing,
+} from "../mobile/types";
+import type { CertificateFiles } from "../mobile/tls";
+import type {
   StoreReleaseSnapshot,
   StoreReleaseDetail,
 } from "./store-release-types";
@@ -411,7 +417,8 @@ export interface UpdateStatus {
   error?: string;
 }
 export interface DeskEvent {
-  type: "state" | "log" | "update" | "focus-job" | "operation-progress";
+  type:
+    "state" | "log" | "update" | "focus-job" | "operation-progress" | "monitor";
   operationId?: string;
   progress?: WorkProgress;
   jobId?: string;
@@ -419,6 +426,14 @@ export interface DeskEvent {
   update?: UpdateStatus;
 }
 export interface DesktopAPI {
+  mobileStatus(): Promise<MonitorStatus>;
+  configureMobileMonitor(
+    config: MonitorConfig,
+    files?: CertificateFiles,
+  ): Promise<MonitorStatus>;
+  mobilePairing(): Promise<MonitorPairing>;
+  revokeMobileDevice(id?: string): Promise<MonitorStatus>;
+  copyMobileLink(): Promise<void>;
   storeReleases(projectId: string): Promise<StoreReleaseSnapshot>;
   storeReleaseDetails(
     projectId: string,

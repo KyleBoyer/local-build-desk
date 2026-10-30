@@ -1,3 +1,4 @@
+import { MobilePreferences } from "./MobilePreferences";
 import { SubmittedReleases } from "./SubmittedReleases";
 import { useEffect, useState } from "react";
 import type { BuildComparison, Job } from "../../core/types";
@@ -148,6 +149,7 @@ export function DeskPreferences() {
         {result && <p role="status">{result}</p>}
         {error && <p role="alert">{error}</p>}
       </section>
+      <MobilePreferences />
       <SavedSignIns />
       <BackupTools />
     </>

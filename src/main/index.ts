@@ -1,3 +1,6 @@
+import { MobileMonitor } from "../mobile/server";
+import { readMonitorConfig } from "../mobile/config";
+import { spawn } from "node:child_process";
 import { installQuitController } from "./quit-controller";
 import type { Job } from "../core/types";
 import {
@@ -7,6 +10,7 @@ import {
   ipcMain,
   safeStorage,
   shell,
+  clipboard,
 } from "electron";
 import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -40,6 +44,8 @@ const socketPath = join(dataRoot, "desk.sock");
 const ownerLockPath = join(dataRoot, "owner.lock");
 const cliIndex = process.argv.indexOf("--desk-cli");
 const cliArgs = cliIndex >= 0 ? process.argv.slice(cliIndex + 1) : undefined;
+const monitorDaemon = process.argv.includes("--desk-monitor-daemon");
+let desktopRequested = false;
 // A reader that exits early (`ios-submit status | true`) closes the pipe. An
 // unhandled EPIPE would stall Electron's main process; drop the output instead
 // and still exit with the command's own code.
@@ -84,9 +90,10 @@ if (cliArgs) {
 const hideTestUI =
   !!process.env.LOCAL_BUILD_DESK_DATA_DIR &&
   process.env.LOCAL_BUILD_DESK_TEST_UI === "hidden";
-if ((cliArgs || hideTestUI) && process.platform === "darwin")
+if ((cliArgs || monitorDaemon || hideTestUI) && process.platform === "darwin")
   app.setActivationPolicy("accessory");
 let engine: Engine;
+let mobile: MobileMonitor;
 let accountSetup: AccountSetupManager;
 let updater: Updater;
 let notifications: JobNotifications;
@@ -141,7 +148,35 @@ function processAlive(pid: number) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
-if (acquireOwnerLock()) {
+function spawnMonitorOwner() {
+  const args = app.isPackaged
+    ? ["--desk-monitor-daemon"]
+    : [process.argv[1], "--desk-monitor-daemon"];
+  const child = spawn(process.execPath, args, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, LOCAL_BUILD_DESK_DATA_DIR: dataRoot },
+  });
+  child.on("error", () => {});
+  child.unref();
+}
+function ownerExists() {
+  try {
+    const pid = Number(readFileSync(ownerLockPath, "utf8"));
+    return !!pid && processAlive(pid);
+  } catch {
+    return false;
+  }
+}
+// Pairing codes belong to the persistent owner. Start it even for the first
+// `monitor --start --pair`, before producing a code, so CLI exit cannot
+// invalidate the code by handing over to a different process.
+const useMonitorOwner =
+  !!cliArgs &&
+  (readMonitorConfig(dataRoot).enabled || cliArgs[0] === "monitor");
+const daemonDeadline = Date.now() + 10000;
+if (useMonitorOwner && !ownerExists()) spawnMonitorOwner();
+if (!useMonitorOwner && acquireOwnerLock()) {
   // Lets a second desktop launch focus this window.
   if (!cliArgs) app.requestSingleInstanceLock();
   startOwner();
@@ -152,7 +187,9 @@ if (acquireOwnerLock()) {
   // never ran and is safe to send again.
   const deadline = Date.now() + 30000;
   const retry = () => {
-    if (acquireOwnerLock()) startOwner();
+    if (useMonitorOwner && !ownerExists() && Date.now() < daemonDeadline)
+      setTimeout(forward, 250);
+    else if (acquireOwnerLock()) startOwner();
     else setTimeout(forward, 250);
   };
   const forward = () => {
@@ -224,9 +261,12 @@ if (acquireOwnerLock()) {
 }
 function startOwner() {
   app.on("second-instance", (_event, argv) => {
-    if (!argv.includes("--desk-cli")) {
-      window?.show();
-      window?.focus();
+    if (
+      !argv.includes("--desk-cli") &&
+      !argv.includes("--desk-monitor-daemon")
+    ) {
+      desktopRequested = true;
+      if (engine && accountSetup) void showDesktop();
     }
   });
   app
@@ -234,8 +274,8 @@ function startOwner() {
     .then(async () => {
       await cleanupStaleSecrets();
       const store = new Store(dataRoot);
-      const vault = new Vault(store, {
-        async encrypt(value) {
+      const encryption = {
+        async encrypt(value: string) {
           invariant(
             safeStorage.isEncryptionAvailable(),
             "KEYCHAIN_LOCKED",
@@ -243,7 +283,7 @@ function startOwner() {
           );
           return safeStorage.encryptString(value);
         },
-        async decrypt(value) {
+        async decrypt(value: Buffer) {
           invariant(
             safeStorage.isEncryptionAvailable(),
             "KEYCHAIN_LOCKED",
@@ -251,8 +291,16 @@ function startOwner() {
           );
           return safeStorage.decryptString(value);
         },
-      });
+      };
+      const vault = new Vault(store, encryption);
       engine = new Engine(store, vault);
+      mobile = new MobileMonitor(
+        engine,
+        join(__dirname, "../renderer"),
+        app.getVersion(),
+        encryption,
+      );
+      await mobile.start();
       // Apple and Google sign-ins survive restarts while they're still valid.
       for (const partition of ACCOUNT_PARTITIONS) keepSessions(partition);
       buildTray = new BuildTray(
@@ -262,6 +310,9 @@ function startOwner() {
           openBuild: cliArgs ? undefined : (jobId) => void openBuild(jobId),
           showLogs: (jobId) =>
             shell.showItemInFolder(join(dataRoot, "jobs", jobId, "logs.jsonl")),
+          monitor: () => mobile.status(),
+          openDesk: () => void showDesktop(),
+          quit: () => app.quit(),
         },
         hideTestUI || process.platform !== "darwin",
       );
@@ -341,7 +392,7 @@ function startOwner() {
                 if (!socket.destroyed)
                   socket.write(JSON.stringify({ text }) + "\n");
               },
-              { environment, cwd, appleWeb },
+              { environment, cwd, appleWeb, monitor: mobile },
             );
             socket.end(JSON.stringify({ exit: code }) + "\n");
           } catch (error) {
@@ -350,11 +401,31 @@ function startOwner() {
             );
           } finally {
             activeRequests--;
+            maybeQuitMonitor();
             if (!clients.size && !activeRequests)
               for (const ready of drained) ready();
           }
         });
       });
+      const maybeQuitMonitor = () => {
+        if (!monitorDaemon) return;
+        const timer = setTimeout(() => {
+          if (
+            !mobile.status().config.enabled &&
+            !BrowserWindow.getAllWindows().length &&
+            !activeRequests &&
+            !engine.isBusy()
+          )
+            app.quit();
+        }, 500);
+        timer.unref();
+      };
+      mobile.on("changed", () => {
+        buildTray?.refresh();
+        engine.emit("event", { type: "monitor" });
+        maybeQuitMonitor();
+      });
+      engine.on("settled", maybeQuitMonitor);
       server.listen(socketPath, () => chmodSync(socketPath, 0o600));
       server.on("error", (error) =>
         console.error("CLI socket:", error.message),
@@ -366,6 +437,7 @@ function startOwner() {
           if (exitPromise) return exitPromise;
           exitPromise = (async () => {
             buildTray?.dispose();
+            await mobile.dispose();
             await engine.shutdown();
             server.close();
             try {
@@ -373,6 +445,8 @@ function startOwner() {
             } catch {}
             store.close();
             releaseOwnerLock();
+            if (code !== 143 && readMonitorConfig(dataRoot).enabled)
+              spawnMonitorOwner();
             app.exit(code);
           })();
           return exitPromise;
@@ -391,6 +465,7 @@ function startOwner() {
           {
             environment: cliEnvironment,
             appleWeb,
+            monitor: mobile,
             onJobs: (ids) => {
               for (const id of ids) {
                 owningJobs.add(id);
@@ -435,7 +510,8 @@ function startOwner() {
           !process.env.LOCAL_BUILD_DESK_DISABLE_UPDATES,
       );
       registerIPC();
-      await createWindow();
+      if (!monitorDaemon || desktopRequested) await createWindow();
+      else app.dock?.hide();
       updater.start();
       app.on("activate", () => {
         if (!BrowserWindow.getAllWindows().length) void createWindow();
@@ -445,6 +521,7 @@ function startOwner() {
         async () => {
           updater.stop();
           buildTray?.dispose();
+          await mobile.dispose();
           await engine.shutdown();
           server.close();
           try {
@@ -466,7 +543,12 @@ function startOwner() {
     // CLI lifetime belongs to runCLI/finish, not its temporary sign-in pages.
     // The Apple session's idle close must not terminate screenshot processing
     // or other in-flight work with a misleading successful exit.
-    if (!cliArgs) app.quit();
+    if (!cliArgs) {
+      if (mobile?.status().config.enabled) {
+        app.dock?.hide();
+        if (process.platform === "darwin") app.setActivationPolicy("accessory");
+      } else app.quit();
+    }
   });
 }
 async function openBuild(jobId: string) {
@@ -476,7 +558,18 @@ async function openBuild(jobId: string) {
   window!.focus();
   window!.webContents.send("desk:event", { type: "focus-job", jobId });
 }
+async function showDesktop() {
+  if (!window || window.isDestroyed()) await createWindow();
+  if (window!.isMinimized()) window!.restore();
+  window!.show();
+  window!.focus();
+}
 async function createWindow() {
+  desktopRequested = true;
+  if (!hideTestUI && process.platform === "darwin") {
+    app.setActivationPolicy("regular");
+    app.dock?.show();
+  }
   window = new BrowserWindow({
     show: !hideTestUI,
     width: 1440,
@@ -496,10 +589,12 @@ async function createWindow() {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
-  engine.on("event", (event) => {
-    if (window && !window.isDestroyed())
-      window.webContents.send("desk:event", event);
-  });
+  const target = window;
+  const eventListener = (event: unknown) => {
+    if (!target.isDestroyed()) target.webContents.send("desk:event", event);
+  };
+  engine.on("event", eventListener);
+  target.once("closed", () => engine.off("event", eventListener));
   if (process.env.ELECTRON_RENDERER_URL)
     await window.loadURL(process.env.ELECTRON_RENDERER_URL);
   else await window.loadFile(join(__dirname, "../renderer/index.html"));
@@ -541,6 +636,22 @@ function registerIPC() {
           "Unknown method.",
         );
         const values = methods[method].parse(args) as any[];
+        if (method === "mobileStatus")
+          return { ok: true, value: mobile.status() };
+        if (method === "configureMobileMonitor")
+          return {
+            ok: true,
+            value: await mobile.configure(values[0], values[1]),
+          };
+        if (method === "mobilePairing")
+          return { ok: true, value: await mobile.pairing() };
+        if (method === "revokeMobileDevice")
+          return { ok: true, value: mobile.revoke(values[0]) };
+        if (method === "copyMobileLink") {
+          const url = mobile.status().url;
+          if (url) clipboard.writeText(url);
+          return { ok: true };
+        }
         if (method === "openAccountSetup") {
           await accountSetup.open(
             values[0],
