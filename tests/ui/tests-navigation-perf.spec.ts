@@ -76,6 +76,8 @@ test("Tests navigation keeps its form mounted and preserves unsaved edits", asyn
       page.getByRole("heading", { name: "Fixture, ready when you are." }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Tests", exact: true }).click();
+    await expect(page.getByText("No runs yet", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Check settings" }).click();
     const configuration = page.getByRole("textbox", {
       name: "Configuration",
       exact: true,
@@ -266,7 +268,7 @@ test("Builds → Tests stays responsive with a 50,608-entry native build log", a
       const started = Date.now();
       await page.getByRole("button", { name: "Tests", exact: true }).click();
       await expect(
-        page.getByRole("textbox", { name: "Configuration", exact: true }),
+        page.getByRole("heading", { name: "Tests & screenshots" }),
       ).toBeVisible();
       await page.evaluate(
         () =>

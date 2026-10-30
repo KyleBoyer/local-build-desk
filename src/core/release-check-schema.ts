@@ -6,36 +6,73 @@ export const simulatorDestinationSchema = z
     runtime: z.string().max(200).optional(),
   })
   .strict();
+// Steps find an element by accessibility identifier or by its visible label.
+// A tap can instead use a point, as fractions of the app's width and height.
+const locator = {
+  identifier: text.optional(),
+  label: text.optional(),
+};
+const fraction = z.number().min(0).max(1);
 export const captureStepSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("tap"), identifier: text }).strict(),
+  z
+    .object({
+      action: z.literal("tap"),
+      ...locator,
+      x: fraction.optional(),
+      y: fraction.optional(),
+    })
+    .strict(),
   z
     .object({
       action: z.literal("type"),
-      identifier: text,
+      ...locator,
       text: z.string().max(16000),
     })
     .strict(),
   z
     .object({
       action: z.literal("wait"),
-      identifier: text,
+      ...locator,
       timeoutSeconds: z.number().int().min(1).max(60).optional(),
     })
     .strict(),
   z
     .object({
       action: z.literal("assertText"),
-      identifier: text,
+      ...locator,
       text: z.string().max(16000),
     })
     .strict(),
   z
     .object({
       action: z.enum(["swipeUp", "swipeDown", "swipeLeft", "swipeRight"]),
-      identifier: text.optional(),
+      ...locator,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("sleep"),
+      seconds: z.number().min(0.1).max(60),
     })
     .strict(),
 ]);
+export type CaptureStep = z.infer<typeof captureStepSchema>;
+function stepIssue(step: CaptureStep): string | undefined {
+  if (step.action === "sleep") return;
+  const named = [step.identifier, step.label].filter(
+    (v) => v !== undefined,
+  ).length;
+  if (named > 1) return "Use either identifier or label, not both.";
+  if (step.action === "tap") {
+    const point = [step.x, step.y].filter((v) => v !== undefined).length;
+    if (point === 1) return "A tap point needs both x and y.";
+    if (named + (point ? 1 : 0) !== 1)
+      return "A tap needs an identifier, a label, or an x/y point.";
+    return;
+  }
+  if (step.action.startsWith("swipe")) return;
+  if (!named) return `A ${step.action} step needs an identifier or label.`;
+}
 export const screenshotPlanSchema = z
   .object({
     appearance: z.enum(["light", "dark"]).default("light"),
@@ -61,6 +98,10 @@ export const screenshotPlanSchema = z
               .default({}),
             steps: z.array(captureStepSchema).max(100).default([]),
             readyIdentifier: text.optional(),
+            /** Seconds to let animations settle before the capture. */
+            delaySeconds: z.number().min(0).max(30).optional(),
+            /** Simulator device types or names to capture on; all when omitted. */
+            devices: z.array(text).min(1).max(8).optional(),
           })
           .strict(),
       )
@@ -71,7 +112,32 @@ export const screenshotPlanSchema = z
         "Capture names must be unique.",
       ),
   })
-  .strict();
+  .strict()
+  .superRefine((plan, ctx) =>
+    plan.captures.forEach((capture, c) =>
+      capture.steps.forEach((step, s) => {
+        const message = stepIssue(step);
+        if (message)
+          ctx.addIssue({
+            code: "custom",
+            message,
+            path: ["captures", c, "steps", s],
+          });
+      }),
+    ),
+  );
+/** Repository-relative path of a checked-in capture plan. */
+const planFile = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine(
+    (path) =>
+      !path.startsWith("/") &&
+      !path.split(/[\\/]/).includes("..") &&
+      path.endsWith(".json"),
+    "Use a .json path inside the project.",
+  );
 export const releaseChecksSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -85,6 +151,8 @@ export const releaseChecksSchema = z
     destinations: z.array(simulatorDestinationSchema).max(8).default([]),
     timeoutSeconds: z.number().int().min(30).max(7200).default(1800),
     screenshots: screenshotPlanSchema.optional(),
+    /** A capture plan checked into the project, read from each snapshot. */
+    screenshotPlanFile: planFile.optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -95,7 +163,16 @@ export const releaseChecksSchema = z
         message: "Choose the project-owned test executable and arguments.",
         path: ["command"],
       });
-    if ((c.runner === "xcode" || c.screenshots) && !c.destinations.length)
+    if (c.screenshots && c.screenshotPlanFile)
+      ctx.addIssue({
+        code: "custom",
+        message: "Use either an inline capture plan or a plan file.",
+        path: ["screenshotPlanFile"],
+      });
+    if (
+      (c.runner === "xcode" || c.screenshots || c.screenshotPlanFile) &&
+      !c.destinations.length
+    )
       ctx.addIssue({
         code: "custom",
         message: "Choose at least one simulator device and runtime.",

@@ -3024,12 +3024,6 @@ footer span:first-child {
 }
 
 /* Validation keeps the release workbench's restrained type and warm accent. */
-.validation-layout {
-  display: grid;
-  grid-template-columns: minmax(380px, 1.3fr) minmax(300px, 1fr);
-  gap: 20px;
-  align-items: start;
-}
 .validation-policy label:not(.check-label),
 .validation-policy label > span {
   display: grid;
@@ -3068,6 +3062,59 @@ footer span:first-child {
 }
 .simulator-choice .icon {
   margin-bottom: 8px;
+}
+.validation-actions {
+  margin-bottom: 16px;
+}
+.validation-setup,
+.validation-run {
+  display: grid;
+  gap: 16px;
+  max-width: 920px;
+}
+.validation-run .detail-navigation,
+.validation-setup .detail-navigation {
+  margin-bottom: 0;
+}
+.validation-empty {
+  max-width: 720px;
+}
+.validation-empty h2 {
+  margin: 0 0 8px;
+}
+.validation-empty ul {
+  display: grid;
+  gap: 8px;
+  padding-left: 18px;
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+.check-run-table td {
+  font-size: 11px;
+}
+.check-run-table td strong {
+  font-size: 12px;
+}
+.segmented {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.validation-policy .segmented input {
+  width: auto;
+}
+.validation-policy .capture-help {
+  display: block;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.validation-run .capture-gallery {
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  margin: 0;
+}
+.validation-run .capture-preview {
+  height: 360px;
 }
 .evidence-state {
   display: flex;
@@ -3238,9 +3285,6 @@ footer span:first-child {
   color: var(--subtle);
 }
 @media (max-width: 1150px) {
-  .validation-layout {
-    grid-template-columns: 1fr;
-  }
   .capture-gallery {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }

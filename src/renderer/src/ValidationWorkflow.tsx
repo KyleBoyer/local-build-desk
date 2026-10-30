@@ -11,6 +11,8 @@ import {
   FolderOpen,
   ArrowRight,
   ShieldCheck,
+  ArrowLeft,
+  Settings2,
 } from "lucide-react";
 import {
   releaseChecksSchema,
@@ -18,6 +20,7 @@ import {
   type ReleaseCheckPolicy,
 } from "../../core/release-check-schema";
 import type { Job, Project, ReleaseReadiness } from "../../core/types";
+import { useDetailNavigation } from "./useDetailNavigation";
 const api = window.desk;
 const issues = (error: {
   issues: { path: PropertyKey[]; message: string }[];
@@ -42,6 +45,71 @@ const captureExample = {
     },
   ],
 };
+const modeLabel = (job: Job) => {
+  const mode = job.validation?.mode ?? job.checksMode ?? "all";
+  const what =
+    mode === "tests"
+      ? "Tests"
+      : mode === "screenshots"
+        ? "Screenshots"
+        : "Tests + screenshots";
+  return job.kind === "build" ? `${what} · before upload` : what;
+};
+const stateClass = (state?: string) =>
+  state === "passed"
+    ? "succeeded"
+    : state === "cancelled" || state === "interrupted"
+      ? "interrupted"
+      : (state ?? "queued");
+function StateBadge({ job }: { job: Job }) {
+  const state =
+    job.validation?.state ??
+    (["queued", "running"].includes(job.status) ? job.status : "interrupted");
+  return (
+    <span className={`badge ${stateClass(state)}`}>
+      <i />
+      {state.replace(/^./, (x) => x.toUpperCase())}
+    </span>
+  );
+}
+const when = (date: string) =>
+  new Date(date).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+const duration = (job: Job) => {
+  const v = job.validation;
+  if (!v?.finishedAt) return "";
+  const seconds = Math.max(
+    0,
+    Math.round((Date.parse(v.finishedAt) - Date.parse(v.startedAt)) / 1000),
+  );
+  return seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
+const results = (job: Job) => {
+  const v = job.validation;
+  if (!v) return "Waiting to start";
+  const tested = v.runs.filter((r) => !r.attachments);
+  const passed = tested.reduce((n, r) => n + (r.passed ?? 0), 0),
+    failed = tested.reduce((n, r) => n + (r.failed ?? 0), 0);
+  return [
+    tested.length ? `${passed} passed · ${failed} failed` : "",
+    v.screenshots.length
+      ? `${v.screenshots.length} screenshot${v.screenshots.length === 1 ? "" : "s"}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+};
+const devices = (job: Job) =>
+  [...new Set(job.validation?.runs.map((r) => r.device) ?? [])].join(", ");
+
+/** The Tests tab: each project's check runs, newest first. A run opens its
+ * results and screenshots; setup is its own view. */
 export function ValidationWorkflow({
   project,
   jobs,
@@ -66,23 +134,68 @@ export function ValidationWorkflow({
   const [command, setCommand] = useState(
     JSON.stringify(policy.command ?? ["npm", "test"]),
   );
-  const [screenshots, setScreenshots] = useState(!!policy.screenshots);
+  const [screenshots, setScreenshots] = useState(
+    !!policy.screenshots || !!policy.screenshotPlanFile,
+  );
+  const [planFile, setPlanFile] = useState(policy.screenshotPlanFile ?? "");
+  const [planSource, setPlanSource] = useState<"inline" | "file">(
+    policy.screenshotPlanFile ? "file" : "inline",
+  );
+  const [view, setView] = useState<"runs" | "setup">("runs");
+  const [selected, setSelected] = useState<string>();
+  const navigation = useDetailNavigation(view === "setup" ? "setup" : selected);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
   const [preview, setPreview] = useState<Record<string, string>>({});
-  const local = jobs.filter((j) => j.projectId === project.id);
-  const latest = local.find((j) => j.validation);
-  const active = local.find((j) => ["running", "queued"].includes(j.status));
+  const runs = jobs.filter((j) => j.projectId === project.id && j.validation);
+  // A queued check has no validation record until it starts.
+  const pending = jobs.filter(
+    (j) =>
+      j.projectId === project.id &&
+      j.kind === "test" &&
+      !j.validation &&
+      ["queued", "running"].includes(j.status),
+  );
+  const history = [...pending, ...runs];
+  const active = jobs.find(
+    (j) =>
+      j.projectId === project.id && ["running", "queued"].includes(j.status),
+  );
+  const current = history.find((j) => j.id === selected);
+  const saved = project.settings.releaseChecks;
+  const configured = !!saved?.enabled;
+  const savedScreenshots = !!saved?.screenshots || !!saved?.screenshotPlanFile;
   useEffect(() => {
     const saved = project.settings.releaseChecks ?? initial();
     setPolicy(saved);
-    setScreenshots(!!saved.screenshots);
+    setScreenshots(!!saved.screenshots || !!saved.screenshotPlanFile);
+    setPlanFile(saved.screenshotPlanFile ?? "");
+    setPlanSource(saved.screenshotPlanFile ? "file" : "inline");
     setCaptureJSON(
       JSON.stringify(saved.screenshots ?? captureExample, null, 2),
     );
     setCommand(JSON.stringify(saved.command ?? ["npm", "test"]));
   }, [project.id, JSON.stringify(project.settings.releaseChecks)]);
+  // Load a run's captures when it opens, one at a time.
+  const shotCount = current?.validation?.screenshots.length ?? 0;
+  useEffect(() => {
+    if (!current || !shotCount) return;
+    let live = true;
+    void (async () => {
+      for (let i = 0; i < shotCount; i++) {
+        const key = current.id + ":" + i;
+        if (preview[key]) continue;
+        try {
+          const url = await api.screenshotPreview(current.id, i);
+          if (live) setPreview((v) => ({ ...v, [key]: url }));
+        } catch {}
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [current?.id, shotCount]);
   const perform = async (fn: () => Promise<void>) => {
     setBusy(true);
     setError("");
@@ -103,9 +216,10 @@ export function ValidationWorkflow({
         throw new Error(`${field} is not valid JSON.`);
       }
     };
-    const plan = screenshots
-      ? screenshotPlanSchema.safeParse(json(captureJSON, "The capture plan"))
-      : undefined;
+    const plan =
+      screenshots && planSource === "inline"
+        ? screenshotPlanSchema.safeParse(json(captureJSON, "The capture plan"))
+        : undefined;
     if (plan && !plan.success)
       throw new Error(`Capture plan: ${issues(plan.error)}`);
     const parsed = releaseChecksSchema.safeParse({
@@ -115,6 +229,8 @@ export function ValidationWorkflow({
           ? json(command, "The test command")
           : undefined,
       screenshots: plan?.data,
+      screenshotPlanFile:
+        screenshots && planSource === "file" ? planFile.trim() : undefined,
     });
     if (!parsed.success) throw new Error(issues(parsed.error));
     const next = parsed.data;
@@ -124,400 +240,526 @@ export function ValidationWorkflow({
     });
     onChanged();
     setMessage(
-      "Saved. Required checks will run before a store artifact can upload.",
+      next.required
+        ? "Saved. These checks also run before a store build can upload."
+        : "Saved.",
     );
     return next;
+  };
+  const open = (id: string) => {
+    navigation.enter(id);
+    setSelected(id);
+  };
+  const back = () => {
+    navigation.back();
+    setSelected(undefined);
+    setView("runs");
   };
   const run = (mode: "all" | "tests" | "screenshots") =>
     perform(async () => {
       await save();
       const result = await api.runChecks(project.id, profile, mode);
-      if (result[0]) onRun(result[0]);
+      if (result[0]) {
+        setView("runs");
+        open(result[0].id);
+      }
     });
-  const shots = latest?.validation?.screenshots ?? [];
-  return (
+  const shots = current?.validation?.screenshots ?? [];
+  const byDevice = shots.reduce<Map<string, number[]>>((groups, s, i) => {
+    groups.set(s.device, [...(groups.get(s.device) ?? []), i]);
+    return groups;
+  }, new Map());
+  const status = (
     <>
+      {busy && (
+        <p role="status" className="muted">
+          Preparing checks. Scheme discovery and first-time package resolution
+          can take a minute…
+        </p>
+      )}
+      {error && (
+        <p className="inline-error" role="alert">
+          {error}
+        </p>
+      )}
+      {message && <p role="status">{message}</p>}
+    </>
+  );
+  const runButtons = (
+    <>
+      <button
+        className="primary"
+        disabled={busy || !policy.enabled || !!active}
+        onClick={() => void run("all")}
+      >
+        <Play size={14} />
+        Run checks
+      </button>
+      {screenshots && (
+        <button
+          className="button"
+          disabled={busy || !policy.enabled || !!active}
+          onClick={() => void run("screenshots")}
+        >
+          <Camera size={14} />
+          Capture screenshots
+        </button>
+      )}
+    </>
+  );
+  return (
+    <section
+      ref={navigation.root}
+      aria-label={
+        view === "setup"
+          ? "Check settings"
+          : current
+            ? "Check run details"
+            : "Check runs"
+      }
+    >
       <div className="page-heading">
         <div>
           <div className="eyebrow">PROOF BEFORE PUBLISH</div>
           <h1>Tests & screenshots</h1>
           <p>
-            One source snapshot. Repeatable checks. Evidence you can inspect.
+            Runs your app's tests and captures store screenshots on fresh
+            simulators, from one snapshot of the source.
           </p>
         </div>
         <FlaskConical size={30} className="muted" />
       </div>
-      <div className="validation-layout">
-        <section className="section-card validation-policy">
-          <div className="section-heading">
-            <h2>Release check policy</h2>
-            <span className="mono subtle">{profile}</span>
+      {view === "setup" ? (
+        <div className="validation-setup">
+          <div className="detail-navigation">
+            <button className="button" onClick={back}>
+              <ArrowLeft size={14} />
+              Back to test runs
+            </button>
           </div>
-          <fieldset disabled={busy} className="workflow-fieldset">
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={policy.enabled}
-                onChange={(e) =>
-                  setPolicy({ ...policy, enabled: e.target.checked })
-                }
-              />
-              Enable release checks
-            </label>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={policy.required}
-                onChange={(e) =>
-                  setPolicy({ ...policy, required: e.target.checked })
-                }
-              />
-              Block upload when checks fail or are missing
-            </label>
-            <label>
-              Test runner
-              <select
-                value={policy.runner}
-                onChange={(e) =>
-                  setPolicy({
-                    ...policy,
-                    runner: e.target.value as "xcode" | "command",
-                  })
-                }
-              >
-                <option value="xcode">
-                  Xcode tests · XCTest / Swift Testing
-                </option>
-                <option value="command">Project-owned test command</option>
-              </select>
-            </label>
-            {policy.runner === "xcode" ? (
+          <section className="section-card validation-policy">
+            <div className="section-heading">
+              <h2 data-detail-heading>Check settings</h2>
+              <span className="mono subtle">{profile}</span>
+            </div>
+            <fieldset disabled={busy} className="workflow-fieldset">
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={policy.enabled}
+                  onChange={(e) =>
+                    setPolicy({ ...policy, enabled: e.target.checked })
+                  }
+                />
+                Enable release checks
+              </label>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={policy.required}
+                  onChange={(e) =>
+                    setPolicy({ ...policy, required: e.target.checked })
+                  }
+                />
+                Block upload when checks fail or are missing
+              </label>
+              <label>
+                Test runner
+                <select
+                  value={policy.runner}
+                  onChange={(e) =>
+                    setPolicy({
+                      ...policy,
+                      runner: e.target.value as "xcode" | "command",
+                    })
+                  }
+                >
+                  <option value="xcode">
+                    Xcode tests · XCTest / Swift Testing
+                  </option>
+                  <option value="command">Project-owned test command</option>
+                </select>
+              </label>
+              {policy.runner === "xcode" ? (
+                <div className="form-grid">
+                  <label>
+                    Test scheme
+                    <input
+                      list="check-schemes"
+                      placeholder="Application scheme"
+                      value={policy.scheme ?? ""}
+                      onChange={(e) =>
+                        setPolicy({
+                          ...policy,
+                          scheme: e.target.value || undefined,
+                        })
+                      }
+                    />
+                    <datalist id="check-schemes">
+                      {targets?.schemes.map((s) => (
+                        <option key={s}>{s}</option>
+                      ))}
+                    </datalist>
+                  </label>
+                  <label>
+                    Test plan
+                    <input
+                      list="check-plans"
+                      placeholder="Scheme's active plan"
+                      value={policy.testPlan ?? ""}
+                      onChange={(e) =>
+                        setPolicy({
+                          ...policy,
+                          testPlan: e.target.value || undefined,
+                        })
+                      }
+                    />
+                    <datalist id="check-plans">
+                      {targets?.testPlans.map((s) => (
+                        <option key={s}>{s}</option>
+                      ))}
+                    </datalist>
+                  </label>
+                </div>
+              ) : (
+                <label>
+                  Executable and arguments · JSON array
+                  <input
+                    className="mono"
+                    value={command}
+                    onChange={(e) => setCommand(e.target.value)}
+                  />
+                  <span className="muted">
+                    Runs in the installed snapshot without a shell. Use the
+                    project's locked test tools.
+                  </span>
+                </label>
+              )}
               <div className="form-grid">
                 <label>
-                  Test scheme
+                  Configuration
                   <input
-                    list="check-schemes"
-                    placeholder="Application scheme"
-                    value={policy.scheme ?? ""}
+                    placeholder="Same as build profile"
+                    value={policy.configuration ?? ""}
                     onChange={(e) =>
                       setPolicy({
                         ...policy,
-                        scheme: e.target.value || undefined,
+                        configuration: e.target.value || undefined,
                       })
                     }
                   />
-                  <datalist id="check-schemes">
-                    {targets?.schemes.map((s) => (
-                      <option key={s}>{s}</option>
-                    ))}
-                  </datalist>
                 </label>
                 <label>
-                  Test plan
+                  Timeout per command (seconds)
                   <input
-                    list="check-plans"
-                    placeholder="Scheme's active plan"
-                    value={policy.testPlan ?? ""}
+                    type="number"
+                    min={30}
+                    max={7200}
+                    value={policy.timeoutSeconds}
                     onChange={(e) =>
                       setPolicy({
                         ...policy,
-                        testPlan: e.target.value || undefined,
+                        timeoutSeconds: Number(e.target.value),
                       })
                     }
                   />
-                  <datalist id="check-plans">
-                    {targets?.testPlans.map((s) => (
-                      <option key={s}>{s}</option>
-                    ))}
-                  </datalist>
                 </label>
               </div>
-            ) : (
-              <label>
-                Executable and arguments · JSON array
-                <input
-                  className="mono"
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                />
-                <span className="muted">
-                  Runs in the installed snapshot without a shell. Use the
-                  project's locked test tools.
-                </span>
-              </label>
-            )}
-            <div className="form-grid">
-              <label>
-                Configuration
-                <input
-                  placeholder="Same as build profile"
-                  value={policy.configuration ?? ""}
-                  onChange={(e) =>
-                    setPolicy({
-                      ...policy,
-                      configuration: e.target.value || undefined,
-                    })
+              <div className="section-heading">
+                <h3>Simulator matrix</h3>
+                <button
+                  className="button"
+                  onClick={() =>
+                    void perform(async () =>
+                      setTargets(await api.checkTargets(project.id)),
+                    )
                   }
-                />
-              </label>
-              <label>
-                Timeout per command (seconds)
-                <input
-                  type="number"
-                  min={30}
-                  max={7200}
-                  value={policy.timeoutSeconds}
-                  onChange={(e) =>
-                    setPolicy({
-                      ...policy,
-                      timeoutSeconds: Number(e.target.value),
-                    })
-                  }
-                />
-              </label>
-            </div>
-            <div className="section-heading">
-              <h3>Simulator matrix</h3>
-              <button
-                className="button"
-                onClick={() =>
-                  void perform(async () =>
-                    setTargets(await api.checkTargets(project.id)),
-                  )
-                }
-              >
-                <RefreshCw size={13} />
-                Discover targets
-              </button>
-            </div>
-            <p className="muted">
-              Devices run one at a time on disposable simulators. Your existing
-              devices are left alone.
-            </p>
-            {policy.destinations.map((d, i) => (
-              <div className="simulator-choice" key={i}>
-                <label>
-                  Device {i + 1}
-                  <select
-                    value={d.deviceType}
-                    onChange={(e) =>
-                      setPolicy({
-                        ...policy,
-                        destinations: policy.destinations.map((v, n) =>
-                          n === i ? { ...v, deviceType: e.target.value } : v,
-                        ),
-                      })
-                    }
-                  >
-                    <option value={d.deviceType}>
-                      {targets?.devices.find((v) => v.id === d.deviceType)
-                        ?.name ?? d.deviceType}
-                    </option>
-                    {targets?.devices
-                      .filter((v) => v.id !== d.deviceType)
-                      .map((v) => (
+                >
+                  <RefreshCw size={13} />
+                  Discover targets
+                </button>
+              </div>
+              <p className="muted">
+                Devices run one at a time on disposable simulators. Your
+                existing devices are left alone.
+              </p>
+              {policy.destinations.map((d, i) => (
+                <div className="simulator-choice" key={i}>
+                  <label>
+                    Device {i + 1}
+                    <select
+                      value={d.deviceType}
+                      onChange={(e) =>
+                        setPolicy({
+                          ...policy,
+                          destinations: policy.destinations.map((v, n) =>
+                            n === i ? { ...v, deviceType: e.target.value } : v,
+                          ),
+                        })
+                      }
+                    >
+                      <option value={d.deviceType}>
+                        {targets?.devices.find((v) => v.id === d.deviceType)
+                          ?.name ?? d.deviceType}
+                      </option>
+                      {targets?.devices
+                        .filter((v) => v.id !== d.deviceType)
+                        .map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    Runtime
+                    <select
+                      value={d.runtime ?? ""}
+                      onChange={(e) =>
+                        setPolicy({
+                          ...policy,
+                          destinations: policy.destinations.map((v, n) =>
+                            n === i
+                              ? { ...v, runtime: e.target.value || undefined }
+                              : v,
+                          ),
+                        })
+                      }
+                    >
+                      <option value="">Match selected iOS SDK</option>
+                      {d.runtime &&
+                        !targets?.runtimes.some((r) => r.id === d.runtime) && (
+                          <option value={d.runtime}>{d.runtime}</option>
+                        )}
+                      {targets?.runtimes.map((v) => (
                         <option key={v.id} value={v.id}>
                           {v.name}
                         </option>
                       ))}
-                  </select>
-                </label>
-                <label>
-                  Runtime
-                  <select
-                    value={d.runtime ?? ""}
-                    onChange={(e) =>
+                    </select>
+                  </label>
+                  <button
+                    className="icon"
+                    aria-label={`Remove simulator ${i + 1}`}
+                    onClick={() =>
                       setPolicy({
                         ...policy,
-                        destinations: policy.destinations.map((v, n) =>
-                          n === i
-                            ? { ...v, runtime: e.target.value || undefined }
-                            : v,
+                        destinations: policy.destinations.filter(
+                          (_, n) => n !== i,
                         ),
                       })
                     }
                   >
-                    <option value="">Match selected iOS SDK</option>
-                    {d.runtime &&
-                      !targets?.runtimes.some((r) => r.id === d.runtime) && (
-                        <option value={d.runtime}>{d.runtime}</option>
-                      )}
-                    {targets?.runtimes.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button
-                  className="icon"
-                  aria-label={`Remove simulator ${i + 1}`}
-                  onClick={() =>
-                    setPolicy({
-                      ...policy,
-                      destinations: policy.destinations.filter(
-                        (_, n) => n !== i,
-                      ),
-                    })
-                  }
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
-            <button
-              className="button"
-              disabled={
-                !targets?.devices.length || policy.destinations.length >= 8
-              }
-              onClick={() =>
-                setPolicy({
-                  ...policy,
-                  destinations: [
-                    ...policy.destinations,
-                    {
-                      deviceType:
-                        targets!.devices
-                          .filter((d) => /Pro Max/.test(d.name))
-                          .at(-1)?.id ?? targets!.devices[0]!.id,
-                    },
-                  ],
-                })
-              }
-            >
-              <Plus size={14} />
-              Add simulator
-            </button>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={screenshots}
-                onChange={(e) => setScreenshots(e.target.checked)}
-              />
-              Capture store screenshots after tests
-            </label>
-            {screenshots && (
-              <label>
-                Capture plan
-                <textarea
-                  className="mono capture-editor"
-                  value={captureJSON}
-                  onChange={(e) => setCaptureJSON(e.target.value)}
-                  spellCheck={false}
-                />
-                <span className="muted">
-                  Each screen launches the app with its own demo
-                  arguments/environment. Steps support tap, type, wait,
-                  assertText and swipes, using accessibility identifiers or
-                  labels. Use demonstration data only. The captured app must
-                  remain in the foreground.
-                </span>
-              </label>
-            )}
-            <div className="row-actions">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
               <button
                 className="button"
+                disabled={
+                  !targets?.devices.length || policy.destinations.length >= 8
+                }
                 onClick={() =>
-                  void perform(async () => {
-                    await save();
+                  setPolicy({
+                    ...policy,
+                    destinations: [
+                      ...policy.destinations,
+                      {
+                        deviceType:
+                          targets!.devices
+                            .filter((d) => /Pro Max/.test(d.name))
+                            .at(-1)?.id ?? targets!.devices[0]!.id,
+                      },
+                    ],
                   })
                 }
               >
-                Save policy
+                <Plus size={14} />
+                Add simulator
               </button>
-              <button
-                className="primary"
-                disabled={!policy.enabled || !!active}
-                onClick={() => void run("all")}
-              >
-                <Play size={14} />
-                Run checks
-              </button>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={screenshots}
+                  onChange={(e) => setScreenshots(e.target.checked)}
+                />
+                Capture store screenshots after tests
+              </label>
               {screenshots && (
+                <>
+                  <div
+                    className="segmented"
+                    role="radiogroup"
+                    aria-label="Capture plan source"
+                  >
+                    {(
+                      [
+                        ["file", "Plan file in the project"],
+                        ["inline", "Edit here"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value} className="check-label">
+                        <input
+                          type="radio"
+                          name="capture-plan-source"
+                          checked={planSource === value}
+                          onChange={() => setPlanSource(value)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  {planSource === "file" ? (
+                    <label>
+                      Plan file
+                      <input
+                        className="mono"
+                        placeholder="assets/store/screenshots.json"
+                        value={planFile}
+                        onChange={(e) => setPlanFile(e.target.value)}
+                      />
+                      <span className="muted">
+                        A JSON capture plan, relative to the project. Each run
+                        reads it from the same source snapshot it builds, so the
+                        plan is versioned with your app.
+                      </span>
+                    </label>
+                  ) : (
+                    <label>
+                      Capture plan
+                      <textarea
+                        className="mono capture-editor"
+                        value={captureJSON}
+                        onChange={(e) => setCaptureJSON(e.target.value)}
+                        spellCheck={false}
+                      />
+                    </label>
+                  )}
+                  <p className="muted capture-help">
+                    Each capture launches the app with its own arguments and
+                    environment, runs its steps, then takes the screenshot.
+                    Steps: <code>tap</code>, <code>type</code>,{" "}
+                    <code>wait</code>, <code>assertText</code> and swipes find
+                    an element by <code>identifier</code> or visible{" "}
+                    <code>label</code>; <code>tap</code> also takes an{" "}
+                    <code>x</code>/<code>y</code> point (0–1);{" "}
+                    <code>sleep</code> pauses for <code>seconds</code>. A
+                    capture can set <code>delaySeconds</code> to let animations
+                    settle and <code>devices</code> to limit it to some
+                    simulators. Use demonstration data only.
+                  </p>
+                </>
+              )}
+              <div className="row-actions">
                 <button
                   className="button"
-                  disabled={!policy.enabled || !!active}
-                  onClick={() => void run("screenshots")}
+                  onClick={() =>
+                    void perform(async () => {
+                      await save();
+                    })
+                  }
                 >
-                  <Camera size={14} />
-                  Capture only
+                  Save policy
+                </button>
+                {runButtons}
+              </div>
+            </fieldset>
+            {status}
+          </section>
+        </div>
+      ) : current ? (
+        <div className="validation-run">
+          <div className="detail-navigation">
+            <button className="button" onClick={back}>
+              <ArrowLeft size={14} />
+              Back to test runs
+            </button>
+          </div>
+          <section className="section-card">
+            <div className="section-heading">
+              <h2 data-detail-heading>{modeLabel(current)}</h2>
+              <StateBadge job={current} />
+            </div>
+            <p className="muted">
+              {when(current.validation?.startedAt ?? current.createdAt)}
+              {duration(current) && ` · ${duration(current)}`}
+              {current.validation &&
+                ` · ${current.validation.configuration} · source ${current.validation.sourceHash.slice(0, 12)}`}
+              {` · ${current.platform === "ios" ? "iOS" : "Android"} ${current.profile}`}
+            </p>
+            {current.validation?.error && (
+              <p role="alert" className="inline-error">
+                {current.validation.error}
+              </p>
+            )}
+            {!current.validation && (
+              <p className="muted" role="status">
+                Waiting for the queue. Results appear here as each simulator
+                finishes.
+              </p>
+            )}
+            <div className="check-run-list">
+              {current.validation?.runs.map((r, i) => (
+                <div key={i}>
+                  <div>
+                    <strong>{r.device}</strong>
+                    <span className="muted">
+                      {r.runtime ? `iOS ${r.runtime} · ` : ""}
+                      {r.attachments
+                        ? `screenshots · ${r.status}`
+                        : `${r.passed ?? 0} passed · ${r.failed ?? 0} failed · ${r.status}`}
+                    </span>
+                  </div>
+                  {r.resultBundle && (
+                    <button
+                      className="button"
+                      onClick={() =>
+                        void perform(async () => {
+                          await api.reveal(r.resultBundle!);
+                        })
+                      }
+                    >
+                      <FolderOpen size={14} />
+                      Results
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="row-actions">
+              <button className="button" onClick={() => onRun(current)}>
+                Open build log <ArrowRight size={13} />
+              </button>
+              {current.kind === "build" && shots.length > 0 && (
+                <button
+                  className="primary"
+                  disabled={busy || current.validation?.state !== "passed"}
+                  onClick={() =>
+                    void perform(async () => {
+                      const path = await api.useScreenshots(current.id);
+                      setMessage(`Prepared local listing: ${path}`);
+                      onChanged();
+                    })
+                  }
+                >
+                  Use screenshots in listing
                 </button>
               )}
             </div>
-          </fieldset>
-          {busy && (
-            <p role="status" className="muted">
-              Preparing checks. Scheme discovery and first-time package
-              resolution can take a minute…
-            </p>
-          )}
-          {error && (
-            <p className="inline-error" role="alert">
-              {error}
-            </p>
-          )}
-          {message && <p role="status">{message}</p>}
-        </section>
-        <section className="section-card validation-evidence">
-          <div className="section-heading">
-            <h2>Latest evidence</h2>
-            <ShieldCheck size={18} />
-          </div>
-          {!latest ? (
-            <p className="muted">
-              Run the first check to collect results. Production builds run the
-              same enabled policy before upload.
-            </p>
-          ) : (
-            <>
-              <div className={`evidence-state ${latest.validation?.state}`}>
-                <strong>{latest.validation?.state}</strong>
-                <span className="mono">
-                  {latest.id.slice(0, 8)} · {latest.validation?.mode}
+            {status}
+          </section>
+          {[...byDevice].map(([device, indexes]) => (
+            <section className="section-card" key={device}>
+              <div className="section-heading">
+                <h3>{device}</h3>
+                <span className="mono subtle">
+                  {indexes.length} screenshot{indexes.length === 1 ? "" : "s"}
                 </span>
               </div>
-              <p className="muted">
-                {latest.validation?.configuration} · source{" "}
-                {latest.validation?.sourceHash.slice(0, 12)}
-              </p>
-              {latest.validation?.error && (
-                <p role="alert" className="inline-error">
-                  {latest.validation.error}
-                </p>
-              )}
-              <div className="check-run-list">
-                {latest.validation?.runs.map((r, i) => (
-                  <div key={i}>
-                    <div>
-                      <strong>{r.device}</strong>
-                      <span className="muted">
-                        {r.runtime ? `iOS ${r.runtime} · ` : ""}
-                        {r.passed ?? 0} passed · {r.failed ?? 0} failed ·{" "}
-                        {r.status}
-                      </span>
-                    </div>
-                    {r.resultBundle && (
-                      <button
-                        className="button"
-                        onClick={() =>
-                          void perform(async () => {
-                            await api.reveal(r.resultBundle!);
-                          })
-                        }
-                      >
-                        <FolderOpen size={14} />
-                        Results
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <button className="button" onClick={() => onRun(latest)}>
-                Open live logs <ArrowRight size={13} />
-              </button>
               <div className="capture-gallery">
-                {shots.map((s, i) => {
-                  const key = latest.id + ":" + i;
+                {indexes.map((i) => {
+                  const s = shots[i]!,
+                    key = current.id + ":" + i;
                   return (
                     <figure key={key}>
                       <div className="capture-preview">
@@ -533,49 +775,120 @@ export function ValidationWorkflow({
                       <figcaption>
                         {s.name}
                         <span>
-                          {s.device} · {s.width} × {s.height}
+                          {s.width} × {s.height}
+                          {s.displayType ? ` · ${s.displayType}` : ""}
                         </span>
                       </figcaption>
-                      <button
-                        className="button"
-                        onClick={() =>
-                          void perform(async () => {
-                            const url = await api.screenshotPreview(
-                              latest.id,
-                              i,
-                            );
-                            setPreview((v) => ({ ...v, [key]: url }));
-                          })
-                        }
-                      >
-                        Preview capture
-                      </button>
                     </figure>
                   );
                 })}
               </div>
-              {latest.kind === "build" && shots.length > 0 && (
-                <button
-                  className="primary"
-                  disabled={busy || latest.validation?.state !== "passed"}
-                  onClick={() =>
-                    void perform(async () => {
-                      const path = await api.useScreenshots(latest.id);
-                      setMessage(`Prepared local listing: ${path}`);
-                      onChanged();
-                    })
-                  }
-                >
-                  Use screenshots in listing
-                </button>
-              )}
-            </>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="row-actions validation-actions">
+            {configured && runButtons}
+            <button
+              className="button"
+              onClick={() => {
+                navigation.enter("setup", false);
+                setView("setup");
+              }}
+            >
+              <Settings2 size={14} />
+              {configured ? "Check settings" : "Set up checks"}
+            </button>
+          </div>
+          {status}
+          {!configured ? (
+            <section className="section-card validation-empty">
+              <h2>No checks set up for {project.name}</h2>
+              <p>
+                Checks run on disposable simulators from a clean snapshot of
+                your source, so results don't depend on your working copy.
+              </p>
+              <ul>
+                <li>
+                  <strong>Tests</strong> — your Xcode test plan, or a test
+                  command you choose, on each simulator in the matrix.
+                </li>
+                <li>
+                  <strong>Screenshots</strong> — a capture plan launches the
+                  app, taps through it, and saves App Store–sized images per
+                  device.
+                </li>
+                <li>
+                  <strong>Upload gate</strong> — optionally, a store build can't
+                  upload until its checks pass.
+                </li>
+              </ul>
+            </section>
+          ) : !history.length ? (
+            <section className="section-card validation-empty">
+              <h2>No runs yet</h2>
+              <p>
+                Run checks to test {project.name} on{" "}
+                {saved!.destinations.length} simulator
+                {saved!.destinations.length === 1 ? "" : "s"}
+                {savedScreenshots ? " and capture its screenshots" : ""}.
+                Production builds also run these checks before upload
+                {saved!.required ? " and stop if they fail" : ""}.
+              </p>
+            </section>
+          ) : (
+            <section className="section-card">
+              <table className="job-table check-run-table">
+                <thead>
+                  <tr>
+                    <th>RUN</th>
+                    <th>STATUS</th>
+                    <th>RESULTS</th>
+                    <th>DEVICES</th>
+                    <th>STARTED</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.map((j) => (
+                    <tr
+                      key={j.id}
+                      data-detail-id={j.id}
+                      tabIndex={0}
+                      aria-label={`${modeLabel(j)} ${j.validation?.state ?? j.status} run`}
+                      onClick={() => open(j.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          open(j.id);
+                        }
+                      }}
+                    >
+                      <td>
+                        <strong>{modeLabel(j)}</strong>
+                        <span className="mono subtle"> {j.id.slice(0, 7)}</span>
+                      </td>
+                      <td>
+                        <StateBadge job={j} />
+                      </td>
+                      <td>{results(j)}</td>
+                      <td className="subtle">{devices(j)}</td>
+                      <td className="subtle">
+                        {when(j.validation?.startedAt ?? j.createdAt)}
+                        {duration(j) && ` · ${duration(j)}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
           )}
-        </section>
-      </div>
-    </>
+        </>
+      )}
+    </section>
   );
 }
+
 export function ReadinessWorkflow({
   project,
   onBuild,

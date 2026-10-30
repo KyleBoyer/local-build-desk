@@ -195,7 +195,17 @@ The CLI exposes the same metadata through `local-build-desk store-releases --pro
 
 **Tests → Tests & screenshots** runs the selected Xcode scheme/test plan (XCTest, Swift Testing or XCUITest) in the isolated build snapshot. Enable **Block upload when checks fail or are missing** to require passing evidence before any store upload, including independent uploads and reused artifacts. Each device runs serially on a disposable simulator; existing simulators are left alone. Release tests retain the profile's configuration with testability enabled. A failing suite, zero executed tests, missing runtime or failed capture blocks a required policy. Logs, `.xcresult` reports, failure attachments and captured PNGs stay with the job. Policies are opt-in for existing projects; configuring the policy does not create tests for an app.
 
-Use **Discover targets** to select installed iPhone/iPad device types, an exact runtime and optionally a scheme/test plan. A capture plan launches the app with per-screen demo arguments/environment, checks accessibility identifiers or labels, performs `tap`, `type`, `wait`, `assertText` or swipe steps, then captures the foreground app. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Simulator captures cover iOS; Android can use a project-owned test command with an exit-code contract.
+The tab lists every check run for the project, newest first: standalone test and screenshot runs and the checks that ran before a store upload. Open a run for its per-device results, retained `.xcresult` bundles and captured screenshots grouped by device; **Back to test runs** restores your place. **Check settings** holds the policy.
+
+Use **Discover targets** to select installed iPhone/iPad device types, an exact runtime and optionally a scheme/test plan. A capture plan launches the app with per-screen demo arguments/environment, runs its steps, then captures the foreground app:
+
+- `tap`, `type`, `wait`, `assertText` and swipes find an element by `identifier` (accessibility identifier) or visible `label` (a field's placeholder also counts). Swipes without one act on the app.
+- `tap` can instead use `x` and `y`, fractions (0–1) of the app's width and height.
+- `type` prefers a text field or text view whose label, identifier or placeholder matches, so a section header with the same label isn't chosen.
+- `sleep` pauses for `seconds` (0.1–60); `wait` takes an optional `timeoutSeconds`.
+- A capture's `readyIdentifier` must appear before the screenshot, `delaySeconds` lets animations settle, and `devices` limits it to simulators by device type or name.
+
+Keep the plan with the app by checking it in and setting `screenshotPlanFile` (for example `assets/store/screenshots.json`) instead of an inline `screenshots` plan. Each run reads the file from the same source snapshot it builds, so the plan is versioned with the screens it captures. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Simulator captures cover iOS; Android can use a project-owned test command with an exit-code contract.
 
 A portable `local-build-desk.json` can contain the same policy, for example:
 
@@ -219,8 +229,12 @@ A portable `local-build-desk.json` can contain the same policy, for example:
           },
           {
             "name": "settings",
-            "steps": [{ "action": "tap", "identifier": "settings-button" }],
-            "readyIdentifier": "settings-screen"
+            "steps": [
+              { "action": "tap", "label": "Settings" },
+              { "action": "sleep", "seconds": 1 }
+            ],
+            "readyIdentifier": "settings-screen",
+            "devices": ["iPad Pro 13-inch (M4)"]
           }
         ]
       }

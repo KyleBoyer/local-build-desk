@@ -175,8 +175,16 @@ test("shows release-check evidence, previews captures and reports readiness", as
     await expect(
       page.getByRole("heading", { name: "Tests & screenshots" }),
     ).toBeVisible();
+    const row = page.getByRole("row", {
+      name: /Tests \+ screenshots passed run/,
+    });
+    await expect(row).toContainText("25 passed · 0 failed · 1 screenshot");
+    await expect(row).toContainText("iPhone 18 Pro Max");
+    await row.click();
+    await expect(
+      page.getByRole("heading", { name: "Tests + screenshots", level: 2 }),
+    ).toBeFocused();
     await expect(page.getByText("25 passed · 0 failed · passed")).toBeVisible();
-    await page.getByRole("button", { name: "Preview capture" }).click();
     const image = page.getByAltText("home on iPhone 18 Pro Max");
     await expect(image).toBeVisible();
     expect(await image.evaluate((i: HTMLImageElement) => i.naturalWidth)).toBe(
@@ -186,6 +194,21 @@ test("shows release-check evidence, previews captures and reports readiness", as
     await expect(
       page.getByRole("button", { name: "Use screenshots in listing" }),
     ).toHaveCount(0);
+    await page.screenshot({ path: "test-results/release-check-run.png" });
+    await page.getByRole("button", { name: "Back to test runs" }).click();
+    await expect(row).toBeFocused();
+    await page.getByRole("button", { name: "Check settings" }).click();
+    // A checked-in plan file must stay inside the project.
+    await page
+      .getByRole("checkbox", { name: "Capture store screenshots after tests" })
+      .check();
+    await page.getByRole("radio", { name: "Plan file in the project" }).check();
+    await page.getByRole("textbox", { name: "Plan file" }).fill("../plan.json");
+    await page.getByRole("button", { name: "Save policy" }).click();
+    await expect(page.locator(".inline-error")).toContainText(
+      "screenshotPlanFile: Use a .json path inside the project.",
+    );
+    await page.getByRole("radio", { name: "Edit here" }).check();
     // Removing the only simulator is rejected when saving an Xcode policy.
     await page.getByRole("button", { name: "Remove simulator 1" }).click();
     await page.getByRole("button", { name: "Save policy" }).click();

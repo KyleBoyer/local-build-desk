@@ -94,11 +94,20 @@ export async function createScreenshotRunner(
 
 const swiftRunner = String.raw`import XCTest
 
-struct Step: Decodable { let action: String; let identifier: String?; let text: String?; let timeoutSeconds: Double? }
-struct Capture: Decodable { let name: String; let launchArguments: [String]; let launchEnvironment: [String:String]; let steps: [Step]; let readyIdentifier: String? }
+struct Step: Decodable {
+  let action: String; let identifier: String?; let label: String?; let text: String?
+  let timeoutSeconds: Double?; let x: Double?; let y: Double?; let seconds: Double?
+}
+struct Capture: Decodable {
+  let name: String; let launchArguments: [String]; let launchEnvironment: [String:String]
+  let steps: [Step]; let readyIdentifier: String?; let delaySeconds: Double?
+}
 struct Plan: Decodable { let bundleId: String; let language: String; let locale: String; let captures: [Capture] }
 
 final class DeskScreenshots: XCTestCase {
+  func pause(_ seconds: Double) {
+    _ = XCTWaiter.wait(for: [XCTestExpectation(description: "pause")], timeout: seconds)
+  }
   @MainActor func testCapturePlan() throws {
     continueAfterFailure = false
     let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "plan", withExtension: "json"))
@@ -113,10 +122,27 @@ final class DeskScreenshots: XCTestCase {
       func element(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
       }
+      func labelled(_ label: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR placeholderValue == %@", label, label)).firstMatch
+      }
       for step in capture.steps {
-        let target = step.identifier.map { element($0) } ?? app
-        if !step.action.hasPrefix("swipe") {
-          XCTAssertTrue(target.waitForExistence(timeout: step.timeoutSeconds ?? 15), "Missing element: \(step.identifier ?? "app")")
+        if step.action == "sleep" { pause(step.seconds ?? 1); continue }
+        if step.action == "tap", let x = step.x, let y = step.y {
+          app.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y)).tap()
+          continue
+        }
+        let name = step.identifier ?? step.label
+        var target = step.identifier.map { element($0) } ?? step.label.map { labelled($0) } ?? app
+        if !step.action.hasPrefix("swipe") || name != nil {
+          XCTAssertTrue(target.waitForExistence(timeout: step.timeoutSeconds ?? 15), "Missing element: \(name ?? "app")")
+        }
+        // A form section header often shares its field's label; type into the field.
+        if step.action == "type", let name {
+          let named = NSPredicate(format: "label == %@ OR identifier == %@ OR placeholderValue == %@", name, name, name)
+          let kinds: [XCUIElement.ElementType] = [.textField, .secureTextField, .textView, .searchField]
+          if let input = kinds.lazy.map({ app.descendants(matching: $0).matching(named).firstMatch }).first(where: { $0.exists }) {
+            target = input
+          }
         }
         switch step.action {
         case "wait": break
@@ -133,6 +159,7 @@ final class DeskScreenshots: XCTestCase {
         }
       }
       if let ready = capture.readyIdentifier { XCTAssertTrue(element(ready).waitForExistence(timeout: 20), "Capture is not ready: \(ready)") }
+      if let delay = capture.delaySeconds, delay > 0 { pause(delay) }
       XCTAssertEqual(app.state, .runningForeground)
       let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
       image.name = "store-" + capture.name

@@ -1,5 +1,5 @@
 import { it, expect, vi } from "vitest";
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -10,8 +10,13 @@ import {
   resolveDestination,
   testArguments,
   exportedScreenshots,
+  screenshotPlanFor,
+  capturesFor,
 } from "../src/core/release-validation";
-import { releaseChecksSchema } from "../src/core/release-check-schema";
+import {
+  releaseChecksSchema,
+  screenshotPlanSchema,
+} from "../src/core/release-check-schema";
 import { assertScreenshotProvenance } from "../src/core/screenshot-provenance";
 import { ReleaseJournal } from "../src/core/release-journal";
 import { checkpoint, finishCheckpoint } from "../src/core/checkpoints";
@@ -647,5 +652,126 @@ it("shares native snapshot inputs across builds, reuse and resume for each proje
   ).toEqual({
     native: { ios: true, android: true },
     requiredPaths: ["apps/ios", "Root.xcworkspace"],
+  });
+});
+
+const capture = (steps: unknown[], extra: object = {}) => ({
+  captures: [{ name: "home", steps, ...extra }],
+});
+it("accepts label, point, and sleep steps and rejects ambiguous ones", () => {
+  const plan = screenshotPlanSchema.parse(
+    capture(
+      [
+        { action: "tap", label: "Actions" },
+        { action: "tap", x: 0.5, y: 0.9 },
+        { action: "sleep", seconds: 1.5 },
+        { action: "wait", label: "15 Actions", timeoutSeconds: 10 },
+        { action: "swipeUp" },
+      ],
+      { delaySeconds: 0.5, devices: ["iPad Pro 13-inch (M5)"] },
+    ),
+  );
+  expect(plan.captures[0]).toMatchObject({
+    delaySeconds: 0.5,
+    devices: ["iPad Pro 13-inch (M5)"],
+  });
+  const issue = (steps: unknown[]) =>
+    screenshotPlanSchema.safeParse(capture(steps)).error?.issues[0]?.message;
+  expect(issue([{ action: "tap" }])).toMatch(/identifier, a label, or an x\/y/);
+  expect(issue([{ action: "tap", x: 0.5 }])).toMatch(/both x and y/);
+  expect(issue([{ action: "tap", identifier: "a", label: "b" }])).toMatch(
+    /not both/,
+  );
+  expect(issue([{ action: "tap", label: "a", x: 0.1, y: 0.1 }])).toMatch(
+    /identifier, a label, or an x\/y/,
+  );
+  expect(issue([{ action: "wait" }])).toMatch(/needs an identifier or label/);
+  expect(issue([{ action: "sleep", seconds: 0 }])).toBeDefined();
+  expect(issue([{ action: "sleep", seconds: 61 }])).toBeDefined();
+});
+it("reads a checked-in plan from the snapshot and rejects escapes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "lbd-plan-"));
+  await mkdir(join(root, "assets/store"), { recursive: true });
+  await writeFile(
+    join(root, "assets/store/screenshots.json"),
+    JSON.stringify(capture([{ action: "tap", label: "Start" }])),
+  );
+  const filePolicy = releaseChecksSchema.parse({
+    ...policy,
+    screenshotPlanFile: "assets/store/screenshots.json",
+  });
+  expect(await screenshotPlanFor(filePolicy, root)).toMatchObject({
+    appearance: "light",
+    captures: [{ name: "home", steps: [{ action: "tap", label: "Start" }] }],
+  });
+  await writeFile(
+    join(root, "assets/store/screenshots.json"),
+    JSON.stringify(capture([{ action: "tap" }])),
+  );
+  await expect(screenshotPlanFor(filePolicy, root)).rejects.toThrow(
+    /assets\/store\/screenshots.json: captures.0.steps.0: A tap needs/,
+  );
+  await expect(
+    screenshotPlanFor(
+      { ...filePolicy, screenshotPlanFile: "missing.json" },
+      root,
+    ),
+  ).rejects.toThrow(/Could not read the capture plan missing.json/);
+  for (const path of ["../plan.json", "/etc/plan.json", "plan.txt"])
+    expect(
+      releaseChecksSchema.safeParse({ ...policy, screenshotPlanFile: path })
+        .success,
+    ).toBe(false);
+  expect(
+    releaseChecksSchema.safeParse({
+      ...policy,
+      screenshotPlanFile: "a.json",
+      screenshots: capture([]),
+    }).error?.issues[0]?.message,
+  ).toMatch(/either an inline capture plan or a plan file/);
+});
+it("assigns captures to the simulators they name", () => {
+  const plan = screenshotPlanSchema.parse({
+    captures: [
+      { name: "everywhere" },
+      { name: "ipad", devices: ["iPad Pro 13-inch (M5)"] },
+      {
+        name: "phone",
+        devices: ["com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro-Max"],
+      },
+    ],
+  });
+  const names = (...device: string[]) =>
+    capturesFor(plan, ...device).captures.map((c) => c.name);
+  expect(names("iPad Pro 13-inch (M5)")).toEqual(["everywhere", "ipad"]);
+  expect(
+    names(
+      "iPhone 18 Pro Max",
+      "iPhone 18 Pro Max",
+      "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro-Max",
+    ),
+  ).toEqual(["everywhere", "phone"]);
+});
+it("drives label, point, sleep, and settle steps in the generated harness", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "lbd-harness-v2-"));
+  await createScreenshotRunner(
+    dir,
+    "com.example.app",
+    screenshotPlanSchema.parse(
+      capture([{ action: "sleep", seconds: 1 }], { delaySeconds: 2 }),
+    ),
+  );
+  const swift = await readFile(join(dir, "Screenshots.swift"), "utf8");
+  expect(swift).toContain(
+    'NSPredicate(format: "label == %@ OR placeholderValue == %@", label, label)',
+  );
+  expect(swift).toContain("coordinate(withNormalizedOffset:");
+  expect(swift).toContain('if step.action == "sleep"');
+  expect(swift).toContain("capture.delaySeconds");
+  expect(swift).toContain("placeholderValue == %@");
+  expect(
+    JSON.parse(await readFile(join(dir, "plan.json"), "utf8")),
+  ).toMatchObject({
+    captures: [{ delaySeconds: 2, steps: [{ action: "sleep", seconds: 1 }] }],
   });
 });

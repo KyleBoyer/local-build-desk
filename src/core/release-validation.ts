@@ -24,7 +24,9 @@ import type {
 import { containerArguments } from "./xcode-project";
 import {
   releaseChecksSchema,
+  screenshotPlanSchema,
   type ReleaseCheckPolicy,
+  type ScreenshotPlan,
   type SimulatorDestination,
 } from "./release-check-schema";
 import { createScreenshotRunner } from "./screenshot-runner";
@@ -254,6 +256,57 @@ export async function exportedScreenshots(
   return shots;
 }
 
+/** The run's capture plan: inline in the policy, or the project's
+ * checked-in file read from this snapshot. */
+export async function screenshotPlanFor(
+  policy: ReleaseCheckPolicy,
+  source: string,
+): Promise<ScreenshotPlan | undefined> {
+  if (policy.screenshots) return policy.screenshots;
+  const file = policy.screenshotPlanFile;
+  if (!file) return undefined;
+  const root = await realpath(source);
+  let path: string, raw: unknown;
+  try {
+    path = await realpath(resolve(root, file));
+    raw = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    throw Object.assign(
+      new Error(`Could not read the capture plan ${file}: ${messageOf(error)}`),
+      { code: "SCREENSHOT_PLAN" },
+    );
+  }
+  invariant(
+    path.startsWith(root + sep),
+    "SCREENSHOT_PLAN",
+    "The capture plan file must stay inside the project.",
+  );
+  const parsed = screenshotPlanSchema.safeParse(raw);
+  invariant(
+    parsed.success,
+    "SCREENSHOT_PLAN",
+    `${file}: ${parsed.error?.issues
+      .map((i) => (i.path.length ? `${i.path.join(".")}: ` : "") + i.message)
+      .join(" ")}`,
+  );
+  return parsed.data;
+}
+
+/** The captures that belong on this simulator, by device type or name. */
+export function capturesFor(
+  plan: ScreenshotPlan,
+  ...names: string[]
+): ScreenshotPlan {
+  return {
+    ...plan,
+    captures: plan.captures.filter(
+      (capture) =>
+        !capture.devices ||
+        capture.devices.some((device) => names.includes(device)),
+    ),
+  };
+}
+
 /** Whether `path`'s volume has `bytes` free, polling for up to `waitMs`. */
 export async function freeSpace(
   path: string,
@@ -294,7 +347,9 @@ export async function runReleaseChecks(
   const mode = ctx.job.checksMode ?? "all";
   invariant(
     ctx.job.platform === "ios" ||
-      (policy.runner === "command" && !policy.screenshots),
+      (policy.runner === "command" &&
+        !policy.screenshots &&
+        !policy.screenshotPlanFile),
     "TEST_PLATFORM",
     "Android checks use a project-owned command. Simulator screenshot plans require iOS.",
   );
@@ -331,6 +386,9 @@ export async function runReleaseChecks(
     ctx.save();
   };
   try {
+    // Read inside the try so a broken plan file is recorded as a failed run.
+    const capturePlan =
+      mode === "tests" ? undefined : await screenshotPlanFor(policy, source);
     if (mode !== "screenshots" && policy.runner === "command") {
       ctx.stage("testing");
       ctx.log("Running the project's test command in the isolated snapshot…");
@@ -358,7 +416,7 @@ export async function runReleaseChecks(
     }
     if (
       ctx.job.platform === "ios" &&
-      (policy.runner === "xcode" || policy.screenshots)
+      (policy.runner === "xcode" || capturePlan)
     ) {
       invariant(
         target,
@@ -490,20 +548,24 @@ export async function runReleaseChecks(
                 `Tests failed or no tests ran on ${device.name}. Inspect the retained xcresult; required checks block upload.`,
               );
             }
-            if (mode !== "tests" && policy.screenshots) {
+            const plan =
+              capturePlan &&
+              capturesFor(
+                capturePlan,
+                choice.deviceType,
+                device.name,
+                device.identifier,
+              );
+            if (plan && !plan.captures.length)
+              ctx.log(`No captures are assigned to ${device.name}.`);
+            if (plan?.captures.length) {
               ctx.stage("screenshots");
               ctx.log(
-                `Capturing ${policy.screenshots.captures.length} screens on ${device.name}…`,
+                `Capturing ${plan.captures.length} screens on ${device.name}…`,
               );
               await run(
                 "xcrun",
-                [
-                  "simctl",
-                  "ui",
-                  deviceId,
-                  "appearance",
-                  policy.screenshots.appearance,
-                ],
+                ["simctl", "ui", deviceId, "appearance", plan.appearance],
                 options,
               );
               await run(
@@ -584,11 +646,7 @@ export async function runReleaseChecks(
               );
               await run("xcrun", ["simctl", "install", deviceId, app], options);
               const harness = join(folder, "capture-runner");
-              await createScreenshotRunner(
-                harness,
-                ctx.job.bundleId!,
-                policy.screenshots,
-              );
+              await createScreenshotRunner(harness, ctx.job.bundleId!, plan);
               const bundle = join(folder, "screenshots.xcresult");
               const captured = await run(
                 "xcodebuild",
@@ -641,7 +699,7 @@ export async function runReleaseChecks(
               result.screenshots.push(
                 ...(await exportedScreenshots(
                   attachments,
-                  policy.screenshots.captures.map((c) => c.name),
+                  plan.captures.map((c) => c.name),
                   device.name,
                   runtime.version,
                 )),

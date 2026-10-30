@@ -95,7 +95,7 @@ export function readinessReport(
     add(
       "screenshots",
       "Automated screenshots",
-      !policy.screenshots
+      !policy.screenshots && !policy.screenshotPlanFile
         ? "warning"
         : proof?.screenshots.length && valid
           ? "ready"
