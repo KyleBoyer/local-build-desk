@@ -8,7 +8,7 @@ import {
   readFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -111,12 +111,13 @@ beforeEach(async () => {
       return { releases: [], checkedAt: "now", channels: {} };
     },
   }) as unknown as Engine;
-  monitor = new MobileMonitor(
-    engine,
-    resolve("out/renderer"),
-    "test",
-    encryption,
+  const assets = join(root, "assets");
+  await mkdir(assets);
+  await writeFile(
+    join(assets, "mobile.html"),
+    '<html><script src="/assets/mobile-fixture.js"></script></html>',
   );
+  monitor = new MobileMonitor(engine, assets, "test", encryption);
 });
 afterEach(async () => {
   await monitor.dispose();
