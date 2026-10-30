@@ -40,6 +40,14 @@ const socketPath = join(dataRoot, "desk.sock");
 const ownerLockPath = join(dataRoot, "owner.lock");
 const cliIndex = process.argv.indexOf("--desk-cli");
 const cliArgs = cliIndex >= 0 ? process.argv.slice(cliIndex + 1) : undefined;
+// A reader that exits early (`ios-submit status | true`) closes the pipe. An
+// unhandled EPIPE would stall Electron's main process; drop the output instead
+// and still exit with the command's own code.
+if (cliArgs)
+  for (const stream of [process.stdout, process.stderr])
+    stream.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") throw error;
+    });
 // Preserve the caller's invocation once, then prevent its credentials from
 // leaking into native processes belonging to a different forwarded client.
 const cliEnvironment = cliArgs ? { ...process.env } : undefined;

@@ -378,3 +378,43 @@ test("closing a temporary account window does not terminate the active CLI owner
     await h.cleanup();
   }
 });
+
+test("a forwarded CLI whose reader has already exited still finishes instead of stalling", async () => {
+  const h = await harness();
+  try {
+    const owner = h.launch(
+      ["build", "--project", join(h.root, "first"), "--platform", "ios"],
+      {
+        IOS_SUBMIT_ENVIRONMENT_JSON: JSON.stringify({
+          FIXTURE_WAIT_FOR_QUEUED: "true",
+        }),
+      },
+    );
+    await expect
+      .poll(() => owner.output(), { timeout: 20000 })
+      .toContain("fixture-active");
+    // As with `ios-submit status | true`: the pipe closes before any output.
+    const client = h.launch(["status"]);
+    client.child.stdout!.destroy();
+    const exit = await Promise.race([
+      client.exit,
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("stalled"), 20000),
+      ),
+    ]);
+    // status's own code while a build is active, not a broken-pipe failure.
+    expect(exit).toBe(2);
+    // Release the owner's waiting build.
+    const second = h.launch([
+      "build",
+      "--project",
+      join(h.root, "second"),
+      "--platform",
+      "ios",
+    ]);
+    expect(await second.exit).toBe(0);
+    expect(await owner.exit).toBe(0);
+  } finally {
+    await h.cleanup();
+  }
+});
