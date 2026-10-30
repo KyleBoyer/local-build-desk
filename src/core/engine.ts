@@ -1,3 +1,15 @@
+import {
+  appleReleases,
+  appleReleaseDetail,
+  fetchStoreImage,
+  trustedStoreImage,
+} from "./store-releases";
+import type {
+  StoreRelease,
+  StoreReleaseSnapshot,
+  StoreReleaseDetail,
+  StoreImageSource,
+} from "./store-release-types";
 import { readinessReport } from "./readiness";
 import { loadListing, listingPlan, displayTypeFor } from "./app-store-listing";
 import { snapshot, snapshotInputs } from "./snapshot";
@@ -57,7 +69,7 @@ import {
   type Compliance,
 } from "./app-store-compliance";
 import type { ComplianceView } from "./types";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Store, id, now } from "./database";
 import { Vault, importCredential, privateDirectory } from "./vault";
 import {
@@ -700,6 +712,340 @@ export class Engine extends EventEmitter {
       appStoreListing: relative(project.path, file),
     });
     return file;
+  }
+  private storeReleaseCache = new Map<
+    string,
+    { identity: string; expires: number; releases: StoreRelease[] }
+  >();
+  private storeImages = new Map<
+    string,
+    {
+      projectId: string;
+      identity: string;
+      expires: number;
+      source: StoreImageSource;
+    }
+  >();
+  private storeReleaseIdentity(project: Project) {
+    return JSON.stringify([
+      project.bundleId,
+      project.packageName,
+      project.settings.appleConnectionId,
+      project.settings.googleConnectionId,
+      this.store
+        .credentialSummaries()
+        .filter((c) =>
+          [
+            project.settings.appleConnectionId,
+            project.settings.googleConnectionId,
+          ].includes(c.id),
+        )
+        .map((c) => [c.id, c.createdAt]),
+    ]);
+  }
+  private playReleaseConsole(project: Project) {
+    try {
+      const saved = JSON.parse(
+        readFileSync(
+          join(
+            this.store.root,
+            "accounts",
+            `${project.id}-google-store-bootstrap.json`,
+          ),
+          "utf8",
+        ),
+      ).storeSetup;
+      if (
+        saved?.identity === project.packageName &&
+        saved.connectionId === project.settings.googleConnectionId &&
+        /^\d+$/.test(saved.developerId ?? "") &&
+        /^\d+$/.test(saved.appId ?? "")
+      )
+        return `https://play.google.com/console/developers/${saved.developerId}/app/${saved.appId}/app-dashboard`;
+    } catch {}
+    return "https://play.google.com/console";
+  }
+  storeReleases(projectId: string): Promise<StoreReleaseSnapshot> {
+    return this.releaseOperation(async (signal) => {
+      const project = this.store.get<Project>("projects", projectId);
+      const identity = this.storeReleaseIdentity(project);
+      const apple = !!(project.settings.appleConnectionId && project.bundleId),
+        google = !!(project.settings.googleConnectionId && project.packageName);
+      const snapshot: StoreReleaseSnapshot = {
+        projectId,
+        checkedAt: now(),
+        releases: [],
+        channels: {
+          appstore: {
+            connected: apple,
+            note: apple
+              ? "Recent iOS versions from App Store Connect."
+              : "Connect Apple and inspect this app's bundle identity in Guided setup.",
+          },
+          testflight: {
+            connected: apple,
+            note: apple
+              ? "Recent builds, including uploads made outside Local Build Desk."
+              : "Connect Apple to read TestFlight builds.",
+          },
+          play: {
+            connected: google,
+            note: google
+              ? "Track/rollout state is available through the API. Google review state is not exposed by the Publishing API; check Play Console for review progress."
+              : "Connect a Google Play service account and inspect this app's package identity.",
+          },
+        },
+      };
+      await Promise.all([
+        (async () => {
+          if (!apple) return;
+          try {
+            const api = new AppleAPI(
+              await this.vault.get(project.settings.appleConnectionId, "apple"),
+              fetch,
+              undefined,
+              { signal },
+            );
+            const result = await appleReleases(api, project.bundleId!);
+            snapshot.releases.push(...result.releases);
+            if (result.versions.status === "rejected")
+              snapshot.channels.appstore.error = messageOf(
+                result.versions.reason,
+              );
+            if (result.builds.status === "rejected")
+              snapshot.channels.testflight.error = messageOf(
+                result.builds.reason,
+              );
+          } catch (error) {
+            snapshot.channels.appstore.error = messageOf(error);
+            snapshot.channels.testflight.error = messageOf(error);
+          }
+        })(),
+        (async () => {
+          if (!google) return;
+          try {
+            const credential = await this.vault.get(
+              project.settings.googleConnectionId,
+              "google",
+            );
+            const api = new GoogleAPI(credential, fetch, signal, () =>
+              this.assertGoogleIdle(credential.serviceAccount.client_email),
+            );
+            const result = await api.releaseSnapshot(project.packageName!);
+            for (const track of result.tracks)
+              for (const [index, release] of (track.releases ?? []).entries())
+                snapshot.releases.push({
+                  id: `play:${track.track}:${index}`,
+                  resourceId: track.track,
+                  channel: "play",
+                  version: release.name,
+                  buildNumbers: (release.versionCodes ?? []).map(String),
+                  status: release.status ?? "unknown",
+                  track: track.track,
+                  fraction: release.userFraction,
+                  consoleUrl: this.playReleaseConsole(project),
+                });
+            if (result.notes.length)
+              snapshot.channels.play.note += " " + result.notes.join(" ");
+          } catch (error) {
+            snapshot.channels.play.error = messageOf(error);
+          }
+        })(),
+      ]);
+      snapshot.checkedAt = now();
+      this.storeReleaseCache.set(projectId, {
+        identity,
+        expires: Date.now() + 15 * 60 * 1000,
+        releases: snapshot.releases,
+      });
+      return snapshot;
+    });
+  }
+  storeReleaseDetails(
+    projectId: string,
+    releaseId: string,
+    locale?: string,
+  ): Promise<StoreReleaseDetail> {
+    return this.releaseOperation(async (signal) => {
+      const project = this.store.get<Project>("projects", projectId),
+        identity = this.storeReleaseIdentity(project);
+      let cache = this.storeReleaseCache.get(projectId);
+      if (!cache || cache.identity !== identity || cache.expires < Date.now()) {
+        await this.storeReleases(projectId);
+        cache = this.storeReleaseCache.get(projectId);
+      }
+      const release = cache?.releases.find((r) => r.id === releaseId);
+      invariant(
+        release,
+        "STORE_RELEASE_CHANGED",
+        "This release is no longer in the current store snapshot. Refresh the submitted releases list.",
+      );
+      const detail: StoreReleaseDetail = {
+        releaseId,
+        checkedAt: now(),
+        listings: [],
+        images: [],
+        groups: [],
+        notes: [],
+      };
+      const sources: StoreImageSource[] = [];
+      if (release.channel === "play") {
+        const credential = await this.vault.get(
+          project.settings.googleConnectionId,
+          "google",
+        );
+        const api = new GoogleAPI(credential, fetch, signal, () =>
+          this.assertGoogleIdle(credential.serviceAccount.client_email),
+        );
+        const result = await api.releaseSnapshot(
+          project.packageName!,
+          true,
+          locale,
+        );
+        detail.listings = result.listings.map((l: any) => ({
+          locale: l.language,
+          title: l.title,
+          description: l.fullDescription,
+          shortDescription: l.shortDescription,
+        }));
+        const current = result.tracks
+          .find((t: any) => t.track === release.track)
+          ?.releases?.find(
+            (r: any) =>
+              JSON.stringify([...(r.versionCodes ?? [])].map(String).sort()) ===
+              JSON.stringify([...release.buildNumbers].sort()),
+          );
+        for (const note of current?.releaseNotes ?? []) {
+          const listing = detail.listings.find(
+            (l) => l.locale === note.language,
+          );
+          if (listing) listing.whatsNew = note.text;
+          else
+            detail.listings.push({
+              locale: note.language,
+              whatsNew: note.text,
+            });
+        }
+        if (!current)
+          detail.notes.push(
+            "This track changed since the list was fetched. Refresh to see its current releases.",
+          );
+        detail.imageLocale = result.locale;
+        sources.push(...result.images);
+        detail.notes.push(
+          ...result.notes,
+          "These are current Google Play listing assets, shared across tracks. The API does not provide historical screenshots per release or Play review progress.",
+        );
+      } else {
+        const api = new AppleAPI(
+          await this.vault.get(project.settings.appleConnectionId, "apple"),
+          fetch,
+          undefined,
+          { signal },
+        );
+        const result = await appleReleaseDetail(api, release, locale);
+        detail.listings = result.listings;
+        detail.groups = result.groups;
+        detail.notes = result.notes;
+        sources.push(...result.images);
+        detail.imageLocale =
+          sources[0]?.locale ??
+          detail.listings.find((l) => l.locale === locale)?.locale ??
+          detail.listings[0]?.locale;
+        if (release.channel === "testflight") {
+          const history = this.store.list<Job>("jobs");
+          const job = history.find(
+            (j) =>
+              j.projectId === projectId &&
+              j.kind === "build" &&
+              j.platform === "ios" &&
+              j.bundleId === project.bundleId &&
+              j.version === release.version &&
+              release.buildNumbers.includes(j.buildNumber ?? "") &&
+              j.validation?.state === "passed" &&
+              j.validation.sourceHash === j.facts?.sourceHash &&
+              !!j.artifactId &&
+              history.some(
+                (receipt) =>
+                  receipt.artifactId === j.artifactId &&
+                  receipt.submission?.externalId === release.resourceId &&
+                  ["accepted", "processing", "uploaded"].includes(
+                    receipt.submission.state,
+                  ),
+              ),
+          );
+          if (job)
+            for (const [index, shot] of (
+              job.validation?.screenshots ?? []
+            ).entries())
+              sources.push({
+                name: shot.name,
+                locale: "Local capture",
+                displayType: shot.displayType ?? shot.device,
+                status: "CAPTURED LOCALLY",
+                width: shot.width,
+                height: shot.height,
+                origin: "local",
+                local: { jobId: job.id, index },
+              });
+        }
+      }
+      for (const [key, record] of this.storeImages)
+        if (record.expires < Date.now() || record.projectId === projectId)
+          this.storeImages.delete(key);
+      for (const source of sources.slice(0, 200)) {
+        let available = !!source.local;
+        if (source.url)
+          try {
+            trustedStoreImage(source.url);
+            available = true;
+          } catch {
+            detail.notes.push(
+              `${source.name}: preview host is unsupported; use the store console.`,
+            );
+          }
+        const imageId = randomUUID();
+        this.storeImages.set(imageId, {
+          projectId,
+          identity,
+          source,
+          expires: Date.now() + 15 * 60 * 1000,
+        });
+        const { url, local, ...metadata } = source;
+        detail.images.push({ ...metadata, id: imageId, available });
+      }
+      if (sources.length > 200)
+        detail.notes.push(
+          "Only the first 200 assets are shown. Open the console for the full list.",
+        );
+      detail.checkedAt = now();
+      return detail;
+    });
+  }
+  storeImagePreview(projectId: string, imageId: string): Promise<string> {
+    return this.releaseOperation(async (signal) => {
+      const project = this.store.get<Project>("projects", projectId),
+        record = this.storeImages.get(imageId);
+      invariant(
+        record &&
+          record.projectId === projectId &&
+          record.identity === this.storeReleaseIdentity(project) &&
+          record.expires > Date.now(),
+        "STORE_IMAGE_EXPIRED",
+        "This image preview expired. Refresh the selected release to load it again.",
+      );
+      if (record.source.local)
+        return this.screenshotPreview(
+          record.source.local.jobId,
+          record.source.local.index,
+        );
+      invariant(
+        record.source.url,
+        "STORE_IMAGE_UNAVAILABLE",
+        "This asset is still processing or has no preview URL. Open the store console for details.",
+      );
+      return fetchStoreImage(record.source.url, fetch, signal);
+    });
   }
   async readStoreStatus(projectId: string) {
     const project = this.store.get<Project>("projects", projectId);

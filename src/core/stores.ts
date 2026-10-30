@@ -410,6 +410,85 @@ export class GoogleAPI {
   async versions(packageName: string) {
     return this.withEdit(() => this.versionsInEdit(packageName));
   }
+  /** A disposable, uncommitted read view. Serialized with uploads using this
+   * service account; beforeEdit prevents replacing an unresolved local edit. */
+  async releaseSnapshot(
+    packageName: string,
+    includeImages = false,
+    preferredLocale?: string,
+  ) {
+    return this.withEdit(async () => {
+      const edit = await this.edit(packageName);
+      const base = `/applications/${encodeURIComponent(packageName)}/edits/${encodeURIComponent(edit.id)}`;
+      const notes: string[] = [];
+      try {
+        const tracks = await this.request(`${base}/tracks`);
+        const listings = await this.request(`${base}/listings`).catch(
+          (error) => {
+            notes.push(
+              `Listing text could not be read: ${(error as Error).message}`,
+            );
+            return { listings: [] };
+          },
+        );
+        const locales: string[] = (listings.listings ?? []).map(
+          (l: any) => l.language,
+        );
+        const locale =
+          preferredLocale && locales.includes(preferredLocale)
+            ? preferredLocale
+            : (locales.find((l) => l === "en-US") ?? locales[0]);
+        const images: {
+          name: string;
+          locale: string;
+          displayType: string;
+          url?: string;
+          origin: "store";
+        }[] = [];
+        if (includeImages && locale) {
+          const types = [
+            "icon",
+            "featureGraphic",
+            "phoneScreenshots",
+            "sevenInchScreenshots",
+            "tenInchScreenshots",
+          ];
+          const results = await Promise.allSettled(
+            types.map((type) =>
+              this.request(
+                `${base}/listings/${encodeURIComponent(locale)}/${type}`,
+              ),
+            ),
+          );
+          for (const [i, result] of results.entries()) {
+            if (result.status === "rejected") {
+              notes.push(
+                `${types[i]} could not be read: ${String(result.reason?.message ?? result.reason)}`,
+              );
+              continue;
+            }
+            for (const [index, image] of (result.value.images ?? []).entries())
+              images.push({
+                name: `${types[i]} ${index + 1}`,
+                locale,
+                displayType: types[i]!,
+                url: image.url,
+                origin: "store",
+              });
+          }
+        }
+        return {
+          tracks: tracks.tracks ?? [],
+          listings: listings.listings ?? [],
+          images,
+          locale,
+          notes,
+        };
+      } finally {
+        await this.request(base, "DELETE").catch(() => {});
+      }
+    });
+  }
   /** Version codes for a build's floor; a package Play has never seen has none. */
   async existingVersions(packageName: string) {
     try {

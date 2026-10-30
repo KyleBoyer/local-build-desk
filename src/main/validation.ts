@@ -143,6 +143,16 @@ export const methods = {
   ]),
   resume: z.tuple([identifier]),
   readStoreStatus: z.tuple([identifier]),
+  storeReleases: z.tuple([identifier]),
+  storeReleaseDetails: z.tuple([
+    identifier,
+    identifier,
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{2,30}$/)
+      .optional(),
+  ]),
+  storeImagePreview: z.tuple([identifier, z.string().uuid()]),
   saveCompliance: z.tuple([
     identifier,
     z.string().min(1).max(1024),

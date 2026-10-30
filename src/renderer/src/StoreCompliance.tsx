@@ -1,3 +1,4 @@
+import { SubmittedReleases } from "./SubmittedReleases";
 import { useEffect, useState } from "react";
 import type {
   AgeRating,
@@ -150,6 +151,7 @@ export function StoreCompliance({ project }: { project: Project }) {
           </p>
         </div>
       </div>
+      <SubmittedReleases project={project} />
       <section className="section-card">
         <fieldset disabled={busy} className="workflow-fieldset">
           <h2>Listing file</h2>

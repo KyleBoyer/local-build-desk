@@ -1,3 +1,7 @@
+import type {
+  StoreReleaseSnapshot,
+  StoreReleaseDetail,
+} from "./store-release-types";
 export type Platform = "ios" | "android";
 export type ProjectType = "expo" | "capacitor" | "native-ios";
 export interface LocalBuildProfile {
@@ -415,9 +419,14 @@ export interface DeskEvent {
   update?: UpdateStatus;
 }
 export interface DesktopAPI {
-  checkTargets(
+  storeReleases(projectId: string): Promise<StoreReleaseSnapshot>;
+  storeReleaseDetails(
     projectId: string,
-  ): Promise<{
+    releaseId: string,
+    locale?: string,
+  ): Promise<StoreReleaseDetail>;
+  storeImagePreview(projectId: string, imageId: string): Promise<string>;
+  checkTargets(projectId: string): Promise<{
     devices: { id: string; name: string }[];
     runtimes: { id: string; name: string; version: string }[];
     schemes: string[];
@@ -435,9 +444,7 @@ export interface DesktopAPI {
     destination?: "testflight" | "appstore",
   ): Promise<ReleaseReadiness>;
   resume(jobId: string): Promise<Job[]>;
-  readStoreStatus(
-    projectId: string,
-  ): Promise<{
+  readStoreStatus(projectId: string): Promise<{
     version: string;
     state: string;
     editable: boolean;

@@ -1,3 +1,4 @@
+import { SubmittedReleases } from "./SubmittedReleases";
 import { useEffect, useState } from "react";
 import type { BuildComparison, Job } from "../../core/types";
 const api = window.desk;
@@ -353,6 +354,7 @@ export function ReleaseAssistant({
           </p>
         </div>
       </div>
+      <SubmittedReleases project={project} />
       <section className="section-card">
         <fieldset disabled={busy} className="workflow-fieldset">
           <div className="form-grid">
