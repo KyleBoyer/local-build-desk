@@ -265,6 +265,10 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
       images: (globalThis as any).__storeHistoryImageFetches,
     }));
     await phone.getByRole("button", { name: "Projects", exact: true }).click();
+    await phone.screenshot({
+      path: "test-results/mobile-projects.png",
+      fullPage: true,
+    });
     await phone.getByRole("button", { name: "Releases", exact: true }).click();
     await expect(phone.getByText(/Saved copy/)).toBeVisible();
     await phone

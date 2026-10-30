@@ -589,8 +589,10 @@ export function MobileApp({ initialPair }: { initialPair: string | null }) {
                 ))}
             </div>
             <section className="m-about">
-              <ShieldCheck size={20} />
-              <h2>Paired with your Mac</h2>
+              <div className="m-about-heading">
+                <ShieldCheck size={20} />
+                <h2>Paired with your Mac</h2>
+              </div>
               <p>
                 {device} · Local Build Desk {snapshot?.server.version ?? ""}
               </p>
