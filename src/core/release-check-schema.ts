@@ -6,6 +6,17 @@ export const simulatorDestinationSchema = z
     runtime: z.string().max(200).optional(),
   })
   .strict();
+/** An Android emulator for captures: an avdmanager device profile and an
+ * installed system image. */
+export const androidDestinationSchema = z
+  .object({
+    device: z.string().regex(/^[\w.-]{1,100}$/),
+    systemImage: z
+      .string()
+      .regex(/^system-images;android-[\w.-]+;[\w.-]+;[\w.-]+$/)
+      .optional(),
+  })
+  .strict();
 // Steps find an element by accessibility identifier or by its visible label.
 // A tap can instead use a point, as fractions of the app's width and height.
 const locator = {
@@ -55,10 +66,21 @@ export const captureStepSchema = z.discriminatedUnion("action", [
       seconds: z.number().min(0.1).max(60),
     })
     .strict(),
+  // Press, hold and move: sliders, dials and drag gestures.
+  z
+    .object({
+      action: z.literal("drag"),
+      fromX: fraction,
+      fromY: fraction,
+      toX: fraction,
+      toY: fraction,
+      seconds: z.number().min(0.1).max(10).optional(),
+    })
+    .strict(),
 ]);
 export type CaptureStep = z.infer<typeof captureStepSchema>;
 function stepIssue(step: CaptureStep): string | undefined {
-  if (step.action === "sleep") return;
+  if (step.action === "sleep" || step.action === "drag") return;
   const named = [step.identifier, step.label].filter(
     (v) => v !== undefined,
   ).length;
@@ -73,8 +95,29 @@ function stepIssue(step: CaptureStep): string | undefined {
   if (step.action.startsWith("swipe")) return;
   if (!named) return `A ${step.action} step needs an identifier or label.`;
 }
+const color = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Use a #rrggbb color.");
+/** Store-listing framing: a headline above a scaled, rounded screenshot on a
+ * plain or gradient background, at the capture's own pixel size. Sizes are
+ * fractions of the image width. */
+export const frameSchema = z
+  .object({
+    background: color.default("#1f1b26"),
+    /** With background, a top-to-bottom gradient. */
+    backgroundEnd: color.optional(),
+    textColor: color.default("#f5efe3"),
+    fontFamily: z.string().min(1).max(100).default("Helvetica Neue"),
+    fontWeight: z.number().int().min(100).max(900).default(700),
+    headlineSize: z.number().min(0.03).max(0.12).default(0.07),
+    screenshotScale: z.number().min(0.5).max(1).default(0.8),
+    cornerRadius: z.number().min(0).max(0.2).default(0.06),
+    borderColor: color.optional(),
+    borderWidth: z.number().min(0).max(0.05).default(0),
+  })
+  .strict();
+export type ScreenshotFrame = z.infer<typeof frameSchema>;
 export const screenshotPlanSchema = z
   .object({
+    frame: frameSchema.optional(),
     appearance: z.enum(["light", "dark"]).default("light"),
     language: z
       .string()
@@ -102,6 +145,20 @@ export const screenshotPlanSchema = z
             delaySeconds: z.number().min(0).max(30).optional(),
             /** Simulator device types or names to capture on; all when omitted. */
             devices: z.array(text).min(1).max(8).optional(),
+            /** iOS: user defaults for this launch, as string values. */
+            userDefaults: z
+              .record(z.string().min(1).max(200), z.string().max(65536))
+              .optional(),
+            /** Android: SharedPreferences written before launch, by file. Needs a
+             * debuggable capture build. */
+            sharedPreferences: z
+              .record(
+                z.string().regex(/^[\w.-]{1,100}$/),
+                z.record(z.string().min(1).max(200), z.string().max(65536)),
+              )
+              .optional(),
+            /** Text shown above the screenshot when the plan has a frame. */
+            headline: z.string().min(1).max(200).optional(),
           })
           .strict(),
       )
@@ -149,6 +206,14 @@ export const releaseChecksSchema = z
     onlyTesting: z.array(z.string().min(1).max(300)).max(100).default([]),
     command: z.array(z.string().min(1).max(4096)).min(1).max(100).optional(),
     destinations: z.array(simulatorDestinationSchema).max(8).default([]),
+    /** Emulators for Android screenshot captures. */
+    androidDevices: z.array(androidDestinationSchema).max(4).default([]),
+    /** Gradle task for the installable capture APK. A debug task makes a
+     * debuggable build, which sharedPreferences needs. */
+    androidCaptureTask: z
+      .string()
+      .regex(/^:[\w:-]+$/)
+      .default(":app:assembleRelease"),
     timeoutSeconds: z.number().int().min(30).max(7200).default(1800),
     screenshots: screenshotPlanSchema.optional(),
     /** A capture plan checked into the project, read from each snapshot. */
@@ -169,18 +234,27 @@ export const releaseChecksSchema = z
         message: "Use either an inline capture plan or a plan file.",
         path: ["screenshotPlanFile"],
       });
-    if (
-      (c.runner === "xcode" || c.screenshots || c.screenshotPlanFile) &&
-      !c.destinations.length
-    )
+    if (c.runner === "xcode" && !c.destinations.length)
       ctx.addIssue({
         code: "custom",
         message: "Choose at least one simulator device and runtime.",
         path: ["destinations"],
       });
+    else if (
+      (c.screenshots || c.screenshotPlanFile) &&
+      !c.destinations.length &&
+      !c.androidDevices.length
+    )
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "Choose at least one simulator or Android emulator to capture on.",
+        path: ["destinations"],
+      });
   });
 export type ReleaseCheckPolicy = z.infer<typeof releaseChecksSchema>;
 export type SimulatorDestination = z.infer<typeof simulatorDestinationSchema>;
+export type AndroidDestination = z.infer<typeof androidDestinationSchema>;
 export type ScreenshotPlan = z.infer<typeof screenshotPlanSchema>;
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -195,6 +269,10 @@ export const capturedScreenshotSchema = z
     displayType: text.optional(),
     device: text,
     runtime: text,
+    framed: z
+      .object({ path: text, sha256: digest, size: z.number().int().positive() })
+      .strict()
+      .optional(),
   })
   .strict();
 export const validationResultSchema = z

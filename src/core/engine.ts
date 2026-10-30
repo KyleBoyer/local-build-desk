@@ -617,20 +617,22 @@ export class Engine extends EventEmitter {
     projectId: string,
     profile: string,
     mode: "all" | "tests" | "screenshots" = "all",
+    platform: Platform | "all" = "ios",
   ) {
     return this.build({
       projectId,
       profile,
-      platform: "ios",
+      platform,
       autoSubmit: false,
       validationOnly: true,
       checksMode: mode,
     });
   }
-  async screenshotPreview(jobId: string, index: number) {
+  async screenshotPreview(jobId: string, index: number, framed = false) {
     const job = this.store.get<Job>("jobs", jobId),
-      shot = job.validation?.screenshots[index];
-    invariant(shot, "SCREENSHOT_MISSING", "This capture is not available.");
+      capture = job.validation?.screenshots[index];
+    invariant(capture, "SCREENSHOT_MISSING", "This capture is not available.");
+    const shot = framed && capture.framed ? capture.framed : capture;
     const bytes = await readFile(shot.path);
     invariant(
       bytes.length <= 20 * 1024 * 1024 &&
@@ -681,14 +683,16 @@ export class Engine extends EventEmitter {
         "SCREENSHOT_SIZE",
         "A captured device is not a supported store screenshot size. Choose an App Store-sized iPhone/iPad in Tests.",
       );
-      const digest = await hashArtifact(shot.path);
+      // The framed store image when the plan has a frame, else the capture.
+      const file = shot.framed ?? shot;
+      const digest = await hashArtifact(file.path);
       invariant(
-        digest.sha256 === shot.sha256 && digest.size === shot.size,
+        digest.sha256 === file.sha256 && digest.size === file.size,
         "SCREENSHOT_CHANGED",
         "A captured screenshot changed. Run the capture plan again.",
       );
       const name = `${job.validation.fingerprint.slice(0, 16)}-${i}-${shot.name}.png`;
-      await cp(shot.path, join(root, name));
+      await cp(file.path, join(root, name));
       files.push(name);
     }
     // Keep generated store files out of the app snapshot and reuse fingerprint.
@@ -708,7 +712,7 @@ export class Engine extends EventEmitter {
       buildNumber: job.buildNumber,
       version: job.version,
       files: job.validation.screenshots.map((s) => ({
-        sha256: s.sha256,
+        sha256: (s.framed ?? s).sha256,
         name: s.name,
       })),
     };

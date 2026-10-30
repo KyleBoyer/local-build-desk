@@ -31,6 +31,14 @@ const issues = (error: {
     )
     .join(" ");
 const initial = () => releaseChecksSchema.parse({ enabled: false });
+/** A saved policy with defaults for fields added since it was saved. */
+const normalized = (saved?: ReleaseCheckPolicy): ReleaseCheckPolicy => {
+  if (!saved) return initial();
+  const parsed = releaseChecksSchema.safeParse(saved);
+  return parsed.success
+    ? parsed.data
+    : { ...initial(), ...saved, androidDevices: saved.androidDevices ?? [] };
+};
 const captureExample = {
   appearance: "light",
   language: "en",
@@ -124,7 +132,7 @@ export function ValidationWorkflow({
   onChanged: () => void;
 }) {
   const [policy, setPolicy] = useState<ReleaseCheckPolicy>(
-    project.settings.releaseChecks ?? initial(),
+    normalized(project.settings.releaseChecks),
   );
   const [targets, setTargets] =
     useState<Awaited<ReturnType<typeof api.checkTargets>>>();
@@ -142,6 +150,12 @@ export function ValidationWorkflow({
     policy.screenshotPlanFile ? "file" : "inline",
   );
   const [view, setView] = useState<"runs" | "setup">("runs");
+  const android = project.platforms?.includes("android") ?? false,
+    ios = project.platforms?.includes("ios") ?? !android;
+  const [platform, setPlatform] = useState<"ios" | "android" | "all">(
+    ios ? "ios" : "android",
+  );
+  const [showRaw, setShowRaw] = useState(false);
   const [selected, setSelected] = useState<string>();
   const navigation = useDetailNavigation(view === "setup" ? "setup" : selected);
   const [busy, setBusy] = useState(false),
@@ -167,7 +181,7 @@ export function ValidationWorkflow({
   const configured = !!saved?.enabled;
   const savedScreenshots = !!saved?.screenshots || !!saved?.screenshotPlanFile;
   useEffect(() => {
-    const saved = project.settings.releaseChecks ?? initial();
+    const saved = normalized(project.settings.releaseChecks);
     setPolicy(saved);
     setScreenshots(!!saved.screenshots || !!saved.screenshotPlanFile);
     setPlanFile(saved.screenshotPlanFile ?? "");
@@ -178,16 +192,25 @@ export function ValidationWorkflow({
     setCommand(JSON.stringify(saved.command ?? ["npm", "test"]));
   }, [project.id, JSON.stringify(project.settings.releaseChecks)]);
   // Load a run's captures when it opens, one at a time.
+  // Framed store images show by default; the raw captures are a toggle away.
   const shotCount = current?.validation?.screenshots.length ?? 0;
+  const anyFramed = !!current?.validation?.screenshots.some((s) => s.framed);
+  const framedView = anyFramed && !showRaw;
+  const previewKey = (i: number) =>
+    `${current?.id}:${i}:${framedView && current?.validation?.screenshots[i]?.framed ? "framed" : "raw"}`;
   useEffect(() => {
     if (!current || !shotCount) return;
     let live = true;
     void (async () => {
       for (let i = 0; i < shotCount; i++) {
-        const key = current.id + ":" + i;
+        const key = previewKey(i);
         if (preview[key]) continue;
         try {
-          const url = await api.screenshotPreview(current.id, i);
+          const url = await api.screenshotPreview(
+            current.id,
+            i,
+            key.endsWith(":framed"),
+          );
           if (live) setPreview((v) => ({ ...v, [key]: url }));
         } catch {}
       }
@@ -195,7 +218,7 @@ export function ValidationWorkflow({
     return () => {
       live = false;
     };
-  }, [current?.id, shotCount]);
+  }, [current?.id, shotCount, framedView]);
   const perform = async (fn: () => Promise<void>) => {
     setBusy(true);
     setError("");
@@ -258,7 +281,7 @@ export function ValidationWorkflow({
   const run = (mode: "all" | "tests" | "screenshots") =>
     perform(async () => {
       await save();
-      const result = await api.runChecks(project.id, profile, mode);
+      const result = await api.runChecks(project.id, profile, mode, platform);
       if (result[0]) {
         setView("runs");
         open(result[0].id);
@@ -287,6 +310,17 @@ export function ValidationWorkflow({
   );
   const runButtons = (
     <>
+      {android && ios && (
+        <select
+          aria-label="Platforms to check"
+          value={platform}
+          onChange={(e) => setPlatform(e.target.value as typeof platform)}
+        >
+          <option value="ios">iOS</option>
+          <option value="android">Android</option>
+          <option value="all">iOS + Android</option>
+        </select>
+      )}
       <button
         className="primary"
         disabled={busy || !policy.enabled || !!active}
@@ -577,6 +611,124 @@ export function ValidationWorkflow({
                 <Plus size={14} />
                 Add simulator
               </button>
+              {android && (
+                <>
+                  <div className="section-heading">
+                    <h3>Android emulators</h3>
+                  </div>
+                  <p className="muted">
+                    Android captures boot a disposable emulator per device,
+                    stored with the job. Device profiles come from{" "}
+                    <code>avdmanager list device</code>; the newest installed
+                    Google APIs image is used unless you name one.
+                  </p>
+                  {policy.androidDevices.map((d, i) => (
+                    <div className="simulator-choice" key={i}>
+                      <label>
+                        Emulator {i + 1}
+                        <input
+                          className="mono"
+                          list="android-device-profiles"
+                          value={d.device}
+                          onChange={(e) =>
+                            setPolicy({
+                              ...policy,
+                              androidDevices: policy.androidDevices.map(
+                                (v, n) =>
+                                  n === i
+                                    ? { ...v, device: e.target.value.trim() }
+                                    : v,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        System image
+                        <input
+                          className="mono"
+                          placeholder="Newest installed"
+                          value={d.systemImage ?? ""}
+                          onChange={(e) =>
+                            setPolicy({
+                              ...policy,
+                              androidDevices: policy.androidDevices.map(
+                                (v, n) =>
+                                  n === i
+                                    ? {
+                                        ...v,
+                                        systemImage:
+                                          e.target.value.trim() || undefined,
+                                      }
+                                    : v,
+                              ),
+                            })
+                          }
+                        />
+                      </label>
+                      <button
+                        className="icon"
+                        aria-label={`Remove emulator ${i + 1}`}
+                        onClick={() =>
+                          setPolicy({
+                            ...policy,
+                            androidDevices: policy.androidDevices.filter(
+                              (_, n) => n !== i,
+                            ),
+                          })
+                        }
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                  <datalist id="android-device-profiles">
+                    {[
+                      "pixel_9_pro",
+                      "pixel_9",
+                      "pixel_9_pro_xl",
+                      "pixel_tablet",
+                      "medium_tablet",
+                    ].map((v) => (
+                      <option key={v}>{v}</option>
+                    ))}
+                  </datalist>
+                  <button
+                    className="button"
+                    disabled={policy.androidDevices.length >= 4}
+                    onClick={() =>
+                      setPolicy({
+                        ...policy,
+                        androidDevices: [
+                          ...policy.androidDevices,
+                          { device: "pixel_9_pro" },
+                        ],
+                      })
+                    }
+                  >
+                    <Plus size={14} />
+                    Add emulator
+                  </button>
+                  <label>
+                    Android capture build task
+                    <input
+                      className="mono"
+                      value={policy.androidCaptureTask}
+                      onChange={(e) =>
+                        setPolicy({
+                          ...policy,
+                          androidCaptureTask: e.target.value.trim(),
+                        })
+                      }
+                    />
+                    <span className="muted">
+                      An assemble task for an installable APK.{" "}
+                      <code>:app:assembleDebug</code> makes a debuggable build,
+                      which <code>sharedPreferences</code> needs.
+                    </span>
+                  </label>
+                </>
+              )}
               <label className="check-label">
                 <input
                   type="checkbox"
@@ -641,12 +793,20 @@ export function ValidationWorkflow({
                     Steps: <code>tap</code>, <code>type</code>,{" "}
                     <code>wait</code>, <code>assertText</code> and swipes find
                     an element by <code>identifier</code> or visible{" "}
-                    <code>label</code>; <code>tap</code> also takes an{" "}
-                    <code>x</code>/<code>y</code> point (0–1);{" "}
-                    <code>sleep</code> pauses for <code>seconds</code>. A
-                    capture can set <code>delaySeconds</code> to let animations
-                    settle and <code>devices</code> to limit it to some
-                    simulators. Use demonstration data only.
+                    <code>label</code> (<code>*</code> at either end matches
+                    part of it); <code>tap</code> also takes an <code>x</code>/
+                    <code>y</code> point (0–1); <code>sleep</code> pauses for{" "}
+                    <code>seconds</code>. A capture can set{" "}
+                    <code>delaySeconds</code> to let animations settle and{" "}
+                    <code>devices</code> to limit it to some simulators or
+                    emulators. <code>drag</code> moves from <code>fromX</code>/
+                    <code>fromY</code> to <code>toX</code>/<code>toY</code> for
+                    sliders and dials. Seed app state with{" "}
+                    <code>userDefaults</code> (iOS) or{" "}
+                    <code>sharedPreferences</code> (Android). Add a plan-level{" "}
+                    <code>frame</code> and per-capture <code>headline</code> to
+                    make store images with a caption, background and rounded
+                    border; raw captures are kept. Use demonstration data only.
                   </p>
                 </>
               )}
@@ -748,6 +908,16 @@ export function ValidationWorkflow({
             </div>
             {status}
           </section>
+          {anyFramed && (
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={showRaw}
+                onChange={(e) => setShowRaw(e.target.checked)}
+              />
+              Show raw captures instead of framed store images
+            </label>
+          )}
           {[...byDevice].map(([device, indexes]) => (
             <section className="section-card" key={device}>
               <div className="section-heading">
@@ -759,7 +929,7 @@ export function ValidationWorkflow({
               <div className="capture-gallery">
                 {indexes.map((i) => {
                   const s = shots[i]!,
-                    key = current.id + ":" + i;
+                    key = previewKey(i);
                   return (
                     <figure key={key}>
                       <div className="capture-preview">
@@ -777,6 +947,7 @@ export function ValidationWorkflow({
                         <span>
                           {s.width} × {s.height}
                           {s.displayType ? ` · ${s.displayType}` : ""}
+                          {key.endsWith(":framed") ? " · framed" : ""}
                         </span>
                       </figcaption>
                     </figure>
@@ -866,6 +1037,10 @@ export function ValidationWorkflow({
                     >
                       <td>
                         <strong>{modeLabel(j)}</strong>
+                        <span className="subtle">
+                          {" "}
+                          · {j.platform === "ios" ? "iOS" : "Android"}
+                        </span>
                         <span className="mono subtle"> {j.id.slice(0, 7)}</span>
                       </td>
                       <td>

@@ -230,6 +230,8 @@ export interface CapturedScreenshot {
   displayType?: string;
   device: string;
   runtime: string;
+  /** The store image made from this capture by the plan's frame. */
+  framed?: { path: string; sha256: string; size: number };
 }
 export interface CheckRun {
   device: string;
@@ -488,9 +490,15 @@ export interface DesktopAPI {
     projectId: string,
     profile: string,
     mode: "all" | "tests" | "screenshots",
+    platform?: Platform | "all",
   ): Promise<Job[]>;
   useScreenshots(jobId: string): Promise<string>;
-  screenshotPreview(jobId: string, index: number): Promise<string>;
+  /** A capture as a data URL; `framed` for its store image when it has one. */
+  screenshotPreview(
+    jobId: string,
+    index: number,
+    framed?: boolean,
+  ): Promise<string>;
   readiness(
     projectId: string,
     destination?: "testflight" | "appstore",

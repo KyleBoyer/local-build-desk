@@ -763,15 +763,62 @@ it("drives label, point, sleep, and settle steps in the generated harness", asyn
   );
   const swift = await readFile(join(dir, "Screenshots.swift"), "utf8");
   expect(swift).toContain(
-    'NSPredicate(format: "label == %@ OR placeholderValue == %@", label, label)',
+    'NSPredicate(format: "label \\(op) %@ OR placeholderValue \\(op) %@", core, core)',
   );
+  expect(swift).toContain("for character in step.text");
   expect(swift).toContain("coordinate(withNormalizedOffset:");
   expect(swift).toContain('if step.action == "sleep"');
   expect(swift).toContain("capture.delaySeconds");
-  expect(swift).toContain("placeholderValue == %@");
+  expect(swift).toContain('NSPredicate(format: "identifier == %@", name)');
+  expect(swift).toContain("press(forDuration: 0.15, thenDragTo:");
+  expect(swift).toContain("capture.userDefaults");
   expect(
     JSON.parse(await readFile(join(dir, "plan.json"), "utf8")),
   ).toMatchObject({
     captures: [{ delaySeconds: 2, steps: [{ action: "sleep", seconds: 1 }] }],
   });
+});
+
+it("accepts drags, frames, headlines and per-platform state seeding", () => {
+  const plan = screenshotPlanSchema.parse({
+    frame: { background: "#1f1b26", backgroundEnd: "#0e0d12" },
+    captures: [
+      {
+        name: "level",
+        headline: "What lines up, connects",
+        userDefaults: { "CapacitorStorage.progress.v1": '{"unlocked":true}' },
+        sharedPreferences: {
+          CapacitorStorage: { "progress.v1": '{"unlocked":true}' },
+        },
+        steps: [{ action: "drag", fromX: 0.9, fromY: 0.6, toX: 0.9, toY: 0.4 }],
+      },
+    ],
+  });
+  expect(plan.frame).toMatchObject({
+    textColor: "#f5efe3",
+    screenshotScale: 0.8,
+  });
+  expect(
+    screenshotPlanSchema.safeParse({
+      frame: { background: "red" },
+      captures: [{ name: "a" }],
+    }).success,
+  ).toBe(false);
+  expect(
+    releaseChecksSchema.parse({
+      enabled: true,
+      runner: "command",
+      command: ["npm", "test"],
+      androidDevices: [{ device: "pixel_9_pro" }],
+      screenshotPlanFile: "store/plan.json",
+    }),
+  ).toMatchObject({ androidCaptureTask: ":app:assembleRelease" });
+  expect(
+    releaseChecksSchema.safeParse({
+      enabled: true,
+      runner: "command",
+      command: ["npm", "test"],
+      screenshotPlanFile: "store/plan.json",
+    }).error?.issues[0]?.message,
+  ).toMatch(/simulator or Android emulator/);
 });

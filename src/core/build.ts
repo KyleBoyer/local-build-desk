@@ -1,3 +1,4 @@
+import { admitHeavyStep } from "./memory";
 import { runReleaseChecks } from "./release-validation";
 import {
   detectProjectType,
@@ -734,6 +735,7 @@ export async function buildIOS(
   if (ctx.job.kind === "test") return;
   if (profile.simulator) {
     ctx.stage("compile");
+    await admitHeavyStep(3, "The Xcode build", ctx);
     await run(
       "xcodebuild",
       [
@@ -834,6 +836,7 @@ export async function buildIOS(
           );
       const archive = join(output, "App.xcarchive");
       ctx.stage("compile");
+      await admitHeavyStep(3, "The Xcode archive", ctx);
       await run(
         "xcodebuild",
         archiveArguments(
@@ -1016,8 +1019,6 @@ export async function buildAndroid(
   options: CommandOptions,
   androidPath = "android",
 ) {
-  await runReleaseChecks(ctx, undefined, profile, source, output, options);
-  if (ctx.job.kind === "test") return;
   await privateDirectory(async (root) => {
     const android = resolve(source, androidPath);
     for (const [local, cached] of [
@@ -1092,7 +1093,18 @@ export async function buildAndroid(
       cwd: android,
       env,
     });
+    // Captures build their own APK, without the store signing init script.
+    await runReleaseChecks(ctx, undefined, profile, source, output, options, {
+      dir: android,
+      env: {
+        ...options.env,
+        GRADLE_USER_HOME: env.GRADLE_USER_HOME,
+        ANDROID_HOME: env.ANDROID_HOME,
+      },
+    });
+    if (ctx.job.kind === "test") return;
     ctx.stage("compile");
+    await admitHeavyStep(3, "The Gradle build", ctx);
     await run(
       join(android, "gradlew"),
       [

@@ -5,10 +5,12 @@ import {
   readdir,
   cp,
   realpath,
+  rm,
+  stat,
   statfs,
 } from "node:fs/promises";
 import { join, resolve, basename, sep } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { run, type CommandOptions } from "./process";
@@ -30,6 +32,9 @@ import {
   type SimulatorDestination,
 } from "./release-check-schema";
 import { createScreenshotRunner } from "./screenshot-runner";
+import { captureAndroid, withEmulator } from "./android-capture";
+import { frameScreenshot } from "./screenshot-frame";
+import { admitHeavyStep } from "./memory";
 import { displayTypeFor } from "./app-store-listing";
 import { withLock } from "./locks";
 import { invariant, messageOf } from "./errors";
@@ -230,31 +235,269 @@ export async function exportedScreenshots(
       "SCREENSHOT_PATH",
       "An exported attachment path escapes the result folder.",
     );
-    const path = join(folder, selected.exportedFileName),
-      bytes = await readFile(path);
-    invariant(
-      bytes
-        .subarray(0, 8)
-        .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
-      "SCREENSHOT_FORMAT",
-      "The test attachment is not a PNG.",
+    shots.push(
+      await describeScreenshot(
+        join(folder, selected.exportedFileName),
+        name,
+        device,
+        runtime,
+      ),
     );
-    const width = bytes.readUInt32BE(16),
-      height = bytes.readUInt32BE(20);
-    shots.push({
-      name,
-      path,
-      width,
-      height,
-      displayType: displayTypeFor(width, height),
-      size: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      device,
-      runtime,
-    });
   }
   return shots;
 }
+
+/** A captured PNG's identity and size; App Store display types for iOS. */
+export async function describeScreenshot(
+  path: string,
+  name: string,
+  device: string,
+  runtime: string,
+  apple = true,
+): Promise<CapturedScreenshot> {
+  const bytes = await readFile(path);
+  invariant(
+    bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+    "SCREENSHOT_FORMAT",
+    "The capture is not a PNG.",
+  );
+  const width = bytes.readUInt32BE(16),
+    height = bytes.readUInt32BE(20);
+  return {
+    name,
+    path,
+    width,
+    height,
+    ...(apple ? { displayType: displayTypeFor(width, height) } : {}),
+    size: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    device,
+    runtime,
+  };
+}
+
+/** Builds an installable APK of the snapshot for captures, signed with a
+ * throwaway key, and reads what the emulator needs to launch it. */
+async function captureApk(
+  dir: string,
+  task: string,
+  root: string,
+  options: CommandOptions,
+) {
+  const sdk = options.env!.ANDROID_HOME!;
+  // Only the emulator's CPU type: React Native otherwise compiles every native
+  // library four times. Other projects ignore the property.
+  const abi = process.arch === "arm64" ? "arm64-v8a" : "x86_64";
+  await run(
+    join(dir, "gradlew"),
+    [
+      task,
+      `-PreactNativeArchitectures=${abi}`,
+      "--no-daemon",
+      "--console=plain",
+      "--no-configuration-cache",
+    ],
+    { ...options, cwd: dir },
+  );
+  const moduleDir = join(dir, task.split(":").slice(1, -1).join("/") || "app");
+  const apks: { path: string; mtime: number }[] = [];
+  for (const entry of await readdir(join(moduleDir, "build/outputs/apk"), {
+    recursive: true,
+  }))
+    if (entry.endsWith(".apk") && !entry.includes("androidTest")) {
+      const path = join(moduleDir, "build/outputs/apk", entry);
+      apks.push({ path, mtime: (await stat(path)).mtimeMs });
+    }
+  invariant(
+    apks.length,
+    "CAPTURE_APK",
+    `${task} did not produce an APK. Choose an assemble task for the Android capture build.`,
+  );
+  const built = apks.sort((a, b) => b.mtime - a.mtime)[0]!.path;
+  const tools = join(
+    sdk,
+    "build-tools",
+    (await readdir(join(sdk, "build-tools")))
+      .filter((v) => /^\d/.test(v))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .at(-1)!,
+  );
+  const keystore = join(root, "capture.keystore"),
+    apk = join(root, "capture.apk");
+  await rm(keystore, { force: true });
+  await run(
+    "keytool",
+    [
+      "-genkeypair",
+      "-keystore",
+      keystore,
+      "-storepass",
+      "capture",
+      "-keypass",
+      "capture",
+      "-alias",
+      "capture",
+      "-keyalg",
+      "RSA",
+      "-keysize",
+      "2048",
+      "-validity",
+      "2",
+      "-dname",
+      "CN=Local Build Desk capture",
+      "-noprompt",
+    ],
+    { ...options, log: undefined },
+  );
+  await run(
+    join(tools, "apksigner"),
+    [
+      "sign",
+      "--ks",
+      keystore,
+      "--ks-pass",
+      "pass:capture",
+      "--out",
+      apk,
+      built,
+    ],
+    { ...options, log: undefined },
+  );
+  const badging = (
+    await run(join(tools, "aapt2"), ["dump", "badging", apk], {
+      ...options,
+      log: undefined,
+    })
+  ).stdout;
+  const pkg = badging.match(/package: name='([^']+)'/)?.[1],
+    activity = badging.match(/launchable-activity: name='([^']+)'/)?.[1];
+  invariant(
+    pkg && activity,
+    "CAPTURE_APK",
+    "The capture APK has no launcher activity.",
+  );
+  return {
+    apk,
+    pkg,
+    activity: `${pkg}/${activity}`,
+    debuggable: /application-debuggable/.test(badging),
+  };
+}
+
+async function captureOnEmulators(
+  ctx: BuildContext,
+  policy: ReleaseCheckPolicy,
+  capturePlan: ScreenshotPlan,
+  root: string,
+  result: ValidationResult,
+  options: CommandOptions & {
+    dir: string;
+    writeManifest: () => Promise<void>;
+  },
+) {
+  invariant(
+    policy.androidDevices.length,
+    "ANDROID_DEVICES",
+    "Add an Android emulator in Check settings to capture Android screenshots.",
+  );
+  ctx.stage("screenshots");
+  await admitHeavyStep(3, "The Android capture build", ctx);
+  ctx.log(`Building the capture APK with ${policy.androidCaptureTask}…`);
+  const app = await captureApk(
+    options.dir,
+    policy.androidCaptureTask,
+    root,
+    options,
+  );
+  await withLock("desk-emulator-validation", ctx.signal, async () => {
+    for (const [index, destination] of policy.androidDevices.entries()) {
+      const plan = capturesFor(capturePlan, destination.device);
+      if (!plan.captures.length) {
+        ctx.log(`No captures are assigned to ${destination.device}.`);
+        continue;
+      }
+      const folder = join(root, `android-${index}`);
+      await admitHeavyStep(4, `The ${destination.device} emulator`, ctx);
+      await withEmulator(
+        {
+          sdks: [
+            options.env!.ANDROID_HOME,
+            process.env.ANDROID_HOME,
+            join(homedir(), "Library/Android/sdk"),
+          ],
+          home: join(root, "avd"),
+          name: `lbd_${ctx.job.id.slice(0, 8)}_${index}`,
+          destination,
+          env: options.env!,
+          log: ctx.log,
+          signal: ctx.signal,
+          appearance: plan.appearance,
+        },
+        async (device, image) => {
+          const runtime = image.split(";")[1]!.replace("android-", "Android ");
+          ctx.log(
+            `Capturing ${plan.captures.length} screens on ${destination.device}…`,
+          );
+          try {
+            await device.adbCommand("install", "-r", "-g", app.apk);
+            await device.shell(
+              `cmd locale set-app-locales ${app.pkg} --locales ${plan.language}`,
+              true,
+            );
+            const shots = await captureAndroid(
+              {
+                device,
+                pkg: app.pkg,
+                activity: app.activity,
+                debuggable: app.debuggable,
+                folder,
+                log: ctx.log,
+                signal: ctx.signal,
+              },
+              plan,
+            );
+            result.runs.push({
+              device: destination.device,
+              runtime,
+              attachments: folder,
+              status: "passed",
+            });
+            for (const shot of shots)
+              result.screenshots.push(
+                await describeScreenshot(
+                  shot.path,
+                  shot.name,
+                  destination.device,
+                  runtime,
+                  false,
+                ),
+              );
+            await options.writeManifest();
+          } catch (error) {
+            result.runs.push({
+              device: destination.device,
+              runtime,
+              attachments: folder,
+              status: "failed",
+              detail: messageOf(error).slice(0, 4000),
+            });
+            await options.writeManifest();
+            throw error;
+          }
+        },
+      );
+    }
+  });
+}
+
+export const SIMULATOR_LOCAL_SIGNING = [
+  "CODE_SIGNING_ALLOWED=YES",
+  "CODE_SIGNING_REQUIRED=NO",
+  "CODE_SIGN_IDENTITY=-",
+  "CODE_SIGN_STYLE=Manual",
+  "DEVELOPMENT_TEAM=",
+  "PROVISIONING_PROFILE_SPECIFIER=",
+];
 
 /** The run's capture plan: inline in the policy, or the project's
  * checked-in file read from this snapshot. */
@@ -333,6 +576,8 @@ export async function runReleaseChecks(
   source: string,
   output: string,
   options: CommandOptions,
+  /** The Android project and Gradle environment, for capture builds. */
+  android?: { dir: string; env: NodeJS.ProcessEnv; module?: string },
 ) {
   const raw = ctx.project.settings.releaseChecks;
   const wanted =
@@ -347,11 +592,11 @@ export async function runReleaseChecks(
   const mode = ctx.job.checksMode ?? "all";
   invariant(
     ctx.job.platform === "ios" ||
-      (policy.runner === "command" &&
-        !policy.screenshots &&
-        !policy.screenshotPlanFile),
+      policy.runner === "command" ||
+      policy.screenshots ||
+      policy.screenshotPlanFile,
     "TEST_PLATFORM",
-    "Android checks use a project-owned command. Simulator screenshot plans require iOS.",
+    "Android checks use a project-owned test command or a capture plan; Xcode tests run on iOS.",
   );
   const result: ValidationResult = {
     state: "running",
@@ -477,6 +722,7 @@ export async function runReleaseChecks(
             "SIMULATOR_STORAGE",
             "Simulator tests need at least 3 GB free on the Mac's system disk, even when build storage is elsewhere. Free space and resume; other people's simulators and files will not be removed.",
           );
+          await admitHeavyStep(3, `The ${device.name} simulator`, ctx);
           const name = `Local Build Desk ${ctx.job.id} ${index}`;
           ctx.stage("testing");
           ctx.log(
@@ -604,7 +850,9 @@ export async function runReleaseChecks(
                   `id=${deviceId}`,
                   "-derivedDataPath",
                   derived,
-                  "CODE_SIGNING_ALLOWED=NO",
+                  // Sign to run locally: an unsigned simulator app has no
+                  // entitlements, so Keychain-backed storage fails at launch.
+                  ...SIMULATOR_LOCAL_SIGNING,
                   "build",
                 ],
                 { ...options, timeout: policy.timeoutSeconds * 1000 },
@@ -729,6 +977,25 @@ export async function runReleaseChecks(
           }
         }
       });
+    }
+    if (ctx.job.platform === "android" && capturePlan)
+      await captureOnEmulators(ctx, policy, capturePlan, root, result, {
+        ...options,
+        ...android!,
+        writeManifest,
+      });
+    if (capturePlan?.frame && result.screenshots.length) {
+      ctx.log(
+        `Framing ${result.screenshots.length} screenshots for the store…`,
+      );
+      for (const shot of result.screenshots)
+        shot.framed = await frameScreenshot(
+          shot.path,
+          shot.path.replace(/\.png$/, "") + "-framed.png",
+          capturePlan.frame,
+          capturePlan.captures.find((c) => c.name === shot.name)?.headline,
+        );
+      await writeManifest();
     }
     invariant(
       result.runs.length > 0,

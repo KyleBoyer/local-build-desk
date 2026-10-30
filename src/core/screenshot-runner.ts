@@ -97,10 +97,12 @@ const swiftRunner = String.raw`import XCTest
 struct Step: Decodable {
   let action: String; let identifier: String?; let label: String?; let text: String?
   let timeoutSeconds: Double?; let x: Double?; let y: Double?; let seconds: Double?
+  let fromX: Double?; let fromY: Double?; let toX: Double?; let toY: Double?
 }
 struct Capture: Decodable {
   let name: String; let launchArguments: [String]; let launchEnvironment: [String:String]
   let steps: [Step]; let readyIdentifier: String?; let delaySeconds: Double?
+  let userDefaults: [String:String]?
 }
 struct Plan: Decodable { let bundleId: String; let language: String; let locale: String; let captures: [Capture] }
 
@@ -114,7 +116,12 @@ final class DeskScreenshots: XCTestCase {
     let plan = try JSONDecoder().decode(Plan.self, from: Data(contentsOf: url))
     for capture in plan.captures {
       let app = XCUIApplication(bundleIdentifier: plan.bundleId)
-      app.launchArguments = capture.launchArguments + ["-AppleLanguages", "(\(plan.language))", "-AppleLocale", plan.locale]
+      // "-key value" arguments override user defaults for this launch. Quoting
+      // keeps a JSON value a string rather than a parsed property list.
+      let defaults = (capture.userDefaults ?? [:]).sorted { $0.key < $1.key }.flatMap { key, value in
+        ["-" + key, "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""]
+      }
+      app.launchArguments = capture.launchArguments + defaults + ["-AppleLanguages", "(\(plan.language))", "-AppleLocale", plan.locale]
       app.launchEnvironment = capture.launchEnvironment
       app.launch()
       defer { app.terminate() }
@@ -122,11 +129,28 @@ final class DeskScreenshots: XCTestCase {
       func element(_ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
       }
+      // A label may start or end with "*": "Paycheck*" begins with, "*Rent*"
+      // contains. Lists often merge a row's texts into one label.
+      func pattern(_ label: String) -> NSPredicate {
+        let starts = label.hasPrefix("*"), ends = label.hasSuffix("*")
+        let core = String(label.dropFirst(starts ? 1 : 0).dropLast(ends && label.count > 1 ? 1 : 0))
+        let op = starts && ends ? "CONTAINS" : ends ? "BEGINSWITH" : starts ? "ENDSWITH" : "=="
+        return NSPredicate(format: "label \(op) %@ OR placeholderValue \(op) %@", core, core)
+      }
       func labelled(_ label: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(NSPredicate(format: "label == %@ OR placeholderValue == %@", label, label)).firstMatch
+        app.descendants(matching: .any).matching(pattern(label)).firstMatch
       }
       for step in capture.steps {
         if step.action == "sleep" { pause(step.seconds ?? 1); continue }
+        if step.action == "drag", let fx = step.fromX, let fy = step.fromY, let tx = step.toX, let ty = step.toY {
+          let from = app.coordinate(withNormalizedOffset: CGVector(dx: fx, dy: fy))
+          let to = app.coordinate(withNormalizedOffset: CGVector(dx: tx, dy: ty))
+          let size = app.frame.size
+          let distance = hypot((tx - fx) * size.width, (ty - fy) * size.height)
+          let speed = max(distance / (step.seconds ?? 0.6), 50)
+          from.press(forDuration: 0.15, thenDragTo: to, withVelocity: XCUIGestureVelocity(rawValue: speed), thenHoldForDuration: 0.2)
+          continue
+        }
         if step.action == "tap", let x = step.x, let y = step.y {
           app.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y)).tap()
           continue
@@ -138,7 +162,7 @@ final class DeskScreenshots: XCTestCase {
         }
         // A form section header often shares its field's label; type into the field.
         if step.action == "type", let name {
-          let named = NSPredicate(format: "label == %@ OR identifier == %@ OR placeholderValue == %@", name, name, name)
+          let named = step.identifier != nil ? NSPredicate(format: "identifier == %@", name) : pattern(name)
           let kinds: [XCUIElement.ElementType] = [.textField, .secureTextField, .textView, .searchField]
           if let input = kinds.lazy.map({ app.descendants(matching: $0).matching(named).firstMatch }).first(where: { $0.exists }) {
             target = input
@@ -147,7 +171,10 @@ final class DeskScreenshots: XCTestCase {
         switch step.action {
         case "wait": break
         case "tap": target.tap()
-        case "type": target.tap(); target.typeText(step.text ?? "")
+        case "type":
+          target.tap()
+          // One character at a time: React Native inputs drop fast keystrokes.
+          for character in step.text ?? "" { target.typeText(String(character)) }
         case "assertText":
           let actual = (target.value as? String) ?? target.label
           XCTAssertEqual(actual, step.text ?? "")

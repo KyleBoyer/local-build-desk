@@ -38,6 +38,8 @@ test("Tests navigation keeps its form mounted and preserves unsaved edits", asyn
         runner: "xcode",
         onlyTesting: [],
         timeoutSeconds: 1800,
+        androidDevices: [],
+        androidCaptureTask: ":app:assembleRelease",
         destinations: ["phone", "tablet"].map((device) => ({
           deviceType: device,
           runtime: "27.2",

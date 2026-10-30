@@ -135,9 +135,14 @@ export const methods = {
     identifier,
     text,
     z.enum(["all", "tests", "screenshots"]),
+    z.enum(["ios", "android", "all"]).optional(),
   ]),
   useScreenshots: z.tuple([identifier]),
-  screenshotPreview: z.tuple([identifier, z.number().int().min(0).max(79)]),
+  screenshotPreview: z.tuple([
+    identifier,
+    z.number().int().min(0).max(79),
+    z.boolean().optional(),
+  ]),
   readiness: z.tuple([
     identifier,
     z.enum(["testflight", "appstore"]).optional(),

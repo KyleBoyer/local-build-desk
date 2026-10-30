@@ -66,6 +66,7 @@ test("shows release-check evidence, previews captures and reports readiness", as
     chunk("IEND", Buffer.alloc(0)),
   ]);
   await writeFile(shot, png);
+  await writeFile(shot.replace(/\.png$/, "-framed.png"), png);
   const store = new Store(state);
   const project: Project = {
     id: "project",
@@ -82,6 +83,8 @@ test("shows release-check evidence, previews captures and reports readiness", as
         runner: "xcode",
         onlyTesting: [],
         timeoutSeconds: 1800,
+        androidDevices: [],
+        androidCaptureTask: ":app:assembleRelease",
         destinations: [{ deviceType: "iPhone 18 Pro Max", runtime: "27.2" }],
       },
     },
@@ -146,6 +149,11 @@ test("shows release-check evidence, previews captures and reports readiness", as
           width: 1320,
           height: 2868,
           displayType: "APP_IPHONE_67",
+          framed: {
+            path: shot.replace(/\.png$/, "-framed.png"),
+            sha256: createHash("sha256").update(png).digest("hex"),
+            size: png.length,
+          },
           device: "iPhone 18 Pro Max",
           runtime: "27.2",
         },
@@ -185,6 +193,18 @@ test("shows release-check evidence, previews captures and reports readiness", as
       page.getByRole("heading", { name: "Tests + screenshots", level: 2 }),
     ).toBeFocused();
     await expect(page.getByText("25 passed · 0 failed · passed")).toBeVisible();
+    // Framed store images show first; the raw capture is a toggle away.
+    await expect(
+      page.getByText("1320 × 2868 · APP_IPHONE_67 · framed"),
+    ).toBeVisible();
+    await page
+      .getByRole("checkbox", {
+        name: "Show raw captures instead of framed store images",
+      })
+      .check();
+    await expect(
+      page.getByText("1320 × 2868 · APP_IPHONE_67", { exact: true }),
+    ).toBeVisible();
     const image = page.getByAltText("home on iPhone 18 Pro Max");
     await expect(image).toBeVisible();
     expect(await image.evaluate((i: HTMLImageElement) => i.naturalWidth)).toBe(

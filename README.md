@@ -199,13 +199,37 @@ The tab lists every check run for the project, newest first: standalone test and
 
 Use **Discover targets** to select installed iPhone/iPad device types, an exact runtime and optionally a scheme/test plan. A capture plan launches the app with per-screen demo arguments/environment, runs its steps, then captures the foreground app:
 
-- `tap`, `type`, `wait`, `assertText` and swipes find an element by `identifier` (accessibility identifier) or visible `label` (a field's placeholder also counts). Swipes without one act on the app.
+- `tap`, `type`, `wait`, `assertText` and swipes find an element by `identifier` (accessibility identifier) or visible `label` (a field's placeholder also counts). A label can start or end with `*` to match part of it: `"Paycheck*"` begins with, `"*Rent*"` contains. List rows often combine their texts into one label. Swipes without one act on the app.
 - `tap` can instead use `x` and `y`, fractions (0–1) of the app's width and height.
-- `type` prefers a text field or text view whose label, identifier or placeholder matches, so a section header with the same label isn't chosen.
+- `type` prefers a text field or text view whose label, identifier or placeholder matches, so a section header with the same label isn't chosen. On iOS it types one character at a time, which React Native inputs need.
 - `sleep` pauses for `seconds` (0.1–60); `wait` takes an optional `timeoutSeconds`.
 - A capture's `readyIdentifier` must appear before the screenshot, `delaySeconds` lets animations settle, and `devices` limits it to simulators by device type or name.
 
-Keep the plan with the app by checking it in and setting `screenshotPlanFile` (for example `assets/store/screenshots.json`) instead of an inline `screenshots` plan. Each run reads the file from the same source snapshot it builds, so the plan is versioned with the screens it captures. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Simulator captures cover iOS; Android can use a project-owned test command with an exit-code contract.
+- `drag` presses at `fromX`/`fromY`, moves to `toX`/`toY` over `seconds`, and releases: sliders, dials and game controls.
+- `userDefaults` (iOS) and `sharedPreferences` (Android, `{ "file": { "key": "value" } }`) seed a capture's saved state, for example progress or a demo account. iOS passes them as launch arguments for that launch only; Android writes them before launch and needs a debuggable capture build.
+
+**Android captures** use the same plan. Add emulators under **Check settings → Android emulators** (`androidDevices`, device profiles from `avdmanager list device`, optionally an installed `systemImage`). Each run builds an installable APK from the snapshot with `androidCaptureTask` (default `:app:assembleRelease`; a debug task makes a debuggable build), signs it with a throwaway key, and boots a disposable emulator stored with the job on build storage. The status bar shows 9:41 with full battery and Wi-Fi; animations are off. Steps run over `adb`: identifiers match resource IDs (React Native `testID`) or content descriptions, labels match text, content descriptions or field hints, and the screen comes from `screencap`. A screen that redraws every frame, such as a game, can't be read by `uiautomator`; use `x`/`y` taps there. Text typed on Android must be ASCII. Existing emulators and devices are left alone; the emulator SDK is the project's, or `~/Library/Android/sdk` when the project's has no emulator.
+
+**Store frames.** A plan-level `frame` turns each capture into a store image at the same pixel size: a `headline` (per capture) above the screenshot, scaled with rounded corners and an optional border, on a plain or `backgroundEnd` gradient background. Raw captures are kept; the run shows framed images with a toggle for the raw ones, and **Use screenshots in listing** uses the framed files.
+
+```json
+"frame": {
+  "background": "#2b2238",
+  "backgroundEnd": "#141219",
+  "textColor": "#f4ede1",
+  "fontFamily": "Iowan Old Style",
+  "fontWeight": 600,
+  "headlineSize": 0.068,
+  "screenshotScale": 0.8,
+  "cornerRadius": 0.07,
+  "borderColor": "#3d3550",
+  "borderWidth": 0.004
+}
+```
+
+Sizes are fractions of the image width; fonts come from the Mac's installed fonts.
+
+Keep the plan with the app by checking it in and setting `screenshotPlanFile` (for example `assets/store/screenshots.json`) instead of an inline `screenshots` plan. Each run reads the file from the same source snapshot it builds, so the plan is versioned with the screens it captures. Apps supply their own demo data and stable accessibility identifiers. Use synthetic data in capture plans; the plan and test reports are retained locally. Captures run on iOS simulators and Android emulators; Android tests use a project-owned test command with an exit-code contract.
 
 A portable `local-build-desk.json` can contain the same policy, for example:
 

@@ -23,6 +23,7 @@
   "dependencies": {
     "@fontsource/dm-sans": "^5.2.8",
     "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@resvg/resvg-js": "^2.6.2",
     "electron-updater": "^6.8.11",
     "jose": "^6.1.0",
     "lucide-react": "^0.577.0",
@@ -35,7 +36,6 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
-    "@resvg/resvg-js": "^2.6.2",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^26.0.0",
     "@types/plist": "^3.0.5",
