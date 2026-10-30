@@ -15,6 +15,7 @@ import {
   useEffect,
   useCallback,
   useRef,
+  memo,
   type ReactNode,
 } from "react";
 import {
@@ -104,6 +105,7 @@ const pageNames = {
   release: "Release",
   compliance: "App Store",
 } as const;
+const RetainedValidationWorkflow = memo(ValidationWorkflow);
 type Page = keyof typeof pageNames;
 const statusLabel = (value: string) =>
   value.replace(/-/g, " ").replace(/^./, (x) => x.toUpperCase());
@@ -408,6 +410,7 @@ export function App() {
   const [state, setState] = useState(initial),
     [page, setPage] = useState<Page>("project"),
     [projectId, setProjectId] = useState("");
+  const [visitedTests, setVisitedTests] = useState(false);
   const [profile, setProfile] = useState("production"),
     [platform, setPlatform] = useState<Platform | "all">("ios"),
     [clean, setClean] = useState(false);
@@ -458,6 +461,14 @@ export function App() {
       notify(String(e), true);
     }
   }, [notify]);
+  const openCheckedJob = useCallback(
+    (job: Job) => {
+      setSelectedJob(job.id);
+      setPage("builds");
+      void refresh();
+    },
+    [refresh],
+  );
   useEffect(() => {
     void refresh();
     return api.onEvent((e) => {
@@ -674,7 +685,10 @@ export function App() {
               <button
                 key={p}
                 className={page === p ? "active" : ""}
-                onClick={() => setPage(p)}
+                onClick={() => {
+                  if (p === "tests") setVisitedTests(true);
+                  setPage(p);
+                }}
               >
                 <Icon size={18} />
                 <span>{pageNames[p]}</span>
@@ -748,23 +762,22 @@ export function App() {
           </div>
         </header>
         <div className="content">
-          {page === "tests" &&
-            (project ? (
-              <ValidationWorkflow
-                key={project.id}
-                project={project}
-                jobs={state.jobs}
-                profile={profile}
-                onChanged={() => void refresh()}
-                onRun={(job) => {
-                  setSelectedJob(job.id);
-                  setPage("builds");
-                  void refresh();
-                }}
-              />
-            ) : (
-              <p className="muted">Import a project to configure tests.</p>
-            ))}
+          {(page === "tests" || visitedTests) && (
+            <div hidden={page !== "tests"}>
+              {project ? (
+                <RetainedValidationWorkflow
+                  key={project.id}
+                  project={project}
+                  jobs={state.jobs}
+                  profile={profile}
+                  onChanged={refresh}
+                  onRun={openCheckedJob}
+                />
+              ) : (
+                <p className="muted">Import a project to configure tests.</p>
+              )}
+            </div>
+          )}
           {page === "readiness" &&
             (project ? (
               <ReadinessWorkflow

@@ -73,6 +73,8 @@ export class BuildTray {
   private timer?: ReturnType<typeof setInterval>;
   private menu?: Menu;
   private structure = "";
+  private lastTitle?: string;
+  private lastTooltip?: string;
   private disposed = false;
   private readonly changed = (event: DeskEvent) => {
     if (event.type === "state") this.refresh();
@@ -105,9 +107,15 @@ export class BuildTray {
       image.addRepresentation({ scaleFactor: 2, dataURL: retinaIcon });
       image.setTemplateImage(true);
       this.tray = new Tray(image, "c3267c2f-0375-4c03-8d78-d75c124222b3");
-      // The timer updates elapsed time even when native tools are silent.
+    }
+    // Idle monitor changes arrive through its events. Only active jobs need
+    // a clock; avoid AppKit/menu work every second while the desk is idle.
+    if (jobs.length && !this.timer) {
       this.timer = setInterval(() => this.refresh(), 1000);
       this.timer.unref();
+    } else if (!jobs.length && this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
     }
     const running = jobs.filter((job) => job.status === "running").length;
     const queued = jobs.filter((job) => job.status === "queued").length;
@@ -230,20 +238,27 @@ export class BuildTray {
       this.menu = Menu.buildFromTemplate(template);
       this.tray.setContextMenu(this.menu);
     }
-    this.tray.setTitle(jobs.length ? String(jobs.length) : "", {
-      fontType: "monospacedDigit",
-    });
-    this.tray.setToolTip(
-      `Local Build Desk · ${summary}\n${jobs.map((job) => `${short(job.projectName)} · ${jobTrayProgress(job, now)}`).join("\n")}`,
-    );
+    const title = jobs.length ? String(jobs.length) : "";
+    if (title !== this.lastTitle) {
+      this.tray.setTitle(title, { fontType: "monospacedDigit" });
+      this.lastTitle = title;
+    }
+    const tooltip = `Local Build Desk · ${summary}\n${jobs.map((job) => `${short(job.projectName)} · ${jobTrayProgress(job, now)}`).join("\n")}`;
+    if (tooltip !== this.lastTooltip) {
+      this.tray.setToolTip(tooltip);
+      this.lastTooltip = tooltip;
+    }
   }
   private updateMenu(menu: Menu, items: MenuItemConstructorOptions[]) {
     for (let index = 0; index < items.length; index++) {
       const value = items[index],
         item = menu.items[index];
-      if (value.label !== undefined) item.label = value.label;
-      if (value.enabled !== undefined) item.enabled = value.enabled;
-      if (value.visible !== undefined) item.visible = value.visible;
+      if (value.label !== undefined && value.label !== item.label)
+        item.label = value.label;
+      if (value.enabled !== undefined && value.enabled !== item.enabled)
+        item.enabled = value.enabled;
+      if (value.visible !== undefined && value.visible !== item.visible)
+        item.visible = value.visible;
       if (item.submenu && Array.isArray(value.submenu))
         this.updateMenu(item.submenu, value.submenu);
     }
@@ -255,6 +270,7 @@ export class BuildTray {
     this.tray = undefined;
     this.menu = undefined;
     this.structure = "";
+    this.lastTitle = this.lastTooltip = undefined;
   }
   dispose() {
     this.disposed = true;

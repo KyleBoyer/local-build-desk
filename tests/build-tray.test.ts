@@ -208,3 +208,53 @@ it("creates no native icon for idle or hidden replay sessions", () => {
   idle.dispose();
   hidden.dispose();
 });
+
+it("keeps an idle phone monitor event-driven without repeating native menu writes", () => {
+  vi.useFakeTimers();
+  const events = new EventEmitter();
+  let jobs: Job[] = [];
+  const status = {
+    config: { enabled: true },
+    running: true,
+    clients: 0,
+    url: "https://127.0.0.1:43178",
+  } as any;
+  const monitor = new BuildTray(
+    events,
+    () => jobs,
+    { showLogs: vi.fn(), monitor: () => status, openDesk: vi.fn() },
+    false,
+  );
+  try {
+    const tray = native.trays[0],
+      title = vi.spyOn(tray, "setTitle"),
+      tooltip = vi.spyOn(tray, "setToolTip"),
+      item = tray.menu.items[0];
+    let label = item.label;
+    const setLabel = vi.fn((value) => {
+      label = value;
+    });
+    Object.defineProperty(item, "label", {
+      get: () => label,
+      set: setLabel,
+      configurable: true,
+    });
+    monitor.refresh();
+    expect(setLabel).not.toHaveBeenCalled();
+    expect(title).not.toHaveBeenCalled();
+    expect(tooltip).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    status.clients = 1;
+    monitor.refresh();
+    expect(setLabel).toHaveBeenCalledTimes(1);
+    expect(tooltip).toHaveBeenCalledTimes(1);
+    jobs = [job()];
+    events.emit("event", { type: "state" });
+    expect(vi.getTimerCount()).toBe(1);
+    jobs = [];
+    events.emit("event", { type: "state" });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    monitor.dispose();
+  }
+});
