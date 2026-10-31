@@ -117,7 +117,84 @@ it("reads App Review's attached build separately from a newer TestFlight upload"
       }),
     ]),
   );
-  expect(api.request).toHaveBeenCalledTimes(2);
+  expect(api.request).toHaveBeenCalledTimes(3);
+  expect(result.releases[0].reviewIssue).toBeUndefined();
+});
+it("flags versions App Review rejected or returned with unresolved issues", async () => {
+  const api = {
+    app: async () => ({ id: "app" }),
+    request: vi.fn(async (path: string) => {
+      if (path.startsWith("/builds")) return { data: [] };
+      if (path.startsWith("/reviewSubmissions")) {
+        expect(path).toContain("filter[state]=UNRESOLVED_ISSUES");
+        return {
+          data: [
+            {
+              id: "sub",
+              attributes: { state: "UNRESOLVED_ISSUES" },
+              relationships: {
+                appStoreVersionForReview: {
+                  data: { type: "appStoreVersions", id: "v2" },
+                },
+              },
+            },
+          ],
+        };
+      }
+      return {
+        data: [
+          {
+            id: "v1",
+            attributes: { versionString: "1.0", appStoreState: "REJECTED" },
+          },
+          {
+            id: "v2",
+            attributes: {
+              versionString: "1.1",
+              appStoreState: "PREPARE_FOR_SUBMISSION",
+            },
+          },
+          {
+            id: "v3",
+            attributes: {
+              versionString: "1.2",
+              appStoreState: "DEVELOPER_REJECTED",
+            },
+          },
+        ],
+      };
+    }),
+  } as unknown as AppleAPI;
+  const { releases } = await appleReleases(api, "com.example.fixture");
+  const issue = (id: string) =>
+    releases.find((r) => r.resourceId === id)?.reviewIssue;
+  expect(issue("v1")).toBe("rejected");
+  expect(issue("v2")).toBe("unresolved");
+  expect(issue("v3")).toBeUndefined();
+});
+it("still lists App Store versions when review submissions can't be read", async () => {
+  const api = {
+    app: async () => ({ id: "app" }),
+    request: vi.fn(async (path: string) => {
+      if (path.startsWith("/reviewSubmissions")) throw Error("Apple 403");
+      if (path.startsWith("/builds")) return { data: [] };
+      return {
+        data: [
+          {
+            id: "v",
+            attributes: { versionString: "1.0", appStoreState: "IN_REVIEW" },
+          },
+        ],
+      };
+    }),
+  } as unknown as AppleAPI;
+  const { releases, versions } = await appleReleases(
+    api,
+    "com.example.fixture",
+  );
+  expect(versions.status).toBe("fulfilled");
+  expect(releases).toHaveLength(1);
+  expect(releases[0].reviewIssue).toBeUndefined();
 });
 it("keeps App Review history available when TestFlight read permission fails", async () => {
   const api = {

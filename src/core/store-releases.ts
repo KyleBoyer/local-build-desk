@@ -13,28 +13,49 @@ const related = (row: any, key: string, included: any[]) =>
   );
 const stateOf = (row: any) =>
   row.attributes?.appStoreState ?? row.attributes?.appVersionState ?? "UNKNOWN";
+const REJECTED_STATES = ["REJECTED", "METADATA_REJECTED", "INVALID_BINARY"];
 
 export async function appleReleases(api: AppleAPI, bundleId: string) {
   const app = await api.app(bundleId);
-  const [versions, builds] = await Promise.allSettled([
+  const [versions, builds, unresolved] = await Promise.allSettled([
     api.request(
       `/apps/${encodeURIComponent(app.id)}/appStoreVersions?filter[platform]=IOS&include=build&limit=25`,
     ),
     api.request(
       `/builds?filter[app]=${encodeURIComponent(app.id)}&sort=-uploadedDate&include=preReleaseVersion,buildBetaDetail,betaAppReviewSubmission&limit=25`,
     ),
+    // Submissions App Review sent back; the version itself can still read
+    // PREPARE_FOR_SUBMISSION or similar, so this is the more reliable signal.
+    api.request(
+      `/reviewSubmissions?filter[app]=${encodeURIComponent(app.id)}&filter[platform]=IOS&filter[state]=UNRESOLVED_ISSUES&include=appStoreVersionForReview&limit=25`,
+    ),
   ]);
+  const unresolvedVersions = new Set<string>(
+    unresolved.status === "fulfilled"
+      ? (unresolved.value.data ?? [])
+          .map(
+            (row: any) => row.relationships?.appStoreVersionForReview?.data?.id,
+          )
+          .filter(Boolean)
+      : [],
+  );
   const releases: StoreRelease[] = [];
   if (versions.status === "fulfilled")
     for (const row of versions.value.data ?? []) {
       const build = related(row, "build", versions.value.included ?? []);
+      const status = stateOf(row);
       releases.push({
         id: `appstore:${row.id}`,
         resourceId: row.id,
         channel: "appstore",
         version: row.attributes.versionString,
         buildNumbers: build ? [String(build.attributes.version)] : [],
-        status: stateOf(row),
+        status,
+        reviewIssue: REJECTED_STATES.includes(status)
+          ? "rejected"
+          : unresolvedVersions.has(row.id)
+            ? "unresolved"
+            : undefined,
         createdAt: row.attributes.createdDate,
         consoleUrl: `https://appstoreconnect.apple.com/apps/${app.id}/distribution`,
       });

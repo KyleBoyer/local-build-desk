@@ -31,6 +31,7 @@ const names = [
   "storeReleases",
   "storeReleaseDetails",
   "storeImagePreview",
+  "signInAppStoreConnect",
   "readCompliance",
   "saveCompliance",
   "releaseNoteDraft",

@@ -168,6 +168,7 @@ export const methods = {
     z.boolean().optional(),
   ]),
   storeImagePreview: z.tuple([identifier, z.string().uuid()]),
+  signInAppStoreConnect: z.tuple([]),
   saveCompliance: z.tuple([
     identifier,
     z.string().min(1).max(1024),

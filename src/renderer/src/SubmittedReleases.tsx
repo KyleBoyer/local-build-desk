@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDetailNavigation } from "./useDetailNavigation";
+import { AppReview } from "./AppReview";
 import {
   RefreshCw,
   ExternalLink,
@@ -8,6 +9,7 @@ import {
   ChevronRight,
   Clock3,
   ArrowLeft,
+  CircleAlert,
 } from "lucide-react";
 import type { Project } from "../../core/types";
 import type {
@@ -28,6 +30,10 @@ const human = (value: string) =>
     .replaceAll("_", " ")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .toLowerCase();
+const reviewIssueLabel = {
+  rejected: "Rejected by App Review",
+  unresolved: "App Review found issues",
+} as const;
 const date = (value?: string) =>
   value ? new Date(value).toLocaleString() : undefined;
 const display = (value: string) =>
@@ -434,6 +440,13 @@ export function SubmittedReleases({
                   </span>
                 </span>
                 <span className="store-release-row-status">
+                  {release.reviewIssue && (
+                    <span className="store-status-badge danger">
+                      {release.reviewIssue === "rejected"
+                        ? "Rejected"
+                        : "Issues"}
+                    </span>
+                  )}
                   <span className="store-status-badge">
                     {human(release.status)}
                   </span>
@@ -499,6 +512,18 @@ export function SubmittedReleases({
                 Open console
               </button>
             </div>
+            {selected.reviewIssue && (
+              <section className="inline-callout review-issue" role="alert">
+                <CircleAlert size={18} />
+                <div>
+                  <strong>{reviewIssueLabel[selected.reviewIssue]}</strong>
+                  <p>
+                    App Review's messages are below. Fix the listing or build,
+                    reply in App Store Connect if needed, then resubmit.
+                  </p>
+                </div>
+              </section>
+            )}
             <dl className="store-release-facts">
               {selected.channel === "play" && (
                 <div>
@@ -553,6 +578,37 @@ export function SubmittedReleases({
                 </div>
               ) : null}
             </dl>
+            {detail?.review && (
+              <AppReview
+                review={detail.review}
+                onOpenConsole={() => void api.openExternal(selected.consoleUrl)}
+                onSignedIn={() => {
+                  const current = ++request.current;
+                  setDetailBusy(true);
+                  void api
+                    .storeReleaseDetails(
+                      project.id,
+                      selected.id,
+                      locale && /^[A-Za-z0-9_-]{2,30}$/.test(locale)
+                        ? locale
+                        : undefined,
+                      true,
+                    )
+                    .then((value) => {
+                      if (mounted.current && current === request.current)
+                        setDetail(value);
+                    })
+                    .catch((error) => {
+                      if (mounted.current && current === request.current)
+                        setDetailError(error.message);
+                    })
+                    .finally(() => {
+                      if (mounted.current && current === request.current)
+                        setDetailBusy(false);
+                    });
+                }}
+              />
+            )}
             {detailBusy && (
               <p role="status" className="muted">
                 Loading the listing and its attached assets…

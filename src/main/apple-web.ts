@@ -4,7 +4,7 @@ import { DeskError } from "../core/errors";
 import { attachLoginFill, type SavedLogin } from "./login-fill";
 
 // App Store Connect's web API (/iris/v1), for the few things Apple's public
-// API doesn't cover (App Privacy). Requests run inside an App Store Connect
+// API doesn't cover (App Privacy, App Review messages). Requests run inside an App Store Connect
 // page in the desk's own Apple partition, the session Apple setup signs in
 // with, so they carry exactly what the website sends: its cookies, its origin
 // and its CSRF header. The page stays hidden unless the person needs to sign in.
@@ -158,7 +158,7 @@ export function appleWebSession(
         if (!interactive)
           throw new DeskError(
             "APPLE_WEB_SIGN_IN",
-            "Sign in to App Store Connect in Local Build Desk to read or set App Privacy.",
+            "Sign in to App Store Connect in Local Build Desk to read App Review messages or set App Privacy.",
           );
         await (signingIn ??= signIn().finally(() => (signingIn = undefined)));
         reply = await call(path, method, body);

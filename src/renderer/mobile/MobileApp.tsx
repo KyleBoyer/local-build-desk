@@ -34,6 +34,11 @@ import type {
   StoreChannel,
 } from "../../core/store-release-types";
 import { elapsedLabel, stageGuidance } from "../../core/progress";
+import {
+  reviewReasonText,
+  reviewThreadIsRejection,
+  reviewThreadTitle,
+} from "../../core/app-review-labels";
 import { request, safeId } from "./api";
 import { useClock, useMonitor } from "./hooks";
 const human = (s: string) =>
@@ -1790,7 +1795,9 @@ function Releases({
           </button>
           <section className="m-store-detail">
             <h2>{release.version ?? "Uploaded build"}</h2>
-            <Badge tone="amber">{human(release.status)}</Badge>
+            <Badge tone={release.reviewIssue ? "danger" : "amber"}>
+              {human(release.status)}
+            </Badge>
             <p className="m-mono">
               Build {release.buildNumbers.join(", ") || "not attached"}
               {release.track ? ` · ${release.track}` : ""}
@@ -1804,6 +1811,14 @@ function Releases({
             {release.betaReviewState && (
               <p>Beta review: {human(release.betaReviewState)}</p>
             )}
+            {release.reviewIssue && (
+              <p role="alert" className="m-review-issue">
+                {release.reviewIssue === "rejected"
+                  ? "Rejected by App Review."
+                  : "App Review found issues."}{" "}
+                App Review's messages are below; reply in App Store Connect.
+              </p>
+            )}
             {release.fraction !== undefined && (
               <p>Rollout: {Math.round(release.fraction * 100)}%</p>
             )}
@@ -1813,9 +1828,78 @@ function Releases({
               rel="noreferrer noopener"
               className="m-button"
             >
-              Open store console <ArrowUpRight size={15} />
+              {release.reviewIssue
+                ? "Reply in App Store Connect"
+                : "Open store console"}{" "}
+              <ArrowUpRight size={15} />
             </a>
           </section>
+          {detail?.review && (
+            <section className="m-app-review" aria-label="App Review">
+              <h3>App Review</h3>
+              {!detail.review.signedIn ? (
+                <p className="m-muted">
+                  Sign in to App Store Connect in Local Build Desk on your Mac
+                  (open this release there) to see App Review's messages here.
+                </p>
+              ) : detail.review.error ? (
+                <p className="m-muted">{detail.review.error}</p>
+              ) : !detail.review.threads.length ? (
+                <p className="m-muted">
+                  No App Review messages for this version.
+                </p>
+              ) : (
+                detail.review.threads.map((thread) => (
+                  <article
+                    key={thread.id}
+                    className={
+                      reviewThreadIsRejection(thread) ? "rejection" : undefined
+                    }
+                  >
+                    <strong>{reviewThreadTitle(thread)}</strong>
+                    <small>
+                      {new Date(
+                        thread.lastActivityAt ?? thread.createdAt ?? "",
+                      ).toLocaleString()}
+                    </small>
+                    {thread.reasons.length > 0 && (
+                      <ul>
+                        {thread.reasons.map((reason, i) => (
+                          <li key={i}>{reviewReasonText(reason)}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {thread.messages.map((message) => (
+                      <div
+                        key={message.id}
+                        className={
+                          message.fromApple
+                            ? "m-review-msg apple"
+                            : "m-review-msg"
+                        }
+                      >
+                        <small>
+                          {message.from ?? "Message"}
+                          {message.createdAt
+                            ? ` · ${new Date(message.createdAt).toLocaleString()}`
+                            : ""}
+                        </small>
+                        <p>{message.body || "(No text)"}</p>
+                        {message.attachments > 0 && (
+                          <small>
+                            {message.attachments} attachment
+                            {message.attachments === 1 ? "" : "s"} in App Store
+                            Connect
+                          </small>
+                        )}
+                      </div>
+                    ))}
+                    {thread.error && <p className="m-muted">{thread.error}</p>}
+                  </article>
+                ))
+              )}
+            </section>
+          )}
           {detail && (
             <>
               <div className="m-store-note">
@@ -1909,7 +1993,9 @@ function Releases({
                     Build {row.buildNumbers.join(", ") || "not attached"}
                     {row.track ? ` · ${row.track}` : ""}
                   </span>
-                  <Badge tone="amber">{human(row.status)}</Badge>
+                  <Badge tone={row.reviewIssue ? "danger" : "amber"}>
+                    {human(row.status)}
+                  </Badge>
                 </div>
                 <ChevronRight size={17} />
               </button>

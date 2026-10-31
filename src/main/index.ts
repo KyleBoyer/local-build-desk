@@ -318,6 +318,7 @@ function startOwner() {
       };
       const vault = new Vault(store, encryption);
       engine = new Engine(store, vault);
+      engine.useAppleWeb(appleWeb);
       mobile = new MobileMonitor(
         engine,
         join(__dirname, "../renderer"),

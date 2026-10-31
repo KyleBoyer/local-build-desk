@@ -3418,6 +3418,99 @@ footer span:first-child {
   border-radius: 4px;
   text-transform: capitalize;
 }
+.store-status-badge.danger {
+  color: #f59b95;
+  border-color: #f59b9540;
+  text-transform: none;
+}
+.inline-callout.review-issue {
+  border-color: #f59b9540;
+  background: #f59b950a;
+  color: #f59b95;
+}
+.inline-callout.review-issue strong {
+  color: #f8c1bd;
+}
+.inline-callout.review-issue p {
+  color: #c9a19d;
+}
+.app-review {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 16px 18px;
+  margin: 18px 0 23px;
+}
+.app-review-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.app-review-heading h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+}
+.app-review-heading .button {
+  font-size: 10px;
+}
+.app-review-signin {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.app-review-signin p {
+  margin: 0;
+  font-size: 12px;
+}
+.app-review-thread {
+  border-top: 1px solid var(--line);
+  padding: 12px 0 4px;
+}
+.app-review-thread header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.app-review-thread.rejection header strong {
+  color: #f59b95;
+}
+.app-review-thread header small,
+.app-review-message small {
+  font-size: 10px;
+  color: var(--subtle);
+}
+.app-review-reasons {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #f8c1bd;
+}
+.app-review-message {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 5px;
+  background: #ffffff06;
+}
+.app-review-message.apple {
+  background: #f59b950a;
+}
+.app-review-message p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  user-select: text;
+}
+.app-review-checked {
+  font-size: 10px;
+  margin: 10px 0 0;
+}
 .store-release-detail {
   min-width: 0;
 }

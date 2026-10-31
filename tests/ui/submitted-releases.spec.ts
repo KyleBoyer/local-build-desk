@@ -108,6 +108,17 @@ test("shows remote review/TestFlight/Play releases and their correct assets in b
     await expect(
       history.getByText("The submitted review description."),
     ).toBeVisible();
+    const review = history.getByRole("region", { name: "App Review" });
+    await review
+      .getByRole("button", { name: "Sign in to App Store Connect" })
+      .click();
+    await expect(review.getByText("Build rejected")).toBeVisible();
+    await expect(
+      review.getByText("Guideline 2.1 — Performance: App Completeness"),
+    ).toBeVisible();
+    await expect(
+      review.getByText("We were unable to sign in with the demo account."),
+    ).toBeVisible();
     await page.screenshot({
       path: "test-results/submitted-app-review.png",
       fullPage: true,

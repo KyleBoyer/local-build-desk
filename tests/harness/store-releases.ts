@@ -1,6 +1,7 @@
 import { app } from "electron";
 import { AppleAPI, GoogleAPI } from "../../src/core/stores";
 import { Vault } from "../../src/core/vault";
+import { Engine } from "../../src/core/engine";
 // Recorded provider responses behind the real engine, IPC, preload and renderer.
 const fixture = globalThis as any;
 fixture.__storeHistoryState = "WAITING_FOR_REVIEW";
@@ -212,6 +213,76 @@ GoogleAPI.prototype.request = async function (path, method = "GET", body) {
       ],
     };
   return {};
+};
+// App Store Connect's web session, signed out until the UI signs in.
+fixture.__appReviewSignedIn = false;
+Engine.prototype.useAppleWeb = function (this: any) {
+  this.appleWeb = {
+    async request(path: string, options?: { interactive?: boolean }) {
+      if (!fixture.__appReviewSignedIn) {
+        if (!options?.interactive) {
+          const error: any = new Error("Sign in");
+          error.code = "APPLE_WEB_SIGN_IN";
+          throw error;
+        }
+        fixture.__appReviewSignedIn = true;
+      }
+      if (path.startsWith("/apps/123/resolutionCenterThreads"))
+        return {
+          data: [
+            {
+              id: "thread",
+              attributes: {
+                threadType: "REJECTION_BINARY",
+                state: "ACTIVE",
+                createdDate: "2026-10-30T10:00:00Z",
+              },
+              relationships: {
+                appStoreVersions: {
+                  data: [{ type: "appStoreVersions", id: "version" }],
+                },
+              },
+            },
+          ],
+        };
+      if (path.startsWith("/resolutionCenterThreads/thread/"))
+        return {
+          data: [
+            {
+              id: "message",
+              attributes: {
+                createdDate: "2026-10-30T10:00:00Z",
+                messageBody:
+                  "<p>We were unable to sign in with the demo account.</p>",
+              },
+              relationships: {
+                fromActor: { data: { type: "actors", id: "apple" } },
+              },
+            },
+          ],
+          included: [
+            { type: "actors", id: "apple", attributes: { actorType: "APPLE" } },
+          ],
+        };
+      if (path.startsWith("/reviewRejections"))
+        return {
+          data: [
+            {
+              id: "rejection",
+              attributes: {
+                reasons: [
+                  {
+                    reasonSection: "2.1",
+                    reasonDescription: "Performance: App Completeness",
+                  },
+                ],
+              },
+            },
+          ],
+        };
+      return { data: [] };
+    },
+  };
 };
 const actualFetch = globalThis.fetch;
 globalThis.fetch = async function (input, init) {

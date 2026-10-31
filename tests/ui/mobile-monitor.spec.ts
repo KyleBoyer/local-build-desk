@@ -359,6 +359,10 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
     await phone.getByRole("button", { name: "Checks", exact: true }).click();
     await expect(phone.getByText("3 passed · 0 failed · passed")).toBeVisible();
     await phone.getByRole("button", { name: "Back", exact: true }).click();
+    // The desk's App Store Connect sign-in is what reads App Review's messages.
+    await app.evaluate(() => {
+      (globalThis as any).__appReviewSignedIn = true;
+    });
     await phone.getByRole("button", { name: "Releases", exact: true }).click();
     await phone
       .locator(".m-store-list>button")
@@ -366,6 +370,14 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
       .click();
     const shot = phone.getByAltText("review-home.png", { exact: true });
     await expect(shot).toBeVisible();
+    const review = phone.getByRole("region", { name: "App Review" });
+    await expect(review.getByText("Build rejected")).toBeVisible();
+    await expect(
+      review.getByText("Guideline 2.1 — Performance: App Completeness"),
+    ).toBeVisible();
+    await expect(
+      review.getByText("We were unable to sign in with the demo account."),
+    ).toBeVisible();
     await expect
       .poll(() => shot.evaluate((i: HTMLImageElement) => i.naturalWidth))
       .toBe(1);

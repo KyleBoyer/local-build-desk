@@ -485,6 +485,7 @@ export interface DesktopAPI {
     force?: boolean,
   ): Promise<StoreReleaseDetail>;
   storeImagePreview(projectId: string, imageId: string): Promise<string>;
+  signInAppStoreConnect(): Promise<void>;
   checkTargets(projectId: string): Promise<{
     devices: { id: string; name: string }[];
     runtimes: { id: string; name: string; version: string }[];

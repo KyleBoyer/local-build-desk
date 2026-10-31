@@ -1,4 +1,6 @@
 import { StoreReadCache } from "./store-read-cache";
+import { readAppReview } from "./app-review";
+import type { AppleWebSession } from "./app-store-compliance";
 import { readLogPage } from "./log-reader";
 import type { LogPageRequest } from "./types";
 import {
@@ -1089,7 +1091,22 @@ export class Engine extends EventEmitter {
           undefined,
           { signal },
         );
-        const result = await appleReleaseDetail(api, release, locale);
+        const [result, review] = await Promise.all([
+          appleReleaseDetail(api, release, locale),
+          release.channel === "appstore"
+            ? api
+                .app(project.bundleId!)
+                .then((app) =>
+                  readAppReview(
+                    this.appleWeb,
+                    app.id,
+                    release.resourceId,
+                    !!release.reviewIssue,
+                  ),
+                )
+            : undefined,
+        ]);
+        if (review) detail.review = review;
         detail.listings = result.listings;
         detail.groups = result.groups;
         detail.notes = result.notes;
@@ -1649,6 +1666,20 @@ export class Engine extends EventEmitter {
     public vault: Vault,
   ) {
     super();
+  }
+  /** App Store Connect's web session (desktop app only), for App Review messages. */
+  private appleWeb?: AppleWebSession;
+  useAppleWeb(web: AppleWebSession) {
+    this.appleWeb = web;
+  }
+  /** Opens the App Store Connect sign-in so App Review messages can be read. */
+  async signInAppStoreConnect() {
+    invariant(
+      this.appleWeb,
+      "APPLE_WEB_UNAVAILABLE",
+      "App Store Connect sign-in is only available in Local Build Desk.",
+    );
+    await this.appleWeb.request("/apps?limit=1", { interactive: true });
   }
   start() {
     this.store.recover();
