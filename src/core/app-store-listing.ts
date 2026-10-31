@@ -299,6 +299,11 @@ export interface ListingPlan {
   appInfoLocalizationId?: string;
   versionLocalizationId?: string;
   reviewDetailId?: string;
+  /**
+   * The version doesn't exist yet; creating it copies this version's text,
+   * screenshots and review details, which the plan was compared against.
+   */
+  inheritsFrom?: string;
   locale: string;
   changes: FieldChange[];
   categories: Record<string, string>;
@@ -327,6 +332,17 @@ export interface ListingPlan {
   blockers: string[];
   /** Things to check by hand in App Store Connect. */
   manual: string[];
+}
+
+/** The most recently created version, which Apple copies into a new one. */
+function newestVersion(versions: any[]) {
+  return versions
+    .slice()
+    .sort((a, b) =>
+      String(b.attributes.createdDate ?? "").localeCompare(
+        String(a.attributes.createdDate ?? ""),
+      ),
+    )[0];
 }
 
 /** Reads App Store Connect and works out what applying `listing` would do. */
@@ -476,30 +492,38 @@ export async function listingPlan(
       before: target.attributes.versionString,
       after: version,
     });
+  // A version that doesn't exist yet starts as a copy of the newest one:
+  // Apple carries its localized text, screenshots and App Review details
+  // forward. Compare against that copy, so an update that only changes
+  // "What's New" isn't reported as missing a description. Its ids are never
+  // returned, so nothing written here can touch the older version.
+  const inheritFrom = target ? undefined : newestVersion(versions);
+  const readFrom = target ?? inheritFrom;
   let versionLocalization: any;
   let reviewDetail: any;
   let attachedBuild: string | undefined;
-  if (target) {
+  if (readFrom) {
     versionLocalization = (
       await all(
         api,
-        `/appStoreVersions/${target.id}/appStoreVersionLocalizations?limit=50`,
+        `/appStoreVersions/${readFrom.id}/appStoreVersionLocalizations?limit=50`,
       )
     ).find((l) => l.attributes.locale === locale);
     reviewDetail = await api
-      .request(`/appStoreVersions/${target.id}/appStoreReviewDetail`)
+      .request(`/appStoreVersions/${readFrom.id}/appStoreReviewDetail`)
       .then((r) => r.data ?? undefined)
       .catch(() => undefined);
+  }
+  if (target)
     attachedBuild = await api
       .request(`/appStoreVersions/${target.id}/build`)
       .then((r) => r.data?.id)
       .catch(() => undefined);
-  }
   diff(
     "version",
     {
       ...versionLocalization?.attributes,
-      copyright: target?.attributes.copyright,
+      copyright: readFrom?.attributes.copyright,
     },
     {
       description: listing.description,
@@ -553,7 +577,8 @@ export async function listingPlan(
       });
     screenshotSets.push({
       displayType,
-      setId: set?.id,
+      // An inherited set belongs to the older version; the new one gets its own.
+      setId: target ? set?.id : undefined,
       existing: current.map((s) => ({
         name: s.attributes.fileName,
         size: s.attributes.fileSize,
@@ -698,8 +723,9 @@ export async function listingPlan(
     versionState: stateOf(target),
     appInfoId: info.id,
     appInfoLocalizationId: infoLocalization?.id,
-    versionLocalizationId: versionLocalization?.id,
-    reviewDetailId: reviewDetail?.id,
+    versionLocalizationId: target ? versionLocalization?.id : undefined,
+    reviewDetailId: target ? reviewDetail?.id : undefined,
+    inheritsFrom: inheritFrom?.attributes.versionString,
     locale,
     changes,
     categories,

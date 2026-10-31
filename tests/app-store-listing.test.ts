@@ -768,3 +768,41 @@ it("treats a version already waiting for review as a normal, read-only state", a
     listingPlan(api, "com.example.app", "1.0", loaded, "8"),
   ).rejects.toThrow(/another build/);
 });
+
+it("plans a new version against the live one Apple copies it from", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  // 1.0 is on sale; 1.1 doesn't exist yet. Its listing only adds What's New.
+  const { api, writes } = apple({
+    screenshots: [a, b],
+    contact: true,
+    versionState: "READY_FOR_SALE",
+  });
+  const loaded = await loadListing(
+    listing({
+      description: "Old",
+      keywords: undefined,
+      supportUrl: undefined,
+      privacyPolicyUrl: undefined,
+      contentRights: undefined,
+    }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.1", loaded);
+  expect(plan.inheritsFrom).toBe("1.0");
+  // Nothing points at 1.0, so applying can't write to the live version.
+  expect(plan.versionId).toBeUndefined();
+  expect(plan.versionLocalizationId).toBeUndefined();
+  expect(plan.reviewDetailId).toBeUndefined();
+  expect(plan.screenshots.sets?.[0]).toMatchObject({
+    keep: true,
+    setId: undefined,
+  });
+  expect(plan.changes.map((c) => `${c.scope}.${c.field}`)).toEqual([
+    "version.whatsNew",
+  ]);
+  // Description, screenshots and contact carry over, so only the copy's gaps block.
+  expect(
+    plan.blockers.filter((b) => !/support URL|privacy|Content rights/.test(b)),
+  ).toEqual([]);
+  expect(writes).toEqual([]);
+});

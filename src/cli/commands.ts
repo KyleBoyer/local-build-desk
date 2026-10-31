@@ -794,11 +794,47 @@ export async function runCLI(
           v["build-number"] ?? plan.build?.number,
           version,
         );
-      const result = await applyListing(journal!.wrap(api), plan, loaded, {
-        web: runtime.appleWeb,
-        submit: v["submit-for-review"],
-        log: (line) => write(line + "\n"),
-      });
+      const writer = journal!.wrap(api);
+      const log = (line: string) => write(line + "\n");
+      let result: Awaited<ReturnType<typeof applyListing>>;
+      if (v["submit-for-review"] && !plan.versionId && !plan.readOnly) {
+        // A new version's starting text, screenshots and review details are
+        // copied by Apple when it's created. Create it, then check what Apple
+        // actually made before sending anything to App Review.
+        await applyListing(writer, plan, loaded, {
+          web: runtime.appleWeb,
+          log,
+        });
+        const created = await listingPlan(
+          api,
+          bundleId,
+          version,
+          loaded,
+          v["build-number"],
+          runtime.appleWeb,
+        );
+        if (created.blockers.length) {
+          journal!.finish(false);
+          output({
+            versionId: created.versionId,
+            submitted: false,
+            remaining: created.changes,
+            blockers: created.blockers,
+            manual: created.manual,
+          });
+          return CLI_EXIT.failure;
+        }
+        result = await applyListing(writer, created, loaded, {
+          web: runtime.appleWeb,
+          submit: true,
+          log,
+        });
+      } else
+        result = await applyListing(writer, plan, loaded, {
+          web: runtime.appleWeb,
+          submit: v["submit-for-review"],
+          log,
+        });
       journal!.finish(result.submitted);
       // A submitted version is no longer editable, so there's nothing left to check.
       if (result.submitted) {
