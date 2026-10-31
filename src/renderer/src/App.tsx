@@ -620,7 +620,7 @@ export function App() {
     });
   const localJobs = state.jobs.filter((j) => j.projectId === project?.id),
     currentBuild = localJobs.find((j) => j.id === selectedJob),
-    running = state.jobs.filter((j) =>
+    running = localJobs.filter((j) =>
       ["running", "queued"].includes(j.status),
     );
   const saveSettings = (settings: ProjectSettings) =>
