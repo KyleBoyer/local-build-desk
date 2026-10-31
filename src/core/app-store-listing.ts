@@ -1345,15 +1345,32 @@ export async function applyListing(
       );
       continue;
     }
-    const version = (
-      await all(api, `/v2/inAppPurchases/${iap.id}/versions?limit=50`)
-    ).find((v) =>
-      [
-        "PREPARE_FOR_SUBMISSION",
-        "READY_FOR_REVIEW",
-        "REJECTED",
-        "DEVELOPER_REJECTED",
-      ].includes(v.attributes?.state),
+    const versions = await all(
+      api,
+      `/v2/inAppPurchases/${iap.id}/versions?limit=50`,
+    );
+    const states = versions.map((v) => v.attributes?.state as string);
+    // Apple only takes a purchase version into a submission while it is being
+    // prepared or was pulled back by the developer. After a rejection the old,
+    // rejected version stays listed beside the new editable one, so pick by
+    // state, never by list order.
+    const version =
+      versions.find((v) => v.attributes?.state === "PREPARE_FOR_SUBMISSION") ??
+      versions.find((v) => v.attributes?.state === "DEVELOPER_REJECTED");
+    if (
+      !version &&
+      states.some((s) =>
+        ["READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW"].includes(s),
+      )
+    ) {
+      // Already queued with Apple, in this submission or another one.
+      log(`In-app purchase ${productId} is already queued for review`);
+      continue;
+    }
+    invariant(
+      version || !states.includes("REJECTED"),
+      "IAP_NOT_READY",
+      `Not submitting for review: in-app purchase ${productId} only has a rejected version. Edit it in App Store Connect so Apple opens a new one, then run again.`,
     );
     if (version) {
       if (!inSubmission.has(version.id))

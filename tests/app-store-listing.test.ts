@@ -53,6 +53,7 @@ function apple(
     contact?: boolean;
     state?: string;
     versionState?: string;
+    iapVersions?: { id: string; state: string }[];
   } = {},
 ) {
   const writes: { method: string; path: string; body?: any }[] = [];
@@ -189,9 +190,11 @@ function apple(
         };
       if (route === "/v2/inAppPurchases/iap/versions")
         return {
-          data: [
-            { id: "iapv", attributes: { state: "PREPARE_FOR_SUBMISSION" } },
-          ],
+          data: (
+            options.iapVersions ?? [
+              { id: "iapv", state: "PREPARE_FOR_SUBMISSION" },
+            ]
+          ).map(({ id, state }) => ({ id, attributes: { state } })),
         };
       if (route === "/territories")
         return { data: [{ id: "USA" }, { id: "CAN" }] };
@@ -805,4 +808,76 @@ it("plans a new version against the live one Apple copies it from", async () => 
     plan.blockers.filter((b) => !/support URL|privacy|Content rights/.test(b)),
   ).toEqual([]);
   expect(writes).toEqual([]);
+});
+
+it("after a rejection, adds the purchase's new version, not the rejected one", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes } = apple({
+    screenshots: [a, b],
+    contact: true,
+    iapVersions: [
+      { id: "rejected", state: "REJECTED" },
+      { id: "fresh", state: "PREPARE_FOR_SUBMISSION" },
+    ],
+  });
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => undefined,
+  });
+  const items = writes
+    .filter((w) => w.path === "/reviewSubmissionItems")
+    .map((w) => w.body.data.relationships.inAppPurchaseVersion?.data?.id)
+    .filter(Boolean);
+  expect(items).toEqual(["fresh"]);
+});
+
+it("skips a purchase already queued for review", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes } = apple({
+    screenshots: [a, b],
+    contact: true,
+    iapVersions: [{ id: "queued", state: "WAITING_FOR_REVIEW" }],
+  });
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  const result = await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => undefined,
+  });
+  expect(result.submitted).toBe(true);
+  expect(
+    writes.some(
+      (w) =>
+        w.path === "/reviewSubmissionItems" &&
+        w.body.data.relationships.inAppPurchaseVersion,
+    ),
+  ).toBe(false);
+});
+
+it("stops with a clear reason when a purchase only has a rejected version", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api } = apple({
+    screenshots: [a, b],
+    contact: true,
+    iapVersions: [{ id: "rejected", state: "REJECTED" }],
+  });
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  await expect(
+    applyListing(api, plan, loaded, {
+      submit: true,
+      wait: async () => undefined,
+    }),
+  ).rejects.toThrow(/only has a rejected version/);
 });
