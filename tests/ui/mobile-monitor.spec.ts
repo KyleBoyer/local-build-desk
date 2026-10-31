@@ -268,9 +268,13 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
     await expect(
       phone.getByRole("heading", { name: "Crease", exact: true }).first(),
     ).toBeVisible();
+    // No sideways scrolling, whether or not the runner shows a scrollbar.
     expect(
-      await phone.evaluate(() => document.documentElement.scrollWidth),
-    ).toBe(390);
+      await phone.evaluate(() => {
+        const page = document.documentElement;
+        return page.scrollWidth - page.clientWidth;
+      }),
+    ).toBe(0);
     await app.evaluate(() => {
       const engine = (globalThis as any).__mobileEngine,
         job = engine.store.get("jobs", "job");
