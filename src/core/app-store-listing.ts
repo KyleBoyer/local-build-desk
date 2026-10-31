@@ -1275,9 +1275,47 @@ export async function applyListing(
     "REVIEW_AMBIGUOUS",
     "Apple returned multiple review drafts. Select the intended one in App Store Connect before continuing; no new submission was created.",
   );
-  const open = drafts[0];
+  const draft = drafts[0] ?? null;
+  try {
+    await sendForReview(api, plan, versionId, log, draft);
+  } catch (error) {
+    // A draft that lost its version (Apple keeps listing it) can't be sent
+    // and can't take the version back. Discard it, as App Store Connect's
+    // own "Remove" does, and start a fresh submission.
+    if (
+      !draft ||
+      !/appStoreVersions must be included/i.test((error as Error).message)
+    )
+      throw error;
+    log(
+      `Review draft ${draft.id} lost its version; discarding it and starting a new submission`,
+    );
+    await api.request(`/reviewSubmissions/${draft.id}`, "PATCH", {
+      data: {
+        type: "reviewSubmissions",
+        id: draft.id,
+        attributes: { canceled: true },
+      },
+    });
+    await sendForReview(api, plan, versionId, log, null);
+  }
+  log(`Submitted ${plan.version} for App Review`);
+  return { versionId, submitted: true };
+}
+
+/**
+ * Puts the version and its purchases into a review submission and sends it.
+ * `draft` is an unsent submission an earlier run left, or null for a new one.
+ */
+async function sendForReview(
+  api: AppleAPI,
+  plan: ListingPlan,
+  versionId: string | undefined,
+  log: (line: string) => void,
+  draft: any | null,
+) {
   const submission =
-    open ??
+    draft ??
     (
       await api.request("/reviewSubmissions", "POST", {
         data: {
@@ -1288,7 +1326,7 @@ export async function applyListing(
       })
     ).data;
   const items = (
-    open
+    draft
       ? // Relationship ids only come back when the related items are included.
         await all(
           api,
@@ -1369,7 +1407,16 @@ export async function applyListing(
         ["READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "IN_REVIEW"].includes(s),
       )
     ) {
-      // Already queued with Apple, in this submission or another one.
+      // Already queued with Apple, in this submission or another one. A
+      // fresh submission can't lean on that: the only draft it could be
+      // queued in was just discarded, so wait for Apple to release it.
+      invariant(
+        draft !== null ||
+          !states.includes("READY_FOR_REVIEW") ||
+          states.some((s) => ["WAITING_FOR_REVIEW", "IN_REVIEW"].includes(s)),
+        "IAP_NOT_READY",
+        `Not submitting for review: in-app purchase ${productId} is still held by the discarded review draft. Run again in a minute.`,
+      );
       log(`In-app purchase ${productId} is already queued for review`);
       continue;
     }
@@ -1397,6 +1444,18 @@ export async function applyListing(
     }
     log(`In-app purchase ${productId} added to review`);
   }
+  // What the draft holds, for the log: Apple's answer below is terse.
+  if (draft)
+    log(
+      `Review draft ${submission.id}: ${
+        items
+          .map(
+            (i) =>
+              `${i.relationships?.appStoreVersion?.data ? "version" : i.relationships?.inAppPurchaseVersion?.data ? "purchase" : "item"} ${i.attributes?.state ?? "?"}`,
+          )
+          .join(", ") || "empty"
+      }`,
+    );
   await api.request(`/reviewSubmissions/${submission.id}`, "PATCH", {
     data: {
       type: "reviewSubmissions",
@@ -1404,6 +1463,4 @@ export async function applyListing(
       attributes: { submitted: true },
     },
   });
-  log(`Submitted ${plan.version} for App Review`);
-  return { versionId, submitted: true };
 }

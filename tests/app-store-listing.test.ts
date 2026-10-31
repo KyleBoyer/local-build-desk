@@ -927,3 +927,62 @@ it("adds the version again when the draft only holds a removed copy of it", asyn
   expect(versionItems).toHaveLength(1);
   expect(writes.at(-1)!.path).toBe("/reviewSubmissions/draft");
 });
+
+it("replaces a draft that lost its version with a fresh submission", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes, request } = apple({
+    screenshots: [a, b],
+    contact: true,
+  });
+  const fallback = request.getMockImplementation()!;
+  request.mockImplementation(
+    async (path: string, method = "GET", body?: any) => {
+      if (method === "GET" && path.startsWith("/reviewSubmissions?"))
+        return {
+          data: [{ id: "stale", attributes: { state: "READY_FOR_REVIEW" } }],
+        };
+      if (method === "GET" && path.startsWith("/reviewSubmissions/stale/items"))
+        return {
+          data: [
+            {
+              id: "item",
+              attributes: { state: "READY_FOR_REVIEW" },
+              relationships: { appStoreVersion: { data: { id: "version" } } },
+            },
+          ],
+        };
+      if (method === "PATCH" && path === "/reviewSubmissions/stale") {
+        writes.push({ method, path, body });
+        if (body.data.attributes.submitted)
+          throw new Error(
+            "Apple 409 (PATCH /reviewSubmissions/stale): App 1 must have an approved appStoreVersions for at least one of platforms [IOS], or an appStoreVersions must be included in this review submission.",
+          );
+        return { data: {} };
+      }
+      return fallback(path, method, body);
+    },
+  );
+  const lines: string[] = [];
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  const result = await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => undefined,
+    log: (line: string) => lines.push(line),
+  });
+  expect(result.submitted).toBe(true);
+  const calls = writes.map((w) => `${w.method} ${w.path}`);
+  expect(calls.slice(-6)).toEqual([
+    "PATCH /reviewSubmissions/stale",
+    "PATCH /reviewSubmissions/stale",
+    "POST /reviewSubmissions",
+    "POST /reviewSubmissionItems",
+    "POST /reviewSubmissionItems",
+    "PATCH /reviewSubmissions/submission",
+  ]);
+  expect(writes.at(-5)!.body.data.attributes).toEqual({ canceled: true });
+  expect(lines.some((l) => l.includes("version READY_FOR_REVIEW"))).toBe(true);
+});
