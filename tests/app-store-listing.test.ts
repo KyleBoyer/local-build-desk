@@ -881,3 +881,49 @@ it("stops with a clear reason when a purchase only has a rejected version", asyn
     }),
   ).rejects.toThrow(/only has a rejected version/);
 });
+
+it("adds the version again when the draft only holds a removed copy of it", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes, request } = apple({
+    screenshots: [a, b],
+    contact: true,
+  });
+  const fallback = request.getMockImplementation()!;
+  request.mockImplementation(
+    async (path: string, method = "GET", body?: any) => {
+      if (method === "GET" && path.startsWith("/reviewSubmissions?"))
+        return {
+          data: [{ id: "draft", attributes: { state: "READY_FOR_REVIEW" } }],
+        };
+      if (method === "GET" && path.startsWith("/reviewSubmissions/draft/items"))
+        return {
+          data: [
+            {
+              id: "item",
+              attributes: { state: "REMOVED" },
+              relationships: { appStoreVersion: { data: { id: "version" } } },
+            },
+          ],
+        };
+      if (method === "POST" && path === "/reviewSubmissionItems") {
+        writes.push({ method, path, body });
+        return { data: { id: "item2" } };
+      }
+      return fallback(path, method, body);
+    },
+  );
+  const loaded = await loadListing(listing());
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => undefined,
+  });
+  const versionItems = writes.filter(
+    (w) =>
+      w.path === "/reviewSubmissionItems" &&
+      w.body.data.relationships.appStoreVersion,
+  );
+  expect(versionItems).toHaveLength(1);
+  expect(writes.at(-1)!.path).toBe("/reviewSubmissions/draft");
+});

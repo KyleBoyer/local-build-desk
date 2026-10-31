@@ -1287,13 +1287,19 @@ export async function applyListing(
         },
       })
     ).data;
-  const items = open
-    ? // Relationship ids only come back when the related items are included.
-      await all(
-        api,
-        `/reviewSubmissions/${submission.id}/items?include=appStoreVersion,inAppPurchaseVersion&limit=50`,
-      )
-    : [];
+  const items = (
+    open
+      ? // Relationship ids only come back when the related items are included.
+        await all(
+          api,
+          `/reviewSubmissions/${submission.id}/items?include=appStoreVersion,inAppPurchaseVersion&limit=50`,
+        )
+      : []
+  ).filter(
+    // Apple keeps items it took back out of a draft (for example when the
+    // version's build changes) as REMOVED; those have to be added again.
+    (i) => i.attributes?.state !== "REMOVED",
+  );
   // Adds an item to the draft; one an earlier run already added is fine.
   const addItem = async (relationship: Record<string, unknown>) => {
     try {
