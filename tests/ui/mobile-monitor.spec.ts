@@ -11,8 +11,45 @@ import {
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
+import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import { Store } from "../../src/core/database";
 import type { Job } from "../../src/core/types";
+/** A solid-colour PNG for capture fixtures. */
+function png(width: number, height: number, rgb: [number, number, number]) {
+  const table = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = table[(c ^ x) & 0xff]! ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    out.write(type, 4, "ascii");
+    data.copy(out, 8);
+    out.writeUInt32BE(crc(out.subarray(4, 8 + data.length)), 8 + data.length);
+    return out;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  const row = Buffer.concat([
+    Buffer.from([0]),
+    Buffer.from(Array.from({ length: width }, () => rgb).flat()),
+  ]);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header),
+    chunk("IDAT", deflateSync(Buffer.concat(Array(height).fill(row)))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 async function freePort() {
   const s = createServer();
   await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
@@ -46,11 +83,89 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
     version: "1.0",
     profiles: ["production"],
     createdAt: now,
+    platforms: ["ios", "android"],
     settings: {
       appleConnectionId: "apple-fixture",
       googleConnectionId: "google-fixture",
+      releaseChecks: {
+        enabled: true,
+        required: false,
+        runner: "command",
+        command: ["npm", "run", "verify"],
+        onlyTesting: [],
+        timeoutSeconds: 1800,
+        destinations: [{ deviceType: "iPhone 18 Pro Max", runtime: "27.2" }],
+        androidDevices: [{ device: "pixel_9_pro" }],
+        androidCaptureTask: ":app:assembleDebug",
+        screenshotPlanFile: "assets/store/screenshots.json",
+      },
     },
   });
+  // A finished check run with framed store images and their raw captures.
+  const captures = join(root, "captures");
+  await mkdir(captures, { recursive: true });
+  const shot = async (
+    name: string,
+    rgb: [number, number, number],
+    framed: [number, number, number],
+  ) => {
+    const raw = png(66, 143, rgb),
+      store = png(66, 143, framed);
+    await writeFile(join(captures, `${name}.png`), raw);
+    await writeFile(join(captures, `${name}-framed.png`), store);
+    return {
+      name,
+      path: join(captures, `${name}.png`),
+      sha256: createHash("sha256").update(raw).digest("hex"),
+      size: raw.length,
+      width: 66,
+      height: 143,
+      device: "iPhone 18 Pro Max",
+      runtime: "27.2",
+      framed: {
+        path: join(captures, `${name}-framed.png`),
+        sha256: createHash("sha256").update(store).digest("hex"),
+        size: store.length,
+      },
+    };
+  };
+  store.putJob({
+    id: "checks",
+    projectId: "project",
+    projectName: "Crease",
+    platform: "ios",
+    profile: "production",
+    kind: "test",
+    status: "succeeded",
+    stage: "complete",
+    createdAt: now,
+    startedAt: now,
+    finishedAt: now,
+    checkpoints: [],
+    validation: {
+      configuration: "Release",
+      state: "passed",
+      mode: "all",
+      fingerprint: "f".repeat(64),
+      sourceHash: "c".repeat(64),
+      policyDigest: "d".repeat(64),
+      startedAt: now,
+      finishedAt: new Date(Date.parse(now) + 245000).toISOString(),
+      runs: [
+        { device: "Project command", status: "passed" },
+        {
+          device: "iPhone 18 Pro Max",
+          runtime: "27.2",
+          status: "passed",
+          attachments: captures,
+        },
+      ],
+      screenshots: [
+        await shot("title", [40, 30, 60], [200, 60, 60]),
+        await shot("win", [40, 60, 30], [60, 60, 200]),
+      ],
+    },
+  } as unknown as Job);
   store.putJob({
     id: "job",
     projectId: "project",
@@ -151,7 +266,7 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
       "undefined",
     );
     await expect(
-      phone.getByRole("heading", { name: "Crease", exact: true }),
+      phone.getByRole("heading", { name: "Crease", exact: true }).first(),
     ).toBeVisible();
     expect(
       await phone.evaluate(() => document.documentElement.scrollWidth),
@@ -264,6 +379,58 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
       reads: (globalThis as any).__storeHistoryReads.length,
       images: (globalThis as any).__storeHistoryImageFetches,
     }));
+    // Checks: one card per project, then the run's results on a tap.
+    await phone.getByRole("button", { name: "Checks", exact: true }).click();
+    await expect(phone.getByRole("heading", { name: "Crease" })).toBeVisible();
+    const ios = phone.getByRole("button", {
+      name: "Crease iOS checks: passed, tests passed · 2 screenshots",
+    });
+    await expect(ios).toBeVisible();
+    await expect(phone.locator(".m-check-platform.empty")).toContainText(
+      "Android",
+    );
+    await phone.getByText("What runs", { exact: true }).click();
+    await expect(
+      phone.getByText("npm run verify", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      phone.getByText("assets/store/screenshots.json", { exact: true }),
+    ).toBeVisible();
+    await phone.screenshot({
+      path: "test-results/mobile-checks.png",
+      fullPage: true,
+    });
+    await ios.click();
+    await expect(
+      phone.getByRole("button", { name: "Checks", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      phone.getByText("tests passed · 2 screenshots · 4m 05s"),
+    ).toBeVisible();
+    const pixel = (alt: string) =>
+      phone
+        .getByAltText(alt, { exact: true })
+        .evaluate(async (img: HTMLImageElement) => {
+          await img.decode();
+          const c = document.createElement("canvas");
+          c.width = c.height = 1;
+          const g = c.getContext("2d")!;
+          g.drawImage(img, 5, 5, 1, 1, 0, 0, 1, 1);
+          return [...g.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+        });
+    // Store images by default, raw captures on request.
+    await expect.poll(() => pixel("title")).toEqual([200, 60, 60]);
+    const command = phone.locator(".m-check-run").first();
+    await expect(command.locator("strong")).toHaveText("Test command");
+    await expect(command.locator("span")).toHaveText("tests passed");
+    await phone.getByRole("button", { name: "Raw", exact: true }).click();
+    await expect.poll(() => pixel("title")).toEqual([40, 30, 60]);
+    await phone.screenshot({
+      path: "test-results/mobile-check-run.png",
+      fullPage: true,
+    });
+    await phone.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(phone.getByRole("heading", { name: "Checks." })).toBeVisible();
     await phone.getByRole("button", { name: "Projects", exact: true }).click();
     await phone.screenshot({
       path: "test-results/mobile-projects.png",

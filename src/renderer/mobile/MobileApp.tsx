@@ -21,6 +21,7 @@ import {
   X,
   Image as ImageIcon,
   Package,
+  FlaskConical,
 } from "lucide-react";
 import type {
   MonitorSnapshot,
@@ -76,22 +77,31 @@ const channelNames: Record<StoreChannel, string> = {
   testflight: "TestFlight",
   play: "Google Play",
 };
-type Route = { tab: "now" | "history" | "releases" | "projects"; job?: string };
+const tabs = ["now", "history", "checks", "releases", "projects"] as const;
+type Route = {
+  tab: (typeof tabs)[number];
+  job?: string;
+  /** Open the job on its check results rather than its overview. */
+  checks?: boolean;
+};
 function route(): Route {
   const value = location.hash.slice(1);
-  if (value.startsWith("job="))
+  if (value.startsWith("job=")) {
+    const [id, ...rest] = value.slice(4).split("&");
     return {
-      tab: "now",
+      tab: rest.includes("from=checks") ? "checks" : "now",
+      checks: rest.includes("view=checks"),
       job: (() => {
         try {
-          return decodeURIComponent(value.slice(4));
+          return decodeURIComponent(id!);
         } catch {
           return "invalid";
         }
       })(),
     };
+  }
   return {
-    tab: ["now", "history", "releases", "projects"].includes(value)
+    tab: (tabs as readonly string[]).includes(value)
       ? (value as Route["tab"])
       : "now",
   };
@@ -372,7 +382,9 @@ export function MobileApp({ initialPair }: { initialPair: string | null }) {
     history.pushState(
       null,
       "",
-      next.job ? `#job=${encodeURIComponent(next.job)}` : `#${next.tab}`,
+      next.job
+        ? `#job=${encodeURIComponent(next.job)}${next.checks ? "&view=checks" : ""}${next.tab === "checks" ? "&from=checks" : ""}`
+        : `#${next.tab}`,
     );
     setCurrent(next);
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -428,7 +440,9 @@ export function MobileApp({ initialPair }: { initialPair: string | null }) {
               ? "ACTIVITY"
               : current.tab === "history"
                 ? "BUILD HISTORY"
-                : "YOUR PROJECTS"}
+                : current.tab === "checks"
+                  ? "TESTS & SCREENSHOTS"
+                  : "YOUR PROJECTS"}
           </span>
           <select
             aria-label="Project filter"
@@ -451,6 +465,7 @@ export function MobileApp({ initialPair }: { initialPair: string | null }) {
             id={current.job}
             snapshot={snapshot}
             now={now}
+            initialChecks={current.checks}
             onBack={() => navigate({ tab: current.tab })}
           />
         ) : current.tab === "now" ? (
@@ -558,6 +573,13 @@ export function MobileApp({ initialPair }: { initialPair: string | null }) {
           </>
         ) : current.tab === "history" ? (
           <HistoryView project={filter} onOpen={open} now={now} />
+        ) : current.tab === "checks" ? (
+          <ChecksView
+            snapshot={snapshot}
+            project={filter}
+            now={now}
+            onOpen={(id) => navigate({ tab: "checks", job: id, checks: true })}
+          />
         ) : current.tab === "releases" ? (
           <Releases
             projects={snapshot?.projects ?? []}
@@ -621,6 +643,7 @@ export function MobileApp({ initialPair }: { initialPair: string | null }) {
             [
               { tab: "now", label: "Now", icon: Activity },
               { tab: "history", label: "History", icon: History },
+              { tab: "checks", label: "Checks", icon: FlaskConical },
               { tab: "releases", label: "Releases", icon: Layers3 },
               { tab: "projects", label: "Projects", icon: Package },
             ] as const
@@ -771,18 +794,28 @@ function JobDetail({
   id,
   snapshot,
   now,
+  initialChecks = false,
   onBack,
 }: {
   id: string;
   snapshot?: MonitorSnapshot;
   now: number;
+  initialChecks?: boolean;
   onBack: () => void;
 }) {
   const [job, setJob] = useState<MonitorJob>(),
     [tab, setTab] = useState<"overview" | "logs" | "tests" | "artifacts">(
-      "overview",
+      initialChecks ? "tests" : "overview",
     ),
     [error, setError] = useState("");
+  // A check run opens on its results wherever it was found.
+  const opened = useRef(initialChecks);
+  useEffect(() => {
+    if (job && !opened.current) {
+      opened.current = true;
+      if (job.kind === "test") setTab("tests");
+    }
+  }, [job]);
   useEffect(() => {
     let active = true;
     const existing = snapshot?.jobs.find((j) => j.id === id);
@@ -809,17 +842,22 @@ function JobDetail({
               {job.platform.toUpperCase()} · {job.profile} · {job.kind}
             </span>
             <h1>{job.projectName}</h1>
-            <div>
-              <span>
-                {job.version ?? "—"}
-                {job.buildNumber ? ` (${job.buildNumber})` : ""}
-              </span>
-              <Badge
-                tone={failed(job) ? "danger" : active(job) ? "amber" : "green"}
-              >
-                {label(job)}
-              </Badge>
-            </div>
+            {/* A check run has no version, and its results show its state. */}
+            {job.kind !== "test" && (
+              <div>
+                <span>
+                  {job.version ?? "—"}
+                  {job.buildNumber ? ` (${job.buildNumber})` : ""}
+                </span>
+                <Badge
+                  tone={
+                    failed(job) ? "danger" : active(job) ? "amber" : "green"
+                  }
+                >
+                  {label(job)}
+                </Badge>
+              </div>
+            )}
           </div>
           {active(job) && <Progress job={job} now={now} />}
           <div className="m-detail-tabs">
@@ -838,52 +876,7 @@ function JobDetail({
           {tab === "logs" ? (
             <Logs job={job} />
           ) : tab === "tests" ? (
-            <>
-              <Section title="Local checks & captures" />
-              {job.validation ? (
-                <>
-                  <Badge
-                    tone={
-                      job.validation.state === "passed" ? "green" : "danger"
-                    }
-                  >
-                    {job.validation.state}
-                  </Badge>
-                  <p className="m-muted">
-                    {job.validation.configuration} · {job.validation.mode}
-                  </p>
-                  {job.validation.error && (
-                    <p className="m-error">{job.validation.error}</p>
-                  )}
-                  {job.validation.runs.map((run, i) => (
-                    <div className="m-check-run" key={i}>
-                      <strong>{run.device}</strong>
-                      <span>
-                        {run.runtime ? `iOS ${run.runtime} · ` : ""}
-                        {run.passed ?? 0} passed · {run.failed ?? 0} failed ·{" "}
-                        {run.status}
-                      </span>
-                    </div>
-                  ))}
-                  <div className="m-image-grid">
-                    {job.validation.screenshots.map((image) => (
-                      <ImageTile
-                        key={image.index}
-                        name={image.name}
-                        src={`/api/jobs/${safeId(id)}/captures/${image.index}`}
-                        width={image.width}
-                        height={image.height}
-                        caption={image.device}
-                      />
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <p className="m-empty">
-                  No check results were recorded for this job.
-                </p>
-              )}
-            </>
+            <CheckResults job={job} />
           ) : tab === "artifacts" ? (
             <>
               <Section title="Verified artifacts" />
@@ -996,6 +989,402 @@ function JobDetail({
     </>
   );
 }
+type Validation = NonNullable<MonitorJob["validation"]>;
+const platformName = (p: string) => (p === "ios" ? "iOS" : "Android");
+const modeLabel = (job: MonitorJob) => {
+  const mode = job.validation?.mode ?? "all";
+  return mode === "tests"
+    ? "Tests"
+    : mode === "screenshots"
+      ? "Screenshots"
+      : "Tests + screenshots";
+};
+const checkState = (job: MonitorJob) =>
+  job.validation?.state ??
+  (["queued", "running"].includes(job.status) ? job.status : "interrupted");
+const checkTone = (job: MonitorJob) => {
+  const state = checkState(job);
+  return state === "passed"
+    ? "green"
+    : ["running", "queued"].includes(state)
+      ? "amber"
+      : "danger";
+};
+/** "25 passed · 8 screenshots", or why there's nothing yet. */
+function checkResults(v?: Validation) {
+  if (!v) return "Waiting to start";
+  const tests = v.runs.filter((r) => !r.captures);
+  const passed = tests.reduce((n, r) => n + (r.passed ?? 0), 0),
+    failed = tests.reduce((n, r) => n + (r.failed ?? 0), 0);
+  const parts = [
+    tests.length
+      ? failed
+        ? `${failed} failed`
+        : passed
+          ? `${passed} passed`
+          : tests.every((r) => r.status === "passed")
+            ? "tests passed"
+            : "tests failed"
+      : "",
+    v.screenshots.length
+      ? `${v.screenshots.length} screenshot${v.screenshots.length === 1 ? "" : "s"}`
+      : "",
+  ].filter(Boolean);
+  return (
+    parts.join(" · ") || (v.state === "running" ? "Running" : "No results")
+  );
+}
+const ago = (iso: string, now: number) => {
+  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? `${hours}h ago` : time(iso);
+};
+
+/** Check runs across projects: one glanceable card per project, then the
+ * recent runs. Each opens the run's results. */
+function ChecksView({
+  snapshot,
+  project,
+  now,
+  onOpen,
+}: {
+  snapshot?: MonitorSnapshot;
+  project: string;
+  now: number;
+  onOpen: (id: string) => void;
+}) {
+  const [runs, setRuns] = useState<MonitorJob[]>([]),
+    [total, setTotal] = useState(0),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const sequence = useRef(0);
+  const load = async (reset: boolean) => {
+    const token = ++sequence.current;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await request<{ jobs: MonitorJob[]; total: number }>(
+        `history?${new URLSearchParams({ project, checks: "1", offset: String(reset ? 0 : runs.length) })}`,
+      );
+      if (token !== sequence.current) return;
+      setRuns((old) => (reset ? result.jobs : [...old, ...result.jobs]));
+      setTotal(result.total);
+    } catch (error) {
+      if (token === sequence.current) setError((error as Error).message);
+    } finally {
+      if (token === sequence.current) setBusy(false);
+    }
+  };
+  // Live runs come from the snapshot; refresh the list when one changes.
+  const live = (snapshot?.jobs ?? []).filter(
+    (j) =>
+      (j.validation || j.kind === "test") &&
+      (!project || j.projectId === project),
+  );
+  const liveKey = live
+    .map((j) => `${j.id}:${j.validation?.state ?? j.status}`)
+    .join(",");
+  useEffect(() => {
+    void load(true);
+    return () => {
+      sequence.current++;
+    };
+  }, [project, liveKey]);
+  const known = new Map<string, MonitorJob>();
+  for (const job of [...runs, ...live]) known.set(job.id, job);
+  const latest = (projectId: string, platform: string) =>
+    [...known.values()]
+      .filter((j) => j.projectId === projectId && j.platform === platform)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const projects = (snapshot?.projects ?? []).filter(
+    (p) => !project || p.id === project,
+  );
+  return (
+    <>
+      <h1 className="m-page-title">
+        Checks.
+        <br />
+        <span>Tests and store screenshots.</span>
+      </h1>
+      <div className="m-check-projects">
+        {projects.map((p) => {
+          const platforms: string[] = p.platforms?.length
+            ? p.platforms
+            : ["ios"];
+          return (
+            <section className="m-check-project" key={p.id}>
+              <div className="m-check-project-heading">
+                <h2>{p.name}</h2>
+                {p.checks?.enabled && (
+                  <span className="m-mono">
+                    {p.checks.required
+                      ? "Gates uploads"
+                      : "Doesn't gate uploads"}
+                  </span>
+                )}
+              </div>
+              {!p.checks?.enabled ? (
+                <p className="m-muted">
+                  Not set up. Choose tests and a capture plan in Tests on your
+                  Mac.
+                </p>
+              ) : (
+                <>
+                  {platforms.map((platform) => {
+                    const run = latest(p.id, platform);
+                    return run ? (
+                      <button
+                        key={platform}
+                        className="m-check-platform"
+                        onClick={() => onOpen(run.id)}
+                        aria-label={`${p.name} ${platformName(platform)} checks: ${checkState(run)}, ${checkResults(run.validation)}`}
+                      >
+                        <strong>{platformName(platform)}</strong>
+                        <Badge tone={checkTone(run)}>{checkState(run)}</Badge>
+                        <ChevronRight size={16} />
+                        <span>
+                          {checkResults(run.validation)} ·{" "}
+                          {ago(
+                            run.validation?.finishedAt ?? run.createdAt,
+                            now,
+                          )}
+                        </span>
+                      </button>
+                    ) : (
+                      <div key={platform} className="m-check-platform empty">
+                        <strong>{platformName(platform)}</strong>
+                        <span>No runs yet</span>
+                      </div>
+                    );
+                  })}
+                  <details className="m-check-setup">
+                    <summary>What runs</summary>
+                    <dl>
+                      <div>
+                        <dt>Tests</dt>
+                        <dd className="m-mono">{p.checks.tests || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Screenshots</dt>
+                        <dd className="m-mono">
+                          {p.checks.screenshots === "inline"
+                            ? "Plan saved in Local Build Desk"
+                            : (p.checks.screenshots ?? "Not captured")}
+                        </dd>
+                      </div>
+                      {!!p.checks.simulators.length && (
+                        <div>
+                          <dt>Simulators</dt>
+                          <dd>{p.checks.simulators.join(", ")}</dd>
+                        </div>
+                      )}
+                      {!!p.checks.emulators.length && (
+                        <div>
+                          <dt>Emulators</dt>
+                          <dd>{p.checks.emulators.join(", ")}</dd>
+                        </div>
+                      )}
+                      <div>
+                        <dt>Uploads</dt>
+                        <dd>
+                          {p.checks.required
+                            ? "Wait for passing checks"
+                            : "Not blocked by failures"}
+                        </dd>
+                      </div>
+                    </dl>
+                  </details>
+                </>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      <Section title="Recent runs" />
+      {error && (
+        <p className="m-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="m-job-stack">
+        {runs.map((job) => (
+          <CheckRunCard
+            key={job.id}
+            job={job}
+            now={now}
+            onOpen={() => onOpen(job.id)}
+          />
+        ))}
+      </div>
+      {busy && !runs.length && (
+        <p className="m-muted" role="status">
+          Reading check runs…
+        </p>
+      )}
+      {!busy && !runs.length && (
+        <p className="m-empty">
+          No check runs yet. Run checks from Tests on your Mac; production
+          builds run them too.
+        </p>
+      )}
+      {runs.length < total && (
+        <button
+          className="m-button m-wide"
+          disabled={busy}
+          onClick={() => void load(false)}
+        >
+          Load more
+        </button>
+      )}
+    </>
+  );
+}
+function CheckRunCard({
+  job,
+  now,
+  onOpen,
+}: {
+  job: MonitorJob;
+  now: number;
+  onOpen: () => void;
+}) {
+  const v = job.validation;
+  return (
+    <button
+      className={`m-job compact ${checkTone(job) === "danger" ? "failed" : ""}`}
+      onClick={onOpen}
+    >
+      <div className="m-job-heading">
+        <div>
+          <span className="m-eyebrow">
+            {job.projectName} · {platformName(job.platform)}
+            {job.kind === "build" ? " · BEFORE UPLOAD" : ""}
+          </span>
+          <h3>{modeLabel(job)}</h3>
+        </div>
+        <ChevronRight size={18} />
+      </div>
+      <div className="m-job-meta">
+        <span>{checkResults(v)}</span>
+        <Badge tone={checkTone(job)}>{checkState(job)}</Badge>
+      </div>
+      <div className="m-job-footer">
+        <span>{time(v?.startedAt ?? job.createdAt)}</span>
+        {v?.finishedAt && (
+          <span>
+            {elapsedLabel(Date.parse(v.finishedAt) - Date.parse(v.startedAt))}{" "}
+            total
+          </span>
+        )}
+        {!v?.finishedAt && active(job) && (
+          <span>{ago(job.createdAt, now)}</span>
+        )}
+      </div>
+    </button>
+  );
+}
+/** One run's results: a summary line, each device, then screenshots grouped
+ * by device, framed store images first when the plan has a frame. */
+function CheckResults({ job }: { job: MonitorJob }) {
+  const v = job.validation;
+  const framedAvailable = !!v?.screenshots.some((s) => s.framed);
+  const [raw, setRaw] = useState(false);
+  if (!v)
+    return (
+      <p className="m-empty">
+        {job.kind === "test"
+          ? "Waiting for the queue. Results appear as each device finishes."
+          : "No check results were recorded for this job."}
+      </p>
+    );
+  const groups = new Map<string, Validation["screenshots"]>();
+  for (const shot of v.screenshots)
+    groups.set(shot.device, [...(groups.get(shot.device) ?? []), shot]);
+  const framed = framedAvailable && !raw;
+  return (
+    <>
+      <div className="m-check-summary">
+        <Badge tone={checkTone(job)}>{checkState(job)}</Badge>
+        <strong>{modeLabel(job)}</strong>
+        <span>
+          {checkResults(v)}
+          {v.finishedAt
+            ? ` · ${elapsedLabel(Date.parse(v.finishedAt) - Date.parse(v.startedAt))}`
+            : ""}
+        </span>
+      </div>
+      {v.error && <p className="m-error">{v.error}</p>}
+      <Section title="Devices" />
+      {v.runs.map((run, i) => {
+        // A project's own test command reports pass or fail, not counts.
+        const command = run.device === "Project command";
+        return (
+          <div className={`m-check-run ${run.status}`} key={i}>
+            <strong>
+              <i />
+              {command ? "Test command" : run.device}
+              {run.captures ? " · screenshots" : command ? "" : " · tests"}
+            </strong>
+            <span>
+              {run.runtime
+                ? `${/^Android/.test(run.runtime) ? run.runtime : `iOS ${run.runtime}`} · `
+                : ""}
+              {run.captures || (command && run.passed === undefined)
+                ? command
+                  ? `tests ${run.status}`
+                  : run.status
+                : `${run.passed ?? 0} passed · ${run.failed ?? 0} failed · ${run.status}`}
+            </span>
+            {run.detail && <p className="m-error">{run.detail}</p>}
+          </div>
+        );
+      })}
+      {!!v.screenshots.length && (
+        <>
+          <div className="m-section-heading m-shots-heading">
+            <h2>Screenshots</h2>
+            {framedAvailable && (
+              <div
+                className="m-segmented"
+                role="group"
+                aria-label="Screenshot version"
+              >
+                <button aria-pressed={!raw} onClick={() => setRaw(false)}>
+                  Store
+                </button>
+                <button aria-pressed={raw} onClick={() => setRaw(true)}>
+                  Raw
+                </button>
+              </div>
+            )}
+          </div>
+          {[...groups].map(([device, shots]) => (
+            <section key={device} className="m-shot-group">
+              <h3>
+                {device}
+                <span>{shots.length}</span>
+              </h3>
+              <div className="m-image-grid">
+                {shots.map((image) => (
+                  <ImageTile
+                    key={`${image.index}:${framed && image.framed}`}
+                    name={image.name}
+                    src={`/api/jobs/${safeId(job.id)}/captures/${image.index}${framed && image.framed ? "?framed=1" : ""}`}
+                    width={framed && image.framed ? undefined : image.width}
+                    height={framed && image.framed ? undefined : image.height}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
 function Logs({ job }: { job: MonitorJob }) {
   const [lines, setLines] = useState<
       { time: string; stage: string; text: string }[]

@@ -54,6 +54,17 @@ export interface MonitorProject {
   bundleId?: string;
   packageName?: string;
   version?: string;
+  /** What the project's release checks run, when they're set up. */
+  checks?: {
+    enabled: boolean;
+    /** Store uploads wait for passing checks. */
+    required: boolean;
+    tests: string;
+    simulators: string[];
+    emulators: string[];
+    /** The capture plan: its file in the project, or "inline". */
+    screenshots?: string;
+  };
 }
 export interface MonitorArtifact extends Omit<Artifact, "path"> {}
 export interface MonitorJob {
@@ -95,6 +106,9 @@ export interface MonitorJob {
       passed?: number;
       failed?: number;
       skipped?: number;
+      /** Screenshot runs have no test counts. */
+      captures: boolean;
+      detail?: string;
     }[];
     screenshots: {
       index: number;
@@ -102,6 +116,8 @@ export interface MonitorJob {
       device: string;
       width: number;
       height: number;
+      /** A framed store image exists for this capture. */
+      framed: boolean;
     }[];
   };
   source?: { hash?: string; commit?: string; configuration: string };

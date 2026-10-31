@@ -427,11 +427,13 @@ export class MobileMonitor extends EventEmitter {
           query = (url.searchParams.get("query") ?? "")
             .slice(0, 200)
             .toLowerCase(),
-          status = url.searchParams.get("status");
+          status = url.searchParams.get("status"),
+          checks = url.searchParams.get("checks") === "1";
         const jobs = state.jobs.filter(
           (j) =>
             (!project || j.projectId === project) &&
             (!status || j.status === status) &&
+            (!checks || !!j.validation || j.kind === "test") &&
             (!query ||
               [j.projectName, j.version, j.buildNumber, j.profile, j.platform]
                 .join(" ")
@@ -477,7 +479,11 @@ export class MobileMonitor extends EventEmitter {
           return this.image(
             req,
             res,
-            await this.engine.screenshotPreview(id, Number(jobRoute[3])),
+            await this.engine.screenshotPreview(
+              id,
+              Number(jobRoute[3]),
+              url.searchParams.get("framed") === "1",
+            ),
           );
         return this.json(
           res,

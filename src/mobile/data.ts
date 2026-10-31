@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { Redactor } from "../core/process";
 import type { Engine } from "../core/engine";
 import type { Job, LogEntry, Artifact } from "../core/types";
+import type { ReleaseCheckPolicy } from "../core/release-check-schema";
 import type { MonitorSnapshot, MonitorJob, MonitorLogs } from "./types";
 const redactor = new Redactor();
 export function monitorText(
@@ -94,6 +95,8 @@ export function monitorJob(
             passed: r.passed,
             failed: r.failed,
             skipped: r.skipped,
+            captures: !!r.attachments,
+            detail: text(r.detail),
           })),
           screenshots: job.validation.screenshots.map((s, index) => ({
             index,
@@ -101,6 +104,7 @@ export function monitorJob(
             device: s.device,
             width: s.width,
             height: s.height,
+            framed: !!s.framed,
           })),
         }
       : undefined,
@@ -136,6 +140,23 @@ export function monitorJob(
       })),
   };
 }
+export function monitorChecks(
+  policy?: ReleaseCheckPolicy,
+): MonitorSnapshot["projects"][number]["checks"] {
+  if (!policy) return undefined;
+  return {
+    enabled: policy.enabled,
+    required: policy.required,
+    tests:
+      policy.runner === "command"
+        ? (policy.command ?? []).join(" ")
+        : `Xcode tests${policy.scheme ? ` · ${policy.scheme}` : ""}`,
+    simulators: policy.destinations.map((d) => d.deviceType),
+    emulators: (policy.androidDevices ?? []).map((d) => d.device),
+    screenshots:
+      policy.screenshotPlanFile ?? (policy.screenshots ? "inline" : undefined),
+  };
+}
 export function monitorSnapshot(
   engine: Engine,
   version: string,
@@ -169,6 +190,7 @@ export function monitorSnapshot(
       bundleId: p.bundleId,
       packageName: p.packageName,
       version: p.version,
+      checks: monitorChecks(p.settings.releaseChecks),
     })),
     jobs: recent,
     counts: {
