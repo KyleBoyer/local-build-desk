@@ -882,7 +882,7 @@ it("stops with a clear reason when a purchase only has a rejected version", asyn
   ).rejects.toThrow(/only has a rejected version/);
 });
 
-it("adds the version again when the draft only holds a removed copy of it", async () => {
+it("restores a version Apple took back out of a draft instead of adding it again", async () => {
   const a = png("a.png", 1320, 2868, 1);
   const b = png("b.png", 1320, 2868, 2);
   const { api, writes, request } = apple({
@@ -919,12 +919,20 @@ it("adds the version again when the draft only holds a removed copy of it", asyn
     submit: true,
     wait: async () => undefined,
   });
-  const versionItems = writes.filter(
-    (w) =>
-      w.path === "/reviewSubmissionItems" &&
-      w.body.data.relationships.appStoreVersion,
-  );
-  expect(versionItems).toHaveLength(1);
+  const calls = writes.map((w) => `${w.method} ${w.path}`);
+  expect(calls).toContain("PATCH /reviewSubmissionItems/item");
+  expect(
+    writes.find((w) => w.path === "/reviewSubmissionItems/item")!.body.data
+      .attributes,
+  ).toEqual({ removed: false });
+  // Apple answers "already added" to a second copy, so none is sent.
+  expect(
+    writes.some(
+      (w) =>
+        w.path === "/reviewSubmissionItems" &&
+        w.body.data.relationships.appStoreVersion,
+    ),
+  ).toBe(false);
   expect(writes.at(-1)!.path).toBe("/reviewSubmissions/draft");
 });
 

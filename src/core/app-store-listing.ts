@@ -1325,19 +1325,48 @@ async function sendForReview(
         },
       })
     ).data;
-  const items = (
-    draft
-      ? // Relationship ids only come back when the related items are included.
-        await all(
-          api,
-          `/reviewSubmissions/${submission.id}/items?include=appStoreVersion,inAppPurchaseVersion&limit=50`,
-        )
-      : []
-  ).filter(
-    // Apple keeps items it took back out of a draft (for example when the
-    // version's build changes) as REMOVED; those have to be added again.
-    (i) => i.attributes?.state !== "REMOVED",
-  );
+  // Relationship ids only come back when the related items are included.
+  const listed = draft
+    ? await all(
+        api,
+        `/reviewSubmissions/${submission.id}/items?include=appStoreVersion,inAppPurchaseVersion&limit=50`,
+      )
+    : [];
+  const kind = (i: any) =>
+    i.relationships?.appStoreVersion?.data
+      ? "version"
+      : i.relationships?.inAppPurchaseVersion?.data
+        ? "purchase"
+        : "item";
+  // What the draft holds, for the log: Apple's own answers are terse.
+  if (draft)
+    log(
+      `Review draft ${submission.id}: ${
+        listed
+          .map((i) => `${kind(i)} ${i.attributes?.state ?? "?"}`)
+          .join(", ") || "empty"
+      }`,
+    );
+  // Apple takes items back out of a draft (when the version's build changes,
+  // say) but keeps them, marked REMOVED, and then refuses to add the same
+  // version or purchase again as "already added". Put ours back instead.
+  for (const item of listed) {
+    if (item.attributes?.state !== "REMOVED") continue;
+    const ours =
+      item.relationships?.appStoreVersion?.data?.id === versionId ||
+      !!item.relationships?.inAppPurchaseVersion?.data;
+    if (!ours) continue;
+    await api.request(`/reviewSubmissionItems/${item.id}`, "PATCH", {
+      data: {
+        type: "reviewSubmissionItems",
+        id: item.id,
+        attributes: { removed: false },
+      },
+    });
+    item.attributes = { ...item.attributes, state: "READY_FOR_REVIEW" };
+    log(`Restored the ${kind(item)} in review draft ${submission.id}`);
+  }
+  const items = listed.filter((i) => i.attributes?.state !== "REMOVED");
   // Adds an item to the draft; one an earlier run already added is fine.
   const addItem = async (relationship: Record<string, unknown>) => {
     try {
@@ -1444,18 +1473,6 @@ async function sendForReview(
     }
     log(`In-app purchase ${productId} added to review`);
   }
-  // What the draft holds, for the log: Apple's answer below is terse.
-  if (draft)
-    log(
-      `Review draft ${submission.id}: ${
-        items
-          .map(
-            (i) =>
-              `${i.relationships?.appStoreVersion?.data ? "version" : i.relationships?.inAppPurchaseVersion?.data ? "purchase" : "item"} ${i.attributes?.state ?? "?"}`,
-          )
-          .join(", ") || "empty"
-      }`,
-    );
   await api.request(`/reviewSubmissions/${submission.id}`, "PATCH", {
     data: {
       type: "reviewSubmissions",
