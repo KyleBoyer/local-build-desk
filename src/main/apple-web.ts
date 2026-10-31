@@ -62,7 +62,16 @@ export function appleWebSession(
         page = undefined;
         loading = undefined;
       });
-      attachLoginFill(window.webContents, "apple", savedLogin);
+      // Only while the sign-in is on screen: submitting a password from the
+      // hidden page could send a two-factor prompt to the person's devices
+      // with no window to enter the code in.
+      attachLoginFill(
+        window.webContents,
+        "apple",
+        savedLogin,
+        undefined,
+        () => !window.isDestroyed() && window.isVisible(),
+      );
       await load(window, `${ORIGIN}/apps`);
       page = window;
       return window;
