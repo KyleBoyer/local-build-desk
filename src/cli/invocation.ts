@@ -1,3 +1,4 @@
+import { utf8LocaleOf } from "../core/locale";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname, isAbsolute, relative } from "node:path";
 import { z } from "zod";
@@ -112,6 +113,11 @@ export function captureInvocationEnvironment(
   const env = withCurrentNames(raw);
   for (const [key, value] of Object.entries(env))
     if (isInvocationVariable(key) && value !== undefined) result[key] = value;
+  // A running desk executes forwarded builds in its own environment, which has
+  // no locale when it was opened from Finder or the Dock. Carry the caller's
+  // UTF-8 locale as a run setting unless one was given explicitly.
+  const locale = utf8LocaleOf(raw);
+  if (locale) result.LOCAL_BUILD_DESK_LOCALE ??= locale;
   const flag = (name: string) => {
     const entry = argv.find((value) => value.startsWith(`--${name}=`));
     const index = argv.indexOf(`--${name}`);
@@ -191,6 +197,8 @@ export async function resolveInvocation(
   flags: InvocationFlags,
   rawEnvironment: NodeJS.ProcessEnv = process.env,
   fallback?: Project,
+  /** The caller's working directory; a desk owner's own may differ. */
+  cwd: string = process.cwd(),
 ): Promise<BuildInvocation> {
   const environment = withCurrentNames(rawEnvironment);
   const projects = engine.state().projects;
@@ -235,7 +243,7 @@ export async function resolveInvocation(
         environment.LOCAL_BUILD_DESK_SOURCE ??
         template?.path ??
         flags.project ??
-        process.cwd(),
+        cwd,
     ),
   );
   const config = configAt(flags, source, environment);

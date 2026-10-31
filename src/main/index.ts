@@ -1,3 +1,4 @@
+import { ownerLaunch } from "../core/ephemeral";
 import { MobileMonitor } from "../mobile/server";
 import { readMonitorConfig } from "../mobile/config";
 import { spawn } from "node:child_process";
@@ -47,6 +48,9 @@ const ownerLockPath = join(dataRoot, "owner.lock");
 const cliIndex = process.argv.indexOf("--desk-cli");
 const cliArgs = cliIndex >= 0 ? process.argv.slice(cliIndex + 1) : undefined;
 const monitorDaemon = process.argv.includes("--desk-monitor-daemon");
+// Where this process was started. Owners move to dataRoot (see startOwner), so
+// the CLI's own command resolves relative paths against this instead.
+const invocationCwd = process.cwd();
 let desktopRequested = false;
 // A reader that exits early (`local-build-desk status | true`) closes the pipe. An
 // unhandled EPIPE would stall Electron's main process; drop the output instead
@@ -159,10 +163,19 @@ function spawnMonitorOwner() {
   const args = app.isPackaged
     ? ["--desk-monitor-daemon"]
     : [process.argv[1], "--desk-monitor-daemon"];
+  // The daemon outlives this call. From CI it must not keep the job's folder
+  // or variables, and it always needs a UTF-8 locale.
+  const launch = ownerLaunch({
+    env: process.env,
+    callerEnv: cliEnvironment ?? process.env,
+    callerCwd: invocationCwd,
+    dataRoot,
+  });
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, LOCAL_BUILD_DESK_DATA_DIR: dataRoot },
+    cwd: launch.cwd,
+    env: launch.env,
   });
   child.on("error", () => {});
   child.unref();
@@ -267,6 +280,10 @@ if (!useMonitorOwner && acquireOwnerLock()) {
   app.quit();
 }
 function startOwner() {
+  // An owner serves every caller and can outlive the one that started it, such
+  // as a CI job whose workspace is deleted afterwards. Native tools it runs
+  // without an explicit cwd would then fail, so it works from dataRoot.
+  process.chdir(dataRoot);
   app.on("second-instance", (_event, argv) => {
     if (
       !argv.includes("--desk-cli") &&
@@ -515,6 +532,7 @@ function startOwner() {
           {
             environment: cliEnvironment,
             appleWeb,
+            cwd: invocationCwd,
             monitor: mobile,
             updates,
             onJobs: (ids) => {

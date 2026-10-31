@@ -1,3 +1,4 @@
+import { buildLocale } from "./locale";
 import { projectSettings } from "./project-discovery";
 import {
   detectProjectType,
@@ -223,6 +224,7 @@ export function toolEnvironment(
   }
   if (settings.javaHome) env.JAVA_HOME = settings.javaHome;
   if (settings.xcodePath) env.DEVELOPER_DIR = settings.xcodePath;
+  Object.assign(env, buildLocale(settings.locale));
   const prefix = [
     settings.nodePath?.replace(/\/[^/]+$/, ""),
     settings.javaHome && join(settings.javaHome, "bin"),

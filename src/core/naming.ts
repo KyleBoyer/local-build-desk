@@ -9,7 +9,12 @@ export const LEGACY_ENV_PREFIX = "IOS_SUBMIT_";
 export const CONFIG_FILE = "local-build-desk.json";
 export const LEGACY_CONFIG_FILE = "ios-submit.json";
 // App-internal variables share the prefix but never configure a build.
-const internal = new Set(["DATA_DIR", "TEST_UI", "DISABLE_UPDATES"]);
+const internal = new Set([
+  "DATA_DIR",
+  "TEST_UI",
+  "DISABLE_UPDATES",
+  "EPHEMERAL",
+]);
 export function isInvocationVariable(key: string) {
   return (
     key.startsWith(ENV_PREFIX) && !internal.has(key.slice(ENV_PREFIX.length))

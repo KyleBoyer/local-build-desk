@@ -423,7 +423,7 @@ export async function runCLI(
           engine.store.get<Job>("jobs", artifact.jobId),
         );
       }
-      invocation = await resolveInvocation(engine, v, env, fallback);
+      invocation = await resolveInvocation(engine, v, env, fallback, cwd);
       project = invocation.project;
       secrets.add(...credentialSecrets(invocation.context.credentials));
       if (invocation.concurrency && Object.keys(invocation.concurrency).length)

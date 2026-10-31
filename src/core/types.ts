@@ -108,6 +108,11 @@ export interface ProjectSettings {
   setupAppleComplete?: boolean;
   testFlightGroupId?: string;
   testFlightGroupName?: string;
+  /**
+   * UTF-8 locale (LANG and LC_ALL) for native tools. CLI runs carry the
+   * caller's locale here; otherwise the desk's own or en_US.UTF-8 is used.
+   */
+  locale?: string;
 }
 export type ToolName =
   "node" | "cocoapods" | "xcodegen" | "android" | "gcloud" | "ios-platform";
