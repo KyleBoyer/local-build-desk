@@ -56,7 +56,8 @@ it("wraps a headline to the frame's width with the real font", () => {
   );
   expect(lines.length).toBeGreaterThan(1);
   expect(lines.join(" ")).toBe("A puzzle you solve by folding the world");
-});
+  // Each measurement loads every system font; GitHub's macOS runners take ~15s.
+}, 60_000);
 
 it("frames a capture at its own size with background, headline and screenshot", async () => {
   const dir = await mkdtemp(join(tmpdir(), "lbd-frame-"));
