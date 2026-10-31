@@ -1264,12 +1264,30 @@ export async function applyListing(
     "LISTING_BLOCKED",
     `Not submitting for review: ${blockers.join(" ")}`,
   );
-  const drafts = (
-    await all(
-      api,
-      `/reviewSubmissions?filter[app]=${plan.appId}&filter[platform]=IOS&limit=50`,
-    )
-  ).filter((s) => s.attributes.state === "READY_FOR_REVIEW");
+  const submissions = await all(
+    api,
+    `/reviewSubmissions?filter[app]=${plan.appId}&filter[platform]=IOS&include=appStoreVersionForReview&limit=50`,
+  );
+  // After App Review sends a version back, its submission stays open as
+  // UNRESOLVED_ISSUES, still holding the version and its purchases. A new
+  // draft can't take them ("already added"); App Store Connect resubmits
+  // that same submission, and so do we.
+  const unresolved = submissions.find(
+    (s) =>
+      s.attributes.state === "UNRESOLVED_ISSUES" &&
+      s.relationships?.appStoreVersionForReview?.data?.id === versionId,
+  );
+  if (unresolved) {
+    log(
+      `Resubmitting review submission ${unresolved.id}, which App Review sent back`,
+    );
+    await sendForReview(api, plan, versionId, log, unresolved, true);
+    log(`Submitted ${plan.version} for App Review`);
+    return { versionId, submitted: true };
+  }
+  const drafts = submissions.filter(
+    (s) => s.attributes.state === "READY_FOR_REVIEW",
+  );
   invariant(
     drafts.length <= 1,
     "REVIEW_AMBIGUOUS",
@@ -1313,6 +1331,7 @@ async function sendForReview(
   versionId: string | undefined,
   log: (line: string) => void,
   draft: any | null,
+  resubmit = false,
 ) {
   const submission =
     draft ??
@@ -1366,6 +1385,20 @@ async function sendForReview(
     item.attributes = { ...item.attributes, state: "READY_FOR_REVIEW" };
     log(`Restored the ${kind(item)} in review draft ${submission.id}`);
   }
+  // Resubmitting what App Review sent back: mark its rejected items
+  // resolved, as "Resubmit to App Review" does.
+  if (resubmit)
+    for (const item of listed) {
+      if (item.attributes?.state !== "REJECTED") continue;
+      await api.request(`/reviewSubmissionItems/${item.id}`, "PATCH", {
+        data: {
+          type: "reviewSubmissionItems",
+          id: item.id,
+          attributes: { resolved: true },
+        },
+      });
+      log(`Marked the rejected ${kind(item)} resolved`);
+    }
   const items = listed.filter((i) => i.attributes?.state !== "REMOVED");
   // Adds an item to the draft; one an earlier run already added is fine.
   const addItem = async (relationship: Record<string, unknown>) => {
@@ -1383,6 +1416,9 @@ async function sendForReview(
       });
     } catch (error) {
       if (!/already added/i.test((error as Error).message)) throw error;
+      log(
+        `Apple says it's already in a submission: ${(error as Error).message}`,
+      );
     }
   };
   if (

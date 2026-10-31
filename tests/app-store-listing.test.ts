@@ -994,3 +994,70 @@ it("replaces a draft that lost its version with a fresh submission", async () =>
   expect(writes.at(-5)!.body.data.attributes).toEqual({ canceled: true });
   expect(lines.some((l) => l.includes("version READY_FOR_REVIEW"))).toBe(true);
 });
+
+it("resubmits the submission App Review sent back instead of starting a new one", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  const { api, writes, request } = apple({
+    screenshots: [a, b],
+    contact: true,
+    iapVersions: [{ id: "iapv", state: "READY_FOR_REVIEW" }],
+  });
+  const fallback = request.getMockImplementation()!;
+  request.mockImplementation(
+    async (path: string, method = "GET", body?: any) => {
+      if (method === "GET" && path.startsWith("/reviewSubmissions?"))
+        return {
+          data: [
+            { id: "empty", attributes: { state: "READY_FOR_REVIEW" } },
+            {
+              id: "sentBack",
+              attributes: { state: "UNRESOLVED_ISSUES" },
+              relationships: {
+                appStoreVersionForReview: { data: { id: "version" } },
+              },
+            },
+          ],
+        };
+      if (
+        method === "GET" &&
+        path.startsWith("/reviewSubmissions/sentBack/items")
+      )
+        return {
+          data: [
+            {
+              id: "versionItem",
+              attributes: { state: "REJECTED" },
+              relationships: { appStoreVersion: { data: { id: "version" } } },
+            },
+            {
+              id: "iapItem",
+              attributes: { state: "READY_FOR_REVIEW" },
+              relationships: { inAppPurchaseVersion: { data: { id: "iapv" } } },
+            },
+          ],
+        };
+      return fallback(path, method, body);
+    },
+  );
+  const loaded = await loadListing(
+    listing({ inAppPurchases: ["com.example.full"] }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  const result = await applyListing(api, plan, loaded, {
+    submit: true,
+    wait: async () => undefined,
+  });
+  expect(result.submitted).toBe(true);
+  const calls = writes.map((w) => `${w.method} ${w.path}`);
+  expect(calls).not.toContain("POST /reviewSubmissions");
+  expect(calls.filter((c) => c.includes("reviewSubmissionItems"))).toEqual([
+    "PATCH /reviewSubmissionItems/versionItem",
+  ]);
+  expect(
+    writes.find((w) => w.path === "/reviewSubmissionItems/versionItem")!.body
+      .data.attributes,
+  ).toEqual({ resolved: true });
+  expect(calls.at(-1)).toBe("PATCH /reviewSubmissions/sentBack");
+  expect(writes.at(-1)!.body.data.attributes).toEqual({ submitted: true });
+});
