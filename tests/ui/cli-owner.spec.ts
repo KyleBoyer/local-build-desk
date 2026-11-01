@@ -76,7 +76,14 @@ async function harness() {
     async cleanup() {
       for (const child of children)
         if (child.exitCode === null) child.kill("SIGTERM");
-      await rm(root, { recursive: true, force: true });
+      // A stopping owner can still flush a last file into its data folder;
+      // CI saw ENOTEMPTY here. Retry instead of failing the release run.
+      await rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 300,
+      });
     },
   };
 }
