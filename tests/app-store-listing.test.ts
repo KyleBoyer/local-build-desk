@@ -1061,3 +1061,37 @@ it("resubmits the submission App Review sent back instead of starting a new one"
   expect(calls.at(-1)).toBe("PATCH /reviewSubmissions/sentBack");
   expect(writes.at(-1)!.body.data.attributes).toEqual({ submitted: true });
 });
+
+it("sets the version to release automatically after approval", async () => {
+  png("a.png", 1320, 2868, 1);
+  png("b.png", 1320, 2868, 2);
+  const { api, writes } = apple({ screenshots: ["old"] });
+  const loaded = await loadListing(listing({ releaseType: "AFTER_APPROVAL" }));
+  const plan = await listingPlan(api, "com.example.app", "1.0", loaded);
+  expect(plan.changes).toContainEqual(
+    expect.objectContaining({
+      scope: "version",
+      field: "releaseType",
+      after: "AFTER_APPROVAL",
+    }),
+  );
+  await applyListing(api, plan, loaded, {
+    fetcher: vi.fn(async () => new Response(null, { status: 200 })) as any,
+    wait: async () => undefined,
+  });
+  const version = writes.find(
+    (w) => w.method === "PATCH" && w.path === "/appStoreVersions/version",
+  );
+  expect(version?.body.data.attributes).toMatchObject({
+    releaseType: "AFTER_APPROVAL",
+    earliestReleaseDate: null,
+  });
+});
+
+it("rejects a scheduled release date that isn't a date-time", async () => {
+  await expect(
+    loadListing(
+      listing({ releaseType: "SCHEDULED", earliestReleaseDate: "soon" }),
+    ),
+  ).rejects.toThrow();
+});

@@ -43,6 +43,14 @@ export const listingSchema = z
     marketingUrl: z.url().optional(),
     whatsNew: text(4000),
     copyright: z.string().optional(),
+    /**
+     * When an approved version goes on sale: MANUAL (you release it),
+     * AFTER_APPROVAL (automatically), or SCHEDULED (automatically, not before
+     * earliestReleaseDate). App Store Connect's default for new versions is MANUAL.
+     */
+    releaseType: z.enum(["MANUAL", "AFTER_APPROVAL", "SCHEDULED"]).optional(),
+    /** ISO date-time for SCHEDULED, such as 2027-03-01T17:00:00Z. */
+    earliestReleaseDate: z.string().datetime({ offset: true }).optional(),
     /** iPhone and iPad screenshots, ordered within each display type, relative to this file. */
     screenshots: z.array(z.string()).max(100).optional(),
     review: z
@@ -524,6 +532,9 @@ export async function listingPlan(
     {
       ...versionLocalization?.attributes,
       copyright: readFrom?.attributes.copyright,
+      // A new version starts MANUAL, whatever the previous one used.
+      releaseType: target ? target.attributes.releaseType : "MANUAL",
+      earliestReleaseDate: target?.attributes.earliestReleaseDate,
     },
     {
       description: listing.description,
@@ -534,6 +545,11 @@ export async function listingPlan(
       // Apple refuses "What's New" on an app's first version.
       whatsNew: live ? listing.whatsNew : undefined,
       copyright: listing.copyright,
+      releaseType: listing.releaseType,
+      earliestReleaseDate:
+        listing.releaseType === "SCHEDULED"
+          ? listing.earliestReleaseDate
+          : undefined,
     },
   );
   if (listing.review) {
@@ -997,7 +1013,22 @@ export async function applyListing(
 
   // The version and its localization.
   let versionId = plan.versionId;
-  const { copyright, versionString, ...localized } = pick("version");
+  const {
+    copyright,
+    versionString,
+    releaseType,
+    earliestReleaseDate,
+    ...localized
+  } = pick("version");
+  // How the approved version goes on sale. Leaving SCHEDULED clears its date.
+  const release = {
+    ...(releaseType ? { releaseType } : {}),
+    ...(earliestReleaseDate
+      ? { earliestReleaseDate }
+      : releaseType && releaseType !== "SCHEDULED"
+        ? { earliestReleaseDate: null }
+        : {}),
+  };
   if (!versionId) {
     versionId = (
       await api.request("/appStoreVersions", "POST", {
@@ -1008,13 +1039,14 @@ export async function applyListing(
             versionString: plan.version,
             releaseType: "MANUAL",
             ...(copyright ? { copyright } : {}),
+            ...release,
           },
           relationships: { app: { data: { type: "apps", id: plan.appId } } },
         },
       })
     ).data.id;
     log(`Created version ${plan.version}`);
-  } else if (copyright || versionString) {
+  } else if (copyright || versionString || Object.keys(release).length) {
     await api.request(`/appStoreVersions/${versionId}`, "PATCH", {
       data: {
         type: "appStoreVersions",
@@ -1022,10 +1054,15 @@ export async function applyListing(
         attributes: {
           ...(copyright ? { copyright } : {}),
           ...(versionString ? { versionString } : {}),
+          ...release,
         },
       },
     });
   }
+  if (releaseType)
+    log(
+      `Release: ${releaseType === "AFTER_APPROVAL" ? "automatically after approval" : releaseType === "SCHEDULED" ? `automatically, not before ${earliestReleaseDate}` : "manually"}`,
+    );
   let localizationId = plan.versionLocalizationId;
   if (!localizationId) {
     const existing = (

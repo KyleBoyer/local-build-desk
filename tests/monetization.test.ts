@@ -737,3 +737,25 @@ it("writes generated batch ids back to the file and keeps code values private", 
     count: 2,
   });
 });
+
+it("accepts store text longer than older local limits", () => {
+  // DuoDuo's real purchase description is longer than the 45 characters an
+  // earlier schema allowed; imports must take what the store already has.
+  expect(
+    monetizationSchema.safeParse({
+      apple: {
+        inAppPurchases: [
+          {
+            productId: "com.app.book",
+            type: "NON_CONSUMABLE",
+            referenceName: "Book",
+            price: "4.99",
+            localizations: {
+              "en-US": { name: "Full book", description: "x".repeat(55) },
+            },
+          },
+        ],
+      },
+    }).success,
+  ).toBe(true);
+});

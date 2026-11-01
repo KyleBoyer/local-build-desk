@@ -35,6 +35,7 @@ const names = [
   "readCompliance",
   "saveCompliance",
   "releaseNoteDraft",
+  "saveReleaseType",
   "readMonetization",
   "saveMonetization",
   "importMonetization",

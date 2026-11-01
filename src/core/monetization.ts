@@ -30,7 +30,9 @@ const territories = z.union([
   z.array(z.string().regex(/^[A-Z]{3}$/)).min(1),
 ]);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-/** Locale → text, such as { "en-US": { name, description } }. */
+/** Locale → text, such as { "en-US": { name, description } }. Length limits
+ * are generous: the stores enforce their own, and imports must never fail on
+ * stricter local ones. */
 const localized = <T extends z.ZodRawShape>(shape: T) =>
   z.record(
     z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/),
@@ -87,8 +89,8 @@ export const appleIapSchema = z
     /** PNG of the purchase in the app for App Review, relative to this file. */
     reviewScreenshot: z.string().optional(),
     localizations: localized({
-      name: z.string().min(2).max(30),
-      description: z.string().max(45).optional(),
+      name: z.string().min(2).max(200),
+      description: z.string().max(1000).optional(),
     }),
   })
   .strict();
@@ -124,8 +126,8 @@ export const appleSubscriptionSchema = z
       .strict()
       .optional(),
     localizations: localized({
-      name: z.string().min(2).max(60),
-      description: z.string().max(55).optional(),
+      name: z.string().min(2).max(200),
+      description: z.string().max(1000).optional(),
     }),
   })
   .strict();
@@ -134,8 +136,8 @@ export const appleGroupSchema = z
   .object({
     referenceName: z.string().min(1).max(64),
     localizations: localized({
-      name: z.string().min(2).max(75),
-      customAppName: z.string().max(30).optional(),
+      name: z.string().min(2).max(200),
+      customAppName: z.string().max(200).optional(),
     }).default({}),
     subscriptions: z.array(appleSubscriptionSchema).default([]),
   })
@@ -162,9 +164,9 @@ export const appleOfferCodeSchema = z
   .strict();
 
 const googleListing = localized({
-  title: z.string().min(1).max(55),
-  description: z.string().max(200).optional(),
-  benefits: z.array(z.string().max(40)).max(4).optional(),
+  title: z.string().min(1).max(200),
+  description: z.string().max(1000).optional(),
+  benefits: z.array(z.string().max(200)).max(10).optional(),
 });
 /** ISO 8601 durations Play accepts, such as P1W, P1M, P3M, P1Y. */
 const isoPeriod = z

@@ -189,6 +189,15 @@ export function StoreCompliance({ project }: { project: Project }) {
         </fieldset>
       </section>
 
+      {listing && (
+        <ReleaseOption
+          key={listing}
+          projectId={project.id}
+          listing={listing}
+          saved={view?.release}
+        />
+      )}
+
       <section className="section-card">
         <fieldset disabled={busy} className="workflow-fieldset">
           <h2>Age rating</h2>
@@ -475,5 +484,113 @@ export function StoreCompliance({ project }: { project: Project }) {
         {message && <p role="status">{message}</p>}
       </section>
     </>
+  );
+}
+
+/** How an approved version goes on sale. Saved in the listing file, so every
+ * release made from it carries the choice to App Store Connect. */
+function ReleaseOption({
+  projectId,
+  listing,
+  saved,
+}: {
+  projectId: string;
+  listing: string;
+  saved?: { releaseType?: string; earliestReleaseDate?: string };
+}) {
+  type Kind = "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED";
+  const [kind, setKind] = useState<Kind>(
+    (saved?.releaseType as Kind | undefined) ?? "MANUAL",
+  );
+  // datetime-local wants local time without a zone.
+  const local = (iso?: string) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+      .toISOString()
+      .slice(0, 16);
+  };
+  const [date, setDate] = useState(local(saved?.earliestReleaseDate));
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+  const [current, setCurrent] = useState(saved);
+  const dirty =
+    kind !== (current?.releaseType ?? "MANUAL") ||
+    (kind === "SCHEDULED" && date !== local(current?.earliestReleaseDate));
+  return (
+    <section className="section-card">
+      <h2>When Apple approves a version</h2>
+      <div className="segmented" role="radiogroup" aria-label="Release option">
+        {(
+          [
+            ["AFTER_APPROVAL", "Release automatically"],
+            ["SCHEDULED", "Release automatically, not before a date"],
+            ["MANUAL", "I'll release it myself"],
+          ] as [Kind, string][]
+        ).map(([value, label]) => (
+          <label className="check-label" key={value}>
+            <input
+              type="radio"
+              name="release-option"
+              checked={kind === value}
+              onChange={() => setKind(value)}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+      {kind === "SCHEDULED" && (
+        <label className="field">
+          <span>Earliest release (your time zone)</span>
+          <input
+            type="datetime-local"
+            aria-label="Earliest release"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </label>
+      )}
+      <div className="row-actions">
+        <button
+          className="button"
+          disabled={!dirty || (kind === "SCHEDULED" && !date)}
+          onClick={() => {
+            setError("");
+            void api
+              .saveReleaseType(
+                projectId,
+                listing,
+                kind,
+                kind === "SCHEDULED" ? new Date(date).toISOString() : undefined,
+              )
+              .then(
+                (value) => {
+                  setCurrent(value);
+                  setStatus("Saved in the listing file.");
+                },
+                (e: Error) => setError(e.message),
+              );
+          }}
+        >
+          Save release option
+        </button>
+        {status && !dirty && (
+          <span role="status" className="muted">
+            {status}
+          </span>
+        )}
+      </div>
+      <p className="muted">
+        Saved in the listing file as releaseType. App Store Connect starts every new
+        version as a manual release; the next listing apply or release sets this
+        choice on the version it prepares. A version Apple already approved
+        keeps the option it was submitted with.
+      </p>
+      {error && (
+        <p role="alert" className="workflow-error">
+          {error}
+        </p>
+      )}
+    </section>
   );
 }

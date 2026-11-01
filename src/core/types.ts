@@ -560,6 +560,12 @@ export interface DesktopAPI {
     answers: Omit<import("./app-store-compliance").Compliance, "attestation">,
     attestBy?: string,
   ): Promise<ComplianceView>;
+  saveReleaseType(
+    projectId: string,
+    listing: string,
+    releaseType: "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+    earliestReleaseDate?: string,
+  ): Promise<{ releaseType?: string; earliestReleaseDate?: string }>;
   readMonetization(
     projectId: string,
   ): Promise<import("./monetization-service").MonetizationView>;
@@ -909,4 +915,6 @@ export interface ComplianceView {
   compliance?: import("./app-store-compliance").Compliance;
   attested?: boolean;
   statements?: string[];
+  /** How approved versions go on sale; missing means App Store Connect's MANUAL. */
+  release?: { releaseType?: string; earliestReleaseDate?: string };
 }

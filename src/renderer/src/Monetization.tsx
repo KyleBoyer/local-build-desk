@@ -1378,8 +1378,8 @@ function AppleIapEditor({
         value={iap.localizations}
         blank={{ name: "" }}
         fields={[
-          ["name", "Display name", "30 characters"],
-          ["description", "Description", "45 characters"],
+          ["name", "Display name"],
+          ["description", "Description"],
         ]}
         onChange={(localizations) => setIap({ ...iap, localizations })}
       />
@@ -1469,11 +1469,7 @@ function AppleGroupEditor({
         blank={{ name: "" }}
         fields={[
           ["name", "Group display name"],
-          [
-            "customAppName",
-            "App name in subscriptions",
-            "Optional, 30 characters",
-          ],
+          ["customAppName", "App name in subscriptions", "Optional"],
         ]}
         onChange={(localizations) => setGroup({ ...group, localizations })}
       />
@@ -1607,8 +1603,8 @@ function AppleSubscriptionEditor({
         value={sub.localizations}
         blank={{ name: "" }}
         fields={[
-          ["name", "Display name", "60 characters"],
-          ["description", "Description", "55 characters"],
+          ["name", "Display name"],
+          ["description", "Description"],
         ]}
         onChange={(localizations) => setSub({ ...sub, localizations })}
       />
@@ -2141,8 +2137,8 @@ function GoogleProductEditor({
         value={product.listings}
         blank={{ title: "" }}
         fields={[
-          ["title", "Title", "55 characters"],
-          ["description", "Description", "200 characters"],
+          ["title", "Title"],
+          ["description", "Description"],
         ]}
         onChange={(listings) => setProduct({ ...product, listings })}
       />

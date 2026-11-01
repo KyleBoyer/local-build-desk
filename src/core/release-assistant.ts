@@ -149,6 +149,8 @@ export async function applyRelease(
   job: Job,
   draft: ReleaseDraft,
   expected: string,
+  /** How a version created here goes on sale, from the listing file. */
+  release: { releaseType?: string; earliestReleaseDate?: string } = {},
 ) {
   const current = await releaseContext(api, job, draft);
   invariant(
@@ -165,7 +167,11 @@ export async function applyRelease(
           attributes: {
             platform: "IOS",
             versionString: job.version,
-            releaseType: "MANUAL",
+            releaseType: release.releaseType ?? "MANUAL",
+            ...(release.releaseType === "SCHEDULED" &&
+            release.earliestReleaseDate
+              ? { earliestReleaseDate: release.earliestReleaseDate }
+              : {}),
           },
           relationships: { app: { data: { type: "apps", id: current.appId } } },
         },

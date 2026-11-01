@@ -182,6 +182,12 @@ export const methods = {
       .strict(),
     z.string().min(2).max(100).optional(),
   ]),
+  saveReleaseType: z.tuple([
+    identifier,
+    z.string().min(1).max(1024),
+    z.enum(["MANUAL", "AFTER_APPROVAL", "SCHEDULED"]),
+    z.string().max(64).optional(),
+  ]),
   readMonetization: z.tuple([identifier]),
   saveMonetization: z.tuple([
     identifier,

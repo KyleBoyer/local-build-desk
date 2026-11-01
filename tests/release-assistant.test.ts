@@ -244,3 +244,17 @@ it("keeps release requests busy and aborts them before shutdown closes storage",
     rmSync(root, { recursive: true, force: true });
   }
 });
+it("creates the draft with the listing's release option", async () => {
+  const s = server(),
+    draft: ReleaseDraft = {
+      destination: "appstore",
+      locale: "en-US",
+      fields: { whatsNew: "Release changes" },
+      createVersion: true,
+    };
+  const context = await releaseContext(s.api, job, draft);
+  await applyRelease(s.api, job, draft, contextFingerprint(context), {
+    releaseType: "AFTER_APPROVAL",
+  });
+  expect(s.writes[0].body.data.attributes.releaseType).toBe("AFTER_APPROVAL");
+});

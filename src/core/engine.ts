@@ -559,6 +559,7 @@ export class Engine extends EventEmitter {
             preview.job,
             preview.draft,
             preview.fingerprint,
+            await this.listingReleaseType(project),
           );
         },
       );
@@ -571,6 +572,55 @@ export class Engine extends EventEmitter {
     } finally {
       this.invalidateStoreReads(preview.job.projectId);
     }
+  }
+  /** How the project's approved App Store versions go on sale, from its listing. */
+  private async listingReleaseType(project: Project) {
+    if (!project.settings.appStoreListing) return {};
+    const { path } = await this.listingFile(
+      project,
+      project.settings.appStoreListing,
+    );
+    const raw = JSON.parse(await readFile(path, "utf8").catch(() => "{}"));
+    return {
+      releaseType:
+        typeof raw.releaseType === "string" ? raw.releaseType : undefined,
+      earliestReleaseDate:
+        typeof raw.earliestReleaseDate === "string"
+          ? raw.earliestReleaseDate
+          : undefined,
+    };
+  }
+  /** Saves how approved versions go on sale into the listing file. The next
+   * listing apply or release sets it on the version in App Store Connect. */
+  async saveReleaseType(
+    projectId: string,
+    listing: string,
+    releaseType: "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
+    earliestReleaseDate?: string,
+  ) {
+    const project = this.store.get<Project>("projects", projectId);
+    const file = await this.listingFile(project, listing);
+    invariant(
+      releaseType !== "SCHEDULED" ||
+        (earliestReleaseDate && !Number.isNaN(Date.parse(earliestReleaseDate))),
+      "RELEASE_DATE",
+      "Choose the date and time a scheduled release may go on sale.",
+    );
+    const raw = JSON.parse(await readFile(file.path, "utf8"));
+    raw.releaseType = releaseType;
+    if (releaseType === "SCHEDULED")
+      raw.earliestReleaseDate = new Date(earliestReleaseDate!).toISOString();
+    else delete raw.earliestReleaseDate;
+    await writeFile(file.path, JSON.stringify(raw, null, 2) + "\n");
+    if (project.settings.appStoreListing !== file.relative)
+      this.saveSettings(projectId, {
+        ...project.settings,
+        appStoreListing: file.relative,
+      });
+    return this.listingReleaseType({
+      ...project,
+      settings: { ...project.settings, appStoreListing: file.relative },
+    });
   }
   /** The listing file holding a project's App Store compliance answers. */
   private async listingFile(project: Project, listing: string) {
@@ -1551,7 +1601,14 @@ export class Engine extends EventEmitter {
         ...project.settings,
         appStoreListing: relative,
       });
-    return { listing: relative, ...(await readListingCompliance(path)) };
+    return {
+      listing: relative,
+      ...(await readListingCompliance(path)),
+      release: await this.listingReleaseType({
+        ...project,
+        settings: { ...project.settings, appStoreListing: relative },
+      }),
+    };
   }
   async saveCompliance(
     projectId: string,
