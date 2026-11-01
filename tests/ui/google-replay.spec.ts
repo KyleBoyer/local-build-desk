@@ -49,7 +49,7 @@ test("Google account automation enables APIs, reuses scoped forms, encrypts a ke
       .getByRole("button", { name: "Approve service account & key" })
       .click();
     await expect(
-      page.getByRole("button", { name: "Approve this app’s testing access" }),
+      page.getByRole("button", { name: "Approve this app’s Play access" }),
     ).toBeVisible({ timeout: 60000 });
     expect(
       await page.evaluate(
@@ -67,7 +67,7 @@ test("Google account automation enables APIs, reuses scoped forms, encrypts a ke
     app = await h.launch();
     page = await app.firstWindow();
     await expect(
-      page.getByRole("button", { name: "Approve this app’s testing access" }),
+      page.getByRole("button", { name: "Approve this app’s Play access" }),
     ).toBeVisible({ timeout: 35000 });
     expect(await h.outcome()).toMatchObject({
       keys: 1,
@@ -75,7 +75,7 @@ test("Google account automation enables APIs, reuses scoped forms, encrypts a ke
       invites: 0,
     });
     await page
-      .getByRole("button", { name: "Approve this app’s testing access" })
+      .getByRole("button", { name: "Approve this app’s Play access" })
       .click();
     await expect(
       page.getByText("Google Play connection verified for this app."),
@@ -181,7 +181,7 @@ test("prepares and creates a new Cloud project only after the scoped approval", 
       .getByRole("button", { name: "Approve service account & key" })
       .click();
     await expect(
-      page.getByRole("button", { name: "Approve this app’s testing access" }),
+      page.getByRole("button", { name: "Approve this app’s Play access" }),
     ).toBeVisible({ timeout: 60000 });
     expect((await h.outcome()).projects).toBe(1);
     expect((await h.outcome()).keys).toBe(1);
@@ -198,7 +198,7 @@ test("CLI-created credentials continue through guided Play permissions without g
   try {
     const page = await app.firstWindow();
     await expect(
-      page.getByRole("button", { name: "Approve this app’s testing access" }),
+      page.getByRole("button", { name: "Approve this app’s Play access" }),
     ).toBeVisible({ timeout: 35000 });
     await expect(
       page.getByRole("button", { name: "Approve service account & key" }),
@@ -207,7 +207,7 @@ test("CLI-created credentials continue through guided Play permissions without g
       readFile(join(h.root, "settings.json"), "utf8"),
     ).rejects.toThrow();
     await page
-      .getByRole("button", { name: "Approve this app’s testing access" })
+      .getByRole("button", { name: "Approve this app’s Play access" })
       .click();
     await expect(
       page.getByText("Google Play connection verified for this app."),
@@ -280,7 +280,7 @@ test("new Google keys activate automatically without reimporting or regenerating
       page.getByText(/Google is activating the new key/),
     ).toBeVisible({ timeout: 60000 });
     await expect(
-      page.getByRole("button", { name: "Approve this app’s testing access" }),
+      page.getByRole("button", { name: "Approve this app’s Play access" }),
     ).toBeVisible({ timeout: 60000 });
     expect(await h.outcome()).toMatchObject({
       keys: 1,

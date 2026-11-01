@@ -1808,12 +1808,19 @@ export class AccountSetupManager {
         await this.googleAction(account, "open-add-app");
         return;
       }
+      // Access granted before store presence was needed: open this app's
+      // permissions once to check them, and add what's missing.
+      if (!probe.saveEnabled && account.googlePreparedAppScope !== scope) {
+        account.googleSelectedAppScope = scope;
+        await this.googleAction(account, "open-permissions");
+        return;
+      }
       if (probe.saveEnabled) {
         if (google.approvedPlayScope !== scope) {
           google.approval = "play";
           this.prompt(
             account,
-            `Approve saving read and testing-release access to ${target.packageName} for ${target.email}. Its access to other apps stays as it is.`,
+            `Approve saving read, testing-release and store presence (products, prices, promotions) access to ${target.packageName} for ${target.email}. Its access to other apps stays as it is.`,
           );
           return;
         }
@@ -1871,7 +1878,7 @@ export class AccountSetupManager {
       if (probe.unsafePermissions) {
         this.prompt(
           account,
-          "Remove broader permissions from this app before continuing. Only read access and testing releases are needed.",
+          "Remove broader permissions from this app before continuing. Only read access, testing releases and store presence are needed.",
         );
         return;
       }
@@ -1900,7 +1907,7 @@ export class AccountSetupManager {
         google.approval = "play";
         this.prompt(
           account,
-          `Approve sending the prepared invitation to ${target.email} for ${target.packageName} read and testing access only.`,
+          `Approve sending the prepared invitation to ${target.email} for ${target.packageName} read, testing-release and store presence access only.`,
         );
         return;
       }
@@ -1915,7 +1922,7 @@ export class AccountSetupManager {
       if (probe.unsafePermissions) {
         this.prompt(
           account,
-          "Google’s form includes broader permissions. Remove account-wide, production, financial, or user-management access. Only this app’s read and testing-release permissions are needed.",
+          "Google’s form includes broader permissions. Remove account-wide, production, financial, or user-management access. Only this app’s read, testing-release and store presence permissions are needed.",
         );
         return;
       }

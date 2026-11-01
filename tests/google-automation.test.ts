@@ -98,13 +98,13 @@ it("stops for organization policy instead of automating a policy bypass", () => 
     ).phase,
   ).toBe("policy");
 });
-function invite(extra = "", selected = true) {
+function invite(extra = "", selected = true, store = true) {
   return page(
-    `<input type=email aria-label="Email address" value="${target.email}"><button role=tab aria-selected=${selected}>App permissions</button><section role=group>${target.packageName}</section><label><input type=checkbox checked>View app information (read-only)</label><label><input type=checkbox checked>Release apps to testing tracks</label>${extra}<button>Invite user</button>`,
+    `<input type=email aria-label="Email address" value="${target.email}"><button role=tab aria-selected=${selected}>App permissions</button><section role=group>${target.packageName}</section><label><input type=checkbox checked>View app information (read-only)</label><label><input type=checkbox checked>Release apps to testing tracks</label>${store ? "<label><input type=checkbox checked>Manage store presence</label><label><input type=checkbox checked disabled>Manage policy declarations</label>" : ""}${extra}<button>Invite user</button>`,
     "https://play.google.com/console/developers/123/users-and-permissions/invite-user",
   );
 }
-it("requires exactly app-scoped read and testing access before invitation approval", () => {
+it("requires exactly app-scoped read, testing and store presence access before invitation approval", () => {
   const material = invite();
   const section = material.window.document.querySelector("section")!;
   for (const label of [...material.window.document.querySelectorAll("label")])
@@ -118,6 +118,8 @@ it("requires exactly app-scoped read and testing access before invitation approv
     permissionsReady: true,
     unsafePermissions: false,
   });
+  // Monetization needs store presence; without it the grant isn't ready.
+  expect(probe(invite("", true, false)).permissionsReady).toBe(false);
   for (const extra of [
     "<label><input type=checkbox checked>Release to production</label>",
     "<label><input type=checkbox checked>View financial data</label>",
@@ -293,7 +295,7 @@ it("selects a sole Play developer option and requires choice for multiple accoun
 
 it("ignores decorative Google icon text and reads external checkbox labels", () => {
   const dom = page(
-    "<input type=email><button role=tab aria-selected=true>App permissions</button><button id=add>Add app<material-icon role=img>arrow_drop_down</material-icon></button><section>com.example.fixture<span id=read>View app information (read-only)</span><input type=checkbox aria-labelledby=read><span id=release>Release apps to testing tracks</span><input type=checkbox aria-labelledby=release></section><button>Invite user</button>",
+    "<input type=email><button role=tab aria-selected=true>App permissions</button><button id=add>Add app<material-icon role=img>arrow_drop_down</material-icon></button><section>com.example.fixture<span id=read>View app information (read-only)</span><input type=checkbox aria-labelledby=read><span id=release>Release apps to testing tracks</span><input type=checkbox aria-labelledby=release><span id=store>Manage store presence</span><input type=checkbox aria-labelledby=store></section><button>Invite user</button>",
     "https://play.google.com/console/developers/123/users-and-permissions/invite",
   );
   let clicked = false;

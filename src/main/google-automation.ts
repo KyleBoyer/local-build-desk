@@ -342,8 +342,11 @@ export function inspectGooglePage(target: GoogleTarget): GoogleProbe {
         el.getAttribute("role") === "tab" &&
         /^App permissions$/i.test(label(el)),
     );
+    // Read access, testing releases, and store presence for products, prices
+    // and promotions. Play adds policy declarations with store presence and
+    // won't let it be cleared.
     const allowed =
-      /^(?:View app information(?:\s*\(read.only\))?(?: and download bulk reports)?|Release apps to testing tracks)(?:\s|$)/i;
+      /^(?:View app information(?:\s*\(read.only\))?(?: and download bulk reports)?|Release apps to testing tracks|Manage store presence|Manage policy declarations)(?:\s|$)/i;
     const unsafe = checks.some(
       (el) =>
         checked(el) &&
@@ -419,6 +422,9 @@ export function inspectGooglePage(target: GoogleTarget): GoogleProbe {
         (el) =>
           checked(el) &&
           /^Release apps to testing tracks/i.test(checkLabel(el)),
+      ) &&
+      checks.some(
+        (el) => checked(el) && /^Manage store presence/i.test(checkLabel(el)),
       ) &&
       !checks.some(
         (el) =>
@@ -859,7 +865,9 @@ export function performGoogleAction(action: GoogleAction): GoogleActionResult {
     case "select-permissions": {
       const read = check(/^View app information(?:\s|$)/i);
       const release = check(/^Release apps to testing tracks(?:\s|$)/i);
-      return { done: read && release };
+      // Products, prices and promotions (Monetization).
+      const store = check(/^Manage store presence(?:\s|$)/i);
+      return { done: read && release && store };
     }
     case "invite":
       return click(/^Invite user$|^Send invitation$/i);

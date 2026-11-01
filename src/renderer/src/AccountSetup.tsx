@@ -470,7 +470,7 @@ function GoogleSetupControls({
           <p>
             {google.approval === "cloud"
               ? `${google.createProject ? "Create the Cloud project, enable" : "Enable"} the Publisher and IAM APIs, create or reuse the service account in ${google.cloudProject}, and generate one JSON key for encrypted storage on this Mac.`
-              : "Grant the displayed service account read access and testing-release access for this app. Account-wide, production, financial, and user-management access remain unselected."}
+              : "Grant the displayed service account read access, testing-release access and store presence (in-app products, prices and promotions) for this app. Play adds policy declarations with store presence. Account-wide, production, financial, and user-management access remain unselected."}
           </p>
           <button
             className="primary"
@@ -480,7 +480,7 @@ function GoogleSetupControls({
             <ShieldCheck size={14} />
             {google.approval === "cloud"
               ? "Approve service account & key"
-              : "Approve this app’s testing access"}
+              : "Approve this app’s Play access"}
           </button>
         </div>
       )}
