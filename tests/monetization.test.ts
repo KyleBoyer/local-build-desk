@@ -699,7 +699,7 @@ it("writes generated batch ids back to the file and keeps code values private", 
           name: "Launch",
           productId: "com.app.coins",
           price: "0.00",
-          batches: [{ kind: "oneTime", count: 2, expires: "2027-01-01" }],
+          batches: [{ kind: "oneTime", count: 10, expires: "2027-01-01" }],
         },
       ],
     },
@@ -720,7 +720,7 @@ it("writes generated batch ids back to the file and keeps code values private", 
         },
       ],
     },
-    "/inAppPurchaseOfferCodeOneTimeUseCodes/new2/values": "code\nAAA\nBBB\n",
+    "/inAppPurchaseOfferCodeOneTimeUseCodes/new2/values": "code\nAAAA1111\nBBBB2222\n",
   });
   api.app = async () => ({ id: "app1" });
   const service = new MonetizationService(
@@ -734,9 +734,9 @@ it("writes generated batch ids back to the file and keeps code values private", 
     id: "new2",
     generatedAt: expect.any(String),
   });
-  expect(await readFile(file, "utf8")).not.toContain("AAA");
+  expect(await readFile(file, "utf8")).not.toContain("AAAA1111");
   const [csv] = await readdir(join(codes, "p1"));
-  expect(await readFile(join(codes, "p1", csv!), "utf8")).toContain("BBB");
+  expect(await readFile(join(codes, "p1", csv!), "utf8")).toContain("BBBB2222");
   expect((await service.savedCodes())[0]).toMatchObject({
     key: "apple:offer:com.app.coins:Launch",
     count: 2,
@@ -763,4 +763,111 @@ it("accepts store text longer than older local limits", () => {
       },
     }).success,
   ).toBe(true);
+});
+
+it("records a code batch even when a later step fails, and only takes Apple's batch sizes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "monetization-project-"));
+  const codes = await mkdtemp(join(tmpdir(), "monetization-codes-"));
+  const project = {
+    id: "p1",
+    path: root,
+    name: "App",
+    bundleId: "com.app",
+    packageName: "com.app",
+    profiles: [],
+    createdAt: "",
+    settings: {},
+  } as Project;
+  const file = join(root, "assets/store/monetization.json");
+  const base = {
+    apple: {
+      inAppPurchases: [
+        {
+          productId: "com.app.coins",
+          type: "CONSUMABLE",
+          referenceName: "Coins",
+          price: "1.99",
+          localizations: { "en-US": { name: "Coin pack" } },
+        },
+      ],
+      offerCodes: [
+        {
+          name: "Launch",
+          productId: "com.app.coins",
+          price: "0.00",
+          batches: [{ kind: "oneTime", count: 7, expires: "2027-01-01" }],
+        },
+      ],
+    },
+  } as any;
+  expect(monetizationProblems(config(base)).join(" ")).toMatch(
+    /batches of 10, 100/,
+  );
+  await saveMonetization(file, {
+    ...base,
+    apple: {
+      ...base.apple,
+      offerCodes: [
+        {
+          ...base.apple.offerCodes[0],
+          batches: [{ kind: "oneTime", count: 10, expires: "2027-01-01" }],
+        },
+      ],
+    },
+    google: {
+      products: [
+        {
+          productId: "coins",
+          price: "0.99",
+          listings: { "en-US": { title: "Coins" } },
+        },
+      ],
+    },
+  });
+  const { api } = fakeApple({
+    "/territories": { data: territories.map((id) => ({ id })) },
+    "/apps/app1/inAppPurchasesV2": {
+      data: [
+        {
+          id: "i1",
+          attributes: {
+            productId: "com.app.coins",
+            inAppPurchaseType: "CONSUMABLE",
+            name: "Coins",
+            state: "APPROVED",
+          },
+        },
+      ],
+    },
+    "/inAppPurchaseOfferCodeOneTimeUseCodes/new2/values":
+      "AAAA1111\nBBBB2222\n",
+  });
+  api.app = async () => ({ id: "app1" });
+  const google = {
+    request: async (path: string) => {
+      if (
+        path.includes("convertRegionPrices") ||
+        path.includes("onetimeproducts")
+      )
+        throw Object.assign(new Error("Google Play 403"), {
+          code: "GOOGLE_403",
+        });
+      return {};
+    },
+  };
+  const service = new MonetizationService(
+    project,
+    { apple: async () => api, google: async () => google as any },
+    codes,
+  );
+  await expect(
+    service.apply(
+      ["apple:offer:com.app.coins:Launch", "google:product:coins"],
+      () => undefined,
+    ),
+  ).rejects.toThrow(/Manage store presence/);
+  expect(
+    (await loadMonetization(file)).apple.offerCodes[0]!.batches[0],
+  ).toMatchObject({ id: "new2" });
+  expect((await service.savedCodes())[0]!.count).toBe(2);
 });

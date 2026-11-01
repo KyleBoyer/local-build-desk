@@ -303,6 +303,11 @@ export type GoogleSubscription = z.infer<typeof googleSubscriptionSchema>;
 export type GooglePromo = z.infer<typeof googlePromoSchema>;
 export type CodeBatch = z.infer<typeof codeBatch>;
 
+/** Batch sizes Apple accepts for in-app purchase one-time offer codes. */
+export const IAP_CODE_BATCHES = [
+  10, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
+];
+
 export const emptyMonetization = (): Monetization =>
   monetizationSchema.parse({});
 
@@ -382,6 +387,17 @@ export function monetizationProblems(m: Monetization) {
       problems.push(
         `Offer code ${offer.name} needs an offer price ("0.00" for free).`,
       );
+    // Apple takes in-app purchase one-time codes only in these batch sizes.
+    if (!subscriptions.has(offer.productId))
+      for (const batch of offer.batches)
+        if (
+          batch.kind === "oneTime" &&
+          !batch.id &&
+          !IAP_CODE_BATCHES.includes(batch.count)
+        )
+          problems.push(
+            `Offer code ${offer.name}: Apple generates in-app purchase codes in batches of ${IAP_CODE_BATCHES.join(", ")}.`,
+          );
     dupes(
       `Custom code in ${offer.name}:`,
       offer.batches.flatMap((b) => (b.code ? [b.code] : [])),

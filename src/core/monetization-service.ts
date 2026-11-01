@@ -2,7 +2,7 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { AppleAPI, GoogleAPI } from "./stores";
-import { invariant, messageOf } from "./errors";
+import { DeskError, invariant, messageOf } from "./errors";
 import {
   MONETIZATION_FILE,
   itemKeys,
@@ -169,14 +169,15 @@ export class MonetizationService {
       if (!match) continue;
       const info = await stat(join(folder, name));
       const { readFile } = await import("node:fs/promises");
-      const lines = (await readFile(join(folder, name), "utf8"))
-        .trim()
-        .split("\n").length;
+      // One code per line; Apple's CSV has no header, Play's may.
+      const codes = (await readFile(join(folder, name), "utf8"))
+        .split(/\r?\n/)
+        .filter((line) => /^[A-Z0-9-]{4,}$/.test(line.trim())).length;
       result.push({
         key: decodeURIComponent(match[1]!),
         batchId: match[2]!,
         file: join(folder, name),
-        count: Math.max(0, lines - 1),
+        count: codes,
         createdAt: info.mtime.toISOString(),
       });
     }
@@ -212,35 +213,34 @@ export class MonetizationService {
       const api = await this.connections.apple();
       const live =
         this.live.apple ?? (await readApple(api, this.project.bundleId));
-      const result = await applyApple(api, config, live, wanted, {
+      await applyApple(api, config, live, wanted, {
         baseDir: dirname(file.path),
         projectRoot: this.project.path,
         log,
-      });
-      for (const batch of result.batches) {
-        const [, , productId, ...name] = batch.key.split(":");
-        const offer = config.apple.offerCodes.find(
-          (o) => o.productId === productId && o.name === name.join(":"),
-        );
-        const entry = offer?.batches[batch.index];
-        if (entry)
-          Object.assign(entry, {
-            id: batch.id,
-            generatedAt: batch.generatedAt,
-          });
-      }
-      if (result.codes.length) {
-        await mkdir(this.codesFolder(), { recursive: true, mode: 0o700 });
-        for (const codes of result.codes)
+        // Each batch is written to the file the moment Apple creates it.
+        generated: async (batch, csv) => {
+          const [, , productId, ...name] = batch.key.split(":");
+          const entry = config.apple.offerCodes.find(
+            (o) => o.productId === productId && o.name === name.join(":"),
+          )?.batches[batch.index];
+          if (entry)
+            Object.assign(entry, {
+              id: batch.id,
+              generatedAt: batch.generatedAt,
+            });
+          await saveMonetization(file.path, config);
+          if (csv === undefined) return;
+          await mkdir(this.codesFolder(), { recursive: true, mode: 0o700 });
           await writeFile(
             join(
               this.codesFolder(),
-              `${encodeURIComponent(codes.key)}--${codes.batchId}.csv`,
+              `${encodeURIComponent(batch.key)}--${batch.id}.csv`,
             ),
-            codes.csv,
+            csv,
             { mode: 0o600 },
           );
-      }
+        },
+      });
       applied.push(...[...wanted].filter((k) => k.startsWith("apple:")));
       this.live.apple = undefined;
     }
@@ -253,7 +253,16 @@ export class MonetizationService {
       const api = await this.connections.google();
       const live =
         this.live.google ?? (await readGoogle(api, this.project.packageName));
-      await applyGoogle(api, config, live, wanted, log);
+      await applyGoogle(api, config, live, wanted, log).catch((error) => {
+        // Guided setup grants release permissions only; product and price
+        // changes need one more, which only the account owner can grant.
+        if ((error as { code?: string }).code === "GOOGLE_403")
+          throw new DeskError(
+            "GOOGLE_PERMISSION",
+            "Google Play refused the change: this project's service account can read products but not change them. In Play Console → Users and permissions, open the service account, and give it Manage store presence for this app. Then apply again.",
+          );
+        throw error;
+      });
       applied.push(...[...wanted].filter((k) => k.startsWith("google:")));
       this.live.google = undefined;
     }

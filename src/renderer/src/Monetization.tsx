@@ -1934,6 +1934,11 @@ function AppleOfferEditor({
                 label={
                   b.kind === "custom" ? "Redemption limit" : "Number of codes"
                 }
+                hint={
+                  b.kind === "oneTime" && !isSub
+                    ? "Apple generates purchase codes in batches of 10, or 100 to 1,000 in hundreds."
+                    : undefined
+                }
                 value={String(b.count)}
                 onChange={(v) =>
                   setOffer({

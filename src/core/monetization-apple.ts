@@ -891,6 +891,15 @@ export interface ApplyContext {
   projectRoot: string;
   log: (line: string) => void;
   fetcher?: typeof fetch;
+  /**
+   * Called as soon as Apple creates a code batch, and again with its codes,
+   * so the batch is recorded even if a later step fails. Without the record
+   * the next apply would generate the batch again.
+   */
+  generated?: (
+    batch: { key: ItemKey; index: number; id: string; generatedAt: string },
+    csv?: string,
+  ) => Promise<void>;
 }
 /** What applying produced that belongs back in the file, or with the user. */
 export interface AppleApplyResult {
@@ -1619,10 +1628,14 @@ async function applyOffer(
       batch,
     );
     const generatedAt = new Date().toISOString();
-    result.batches.push({ key, index, id, generatedAt });
+    const record = { key, index, id, generatedAt };
+    result.batches.push(record);
+    batch.id = id;
+    await ctx.generated?.(record);
     if (batch.kind === "oneTime") {
       const csv = await oneTimeCodes(api, sub ? "subscription" : "iap", id);
       result.codes.push({ key, batchId: id, csv });
+      await ctx.generated?.(record, csv);
       ctx.log(
         `${offer.name}: generated ${batch.count} one-time code${batch.count === 1 ? "" : "s"}`,
       );
