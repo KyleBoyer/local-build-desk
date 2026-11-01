@@ -1065,7 +1065,10 @@ export class AccountSetupManager {
         "download-key": ["download-confirm", "download"],
         membership: ["team"],
       };
-      if (expected[action.type])
+      if (
+        expected[action.type] &&
+        !(action.type === "download-key" && account.state.downloadedFile)
+      )
         account.pendingAction = {
           type: action.type,
           started: Date.now(),
@@ -2645,9 +2648,12 @@ export class AccountSetupManager {
       this.persist(account);
       if (account.pendingAction) {
         const pending = account.pendingAction;
+        // The download can finish before the click's result is recorded,
+        // so the received key file also verifies the download.
         if (
-          pending.expected.includes(probe.phase) &&
-          !(pending.type === "download-key" && probe.phase === "download")
+          (pending.type === "download-key" && account.state.downloadedFile) ||
+          (pending.expected.includes(probe.phase) &&
+            !(pending.type === "download-key" && probe.phase === "download"))
         ) {
           account.diagnostics.record("automation.action.verified", {
             action: pending.type,

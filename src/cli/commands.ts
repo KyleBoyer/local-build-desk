@@ -574,10 +574,12 @@ export async function runCLI(
       ) as Platform[];
       const results = [];
       for (const platform of platforms) {
+        // The CLI reads the project as it is now, never a cached result.
         const inspected = await engine.inspect(
           projectId(),
           v.profile ?? "production",
           platform,
+          true,
         );
         const identity =
           platform === "ios"

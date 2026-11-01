@@ -793,6 +793,7 @@ export function App() {
                         project.id,
                         profile,
                         platform === "all" ? "ios" : platform,
+                        true,
                       ),
                     );
                 })

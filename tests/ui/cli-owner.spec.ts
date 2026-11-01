@@ -6,6 +6,26 @@ import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { Store } from "../../src/core/database";
 import type { Job } from "../../src/core/types";
+/** Whether a process is still running. */
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+/** Waits for a process to exit, then forces it: an owner that's still
+ * shutting down writes Chromium session files into the data folder. */
+async function stopped(pid: number, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while (alive(pid) && Date.now() < deadline)
+    await new Promise((r) => setTimeout(r, 100));
+  if (alive(pid)) {
+    process.kill(pid, "SIGKILL");
+    while (alive(pid)) await new Promise((r) => setTimeout(r, 50));
+  }
+}
 async function harness() {
   await build({
     entryPoints: ["tests/harness/cli-owner.ts"],
@@ -75,15 +95,13 @@ async function harness() {
     launch,
     async cleanup() {
       for (const child of children)
-        if (child.exitCode === null) child.kill("SIGTERM");
-      // A stopping owner can still flush a last file into its data folder;
-      // CI saw ENOTEMPTY here. Retry instead of failing the release run.
-      await rm(root, {
-        recursive: true,
-        force: true,
-        maxRetries: 10,
-        retryDelay: 300,
-      });
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill("SIGTERM");
+      // Only remove the data folder once nothing can write to it.
+      await Promise.all(
+        children.map((child) => (child.pid ? stopped(child.pid) : undefined)),
+      );
+      await rm(root, { recursive: true, force: true });
     },
   };
 }
@@ -194,13 +212,15 @@ test("the desktop tray opens the selected build and restores a hidden window", a
 test("cancel reaches the headless owner through its socket and SIGINT exits cleanly", async () => {
   const h = await harness();
   try {
-    const owner = h.launch([
-      "build",
-      "--project",
-      join(h.root, "second"),
-      "--platform",
-      "ios",
-    ]);
+    const untilCancelled = {
+      LOCAL_BUILD_DESK_ENVIRONMENT_JSON: JSON.stringify({
+        FIXTURE_UNTIL_CANCELLED: "true",
+      }),
+    };
+    const owner = h.launch(
+      ["build", "--project", join(h.root, "second"), "--platform", "ios"],
+      untilCancelled,
+    );
     await expect
       .poll(() => owner.output(), { timeout: 20000 })
       .toContain("fixture-active");
@@ -208,13 +228,10 @@ test("cancel reaches the headless owner through its socket and SIGINT exits clea
     const cancel = h.launch(["cancel", "--job", id]);
     expect(await cancel.exit).toBe(0);
     expect(await owner.exit).toBe(1);
-    const interrupt = h.launch([
-      "build",
-      "--project",
-      join(h.root, "second"),
-      "--platform",
-      "ios",
-    ]);
+    const interrupt = h.launch(
+      ["build", "--project", join(h.root, "second"), "--platform", "ios"],
+      untilCancelled,
+    );
     await expect
       .poll(() => interrupt.output(), { timeout: 20000 })
       .toContain("fixture-active");
@@ -428,6 +445,7 @@ test("a forwarded CLI whose reader has already exited still finishes instead of 
 
 test("enabling mobile monitoring from the CLI starts one background owner, preserves completed builds, and stops cleanly", async () => {
   const h = await harness();
+  let owner = 0;
   try {
     const net = await import("node:net"),
       s = net.createServer();
@@ -445,7 +463,6 @@ test("enabling mobile monitoring from the CLI starts one background owner, prese
     ]);
     expect(await enable.exit, enable.output()).toBe(0);
     const ownerPath = join(h.root, "data/owner.lock");
-    let owner = 0;
     await expect
       .poll(
         async () => {
@@ -508,16 +525,25 @@ test("enabling mobile monitoring from the CLI starts one background owner, prese
         { timeout: 15000 },
       )
       .toBe(false);
+    // The lock goes first; the owner keeps shutting down after it.
+    await expect.poll(() => alive(owner), { timeout: 15000 }).toBe(false);
     await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
   } finally {
-    try {
-      const pid = Number(
-        await (
-          await import("node:fs/promises")
-        ).readFile(join(h.root, "data/owner.lock"), "utf8"),
-      );
-      if (pid) process.kill(pid, "SIGTERM");
-    } catch {}
+    // The background owner isn't one of the harness's children: stop it
+    // here, and wait for it, if the test ended early.
+    for (const pid of [
+      owner,
+      await (
+        await import("node:fs/promises")
+      )
+        .readFile(join(h.root, "data/owner.lock"), "utf8")
+        .then(Number)
+        .catch(() => 0),
+    ])
+      if (pid && alive(pid)) {
+        process.kill(pid, "SIGTERM");
+        await stopped(pid);
+      }
     await h.cleanup();
   }
 });

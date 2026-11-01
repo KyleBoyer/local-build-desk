@@ -323,7 +323,12 @@ export const methods = {
   ]),
   projectApplications: z.tuple([text]),
   importProject: z.tuple([text, settingsSchema.optional()]),
-  inspect: z.tuple([identifier, text.optional(), platform.optional()]),
+  inspect: z.tuple([
+    identifier,
+    text.optional(),
+    platform.optional(),
+    z.boolean().optional(),
+  ]),
   saveSettings: z.tuple([identifier, settingsSchema]),
   doctor: z.tuple([identifier.optional()]),
   build: z.tuple([

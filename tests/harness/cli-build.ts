@@ -53,9 +53,15 @@ export async function buildLocal(ctx: any) {
     }
   }
   await new Promise<void>((resolve, reject) => {
+    // A build a test means to cancel waits for it, however slowly CI starts
+    // the process that cancels; the cap only stops a broken test hanging.
     const timer = setTimeout(
       resolve,
-      ctx.project.path.endsWith("second") ? 3000 : 1500,
+      env.FIXTURE_UNTIL_CANCELLED === "true"
+        ? 60000
+        : ctx.project.path.endsWith("second")
+          ? 3000
+          : 1500,
     );
     ctx.signal.addEventListener(
       "abort",

@@ -24,14 +24,70 @@ export function wrapHeadline(
   size: number,
   width: number,
 ) {
-  const measure = (line: string) => {
+  // Each Resvg loads every system font, which takes seconds on a CI Mac, so
+  // every run of words a line could hold is measured in one render instead:
+  // one row per run, at a modest size, read back from the pixels. A run that
+  // lands within 2% of the limit is measured again exactly.
+  const exact = (line: string) => {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width * 4}" height="${size * 3}"><text x="0" y="${size * 2}" font-family="${escape(frame.fontFamily)}" font-weight="${frame.fontWeight}" font-size="${size}">${escape(line)}</text></svg>`;
     return new Resvg(svg, { font: fontOptions(frame) }).getBBox()?.width ?? 0;
   };
+  const paragraphs = text
+    .split("\n")
+    .map((p) => p.split(/\s+/).filter(Boolean));
+  const MAX_WORDS = 12;
+  const runs = [
+    ...new Set(
+      paragraphs.flatMap((words) =>
+        words.flatMap((_, i) =>
+          words
+            .slice(i, i + MAX_WORDS)
+            .map((__, k) => words.slice(i, i + k + 1).join(" ")),
+        ),
+      ),
+    ),
+  ];
+  const scale = Math.min(1, 48 / size),
+    small = size * scale,
+    limit = width * scale,
+    row = Math.ceil(small * 1.8),
+    canvas = Math.ceil(limit * 1.1 + small);
+  const widths = new Map<string, number>();
+  if (runs.length) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas}" height="${row * runs.length}">${runs
+      .map(
+        (run, k) =>
+          `<text x="${Math.ceil(small / 4)}" y="${k * row + Math.ceil(small * 1.3)}" font-family="${escape(frame.fontFamily)}" font-weight="${frame.fontWeight}" font-size="${small}">${escape(run)}</text>`,
+      )
+      .join("")}</svg>`;
+    const image = new Resvg(svg, { font: fontOptions(frame) }).render();
+    const { pixels } = image;
+    for (const [k, run] of runs.entries()) {
+      let min = canvas,
+        max = -1;
+      for (let y = k * row; y < (k + 1) * row; y++)
+        for (let x = 0; x < canvas; x++)
+          if (pixels[(y * canvas + x) * 4 + 3]! > 0) {
+            if (x < min) min = x;
+            if (x > max) max = x;
+          }
+      // Ink reaching the right edge is wider than the canvas: too wide.
+      widths.set(
+        run,
+        max < 0 ? 0 : max >= canvas - 1 ? Infinity : (max - min + 1) / scale,
+      );
+    }
+  }
+  const measure = (line: string) => {
+    const approx = widths.get(line);
+    if (approx === undefined || Math.abs(approx - width) <= width * 0.02)
+      return exact(line);
+    return approx;
+  };
   const lines: string[] = [];
-  for (const paragraph of text.split("\n")) {
+  for (const words of paragraphs) {
     let line = "";
-    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+    for (const word of words) {
       const next = line ? `${line} ${word}` : word;
       if (line && measure(next) > width) {
         lines.push(line);

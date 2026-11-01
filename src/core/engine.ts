@@ -2572,10 +2572,41 @@ export class Engine extends EventEmitter {
     this.changed();
     return project;
   }
+  /**
+   * Inspections run xcodebuild and the project's own tools, which take
+   * seconds (far longer on a cold CI Mac), and several views ask for the
+   * same one at once. Identical requests share one run, and a result is
+   * reused briefly; Refresh asks for a fresh one.
+   */
+  private inspections = new Map<
+    string,
+    { at: number; value: Promise<Awaited<ReturnType<typeof inspectProject>>> }
+  >();
+  private inspectOnce(
+    path: string,
+    settings: ProjectSettings,
+    env: Record<string, string>,
+    fresh: boolean,
+  ) {
+    const key = JSON.stringify([
+      path,
+      settings,
+      createHash("sha256").update(JSON.stringify(env)).digest("hex"),
+    ]);
+    const cached = this.inspections.get(key);
+    if (!fresh && cached && Date.now() - cached.at < 15000) return cached.value;
+    for (const [k, v] of this.inspections)
+      if (Date.now() - v.at > 15000) this.inspections.delete(k);
+    const value = inspectProject(path, settings, env);
+    this.inspections.set(key, { at: Date.now(), value });
+    value.catch(() => this.inspections.delete(key));
+    return value;
+  }
   async inspect(
     projectId: string,
     profile?: string,
     platform: Platform = "ios",
+    fresh = false,
   ) {
     const project = this.store.get<Project>("projects", projectId);
     let env: Record<string, string> = {};
@@ -2583,12 +2614,17 @@ export class Engine extends EventEmitter {
       env = (
         await this.vault.get(project.settings.envCredentialId, "environment")
       ).values;
-    let inspection = await inspectProject(project.path, project.settings, env);
+    let inspection = await this.inspectOnce(
+      project.path,
+      project.settings,
+      env,
+      fresh,
+    );
     const resolved = profile
       ? resolveProfile(inspection.eas, profile, platform)
       : undefined;
     if (resolved)
-      inspection = await inspectProject(
+      inspection = await this.inspectOnce(
         project.path,
         {
           ...project.settings,
@@ -2599,6 +2635,7 @@ export class Engine extends EventEmitter {
           ...env,
           ...resolved.env,
         },
+        fresh,
       );
     project.usesCocoaPods = inspection.usesCocoaPods;
     project.usesXcodeGen = inspection.usesXcodeGen;

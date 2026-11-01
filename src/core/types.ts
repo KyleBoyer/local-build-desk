@@ -662,6 +662,8 @@ export interface DesktopAPI {
     projectId: string,
     profile?: string,
     platform?: Platform,
+    /** Skip the briefly cached result, as Refresh does. */
+    fresh?: boolean,
   ): Promise<{ inspection: Inspection; profile?: Profile }>;
   saveSettings(projectId: string, settings: ProjectSettings): Promise<void>;
   doctor(projectId?: string): Promise<Check[]>;
