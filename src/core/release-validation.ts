@@ -37,6 +37,7 @@ import { frameScreenshot, playCanvas } from "./screenshot-frame";
 import { admitHeavyStep } from "./memory";
 import { displayTypeFor } from "./app-store-listing";
 import { withLock } from "./locks";
+import { withHeadlessSimulator } from "./simulator-app";
 import { invariant, messageOf } from "./errors";
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -668,315 +669,328 @@ export async function runReleaseChecks(
         "TEST_TARGET",
         "Choose an Xcode application scheme before testing.",
       );
-      await withLock("desk-simulator-validation", ctx.signal, async () => {
-        const catalog = await simulatorCatalog(options);
-        // Recover only device IDs journaled by this engine, after their owning
-        // job stopped. This also handles a crash between create and cleanup.
-        type Lease = { id: string; name: string; jobId: string };
-        let leases = ctx.store.preference<Lease[]>("simulator-leases", []);
-        for (const lease of [...leases]) {
-          const owner = ctx.store
-            .list<Job>("jobs")
-            .find((j) => j.id === lease.jobId);
-          if (owner && ["queued", "running"].includes(owner.status)) continue;
-          const instance = Object.values(catalog.instances)
-            .flat()
-            .find(
-              (d) =>
-                d.udid === lease.id &&
-                d.name === lease.name &&
-                d.name.startsWith("Local Build Desk "),
-            );
-          if (instance) {
-            const deleted = await run("xcrun", ["simctl", "delete", lease.id], {
-              ...options,
-              signal: undefined,
-              allowFailure: true,
-              timeout: 60000,
-            }).catch(() => ({ code: 1 }));
-            // CoreSimulator may still be tearing down a crashed runner. Keep
-            // the lease so the next run can clean up rather than forgetting it.
-            if (deleted.code) continue;
+      await withLock("desk-simulator-validation", ctx.signal, () =>
+        withHeadlessSimulator(options, ctx.log, async (owned) => {
+          const catalog = await simulatorCatalog(options);
+          // Recover only device IDs journaled by this engine, after their owning
+          // job stopped. This also handles a crash between create and cleanup.
+          type Lease = { id: string; name: string; jobId: string };
+          let leases = ctx.store.preference<Lease[]>("simulator-leases", []);
+          for (const lease of [...leases]) {
+            const owner = ctx.store
+              .list<Job>("jobs")
+              .find((j) => j.id === lease.jobId);
+            if (owner && ["queued", "running"].includes(owner.status)) continue;
+            const instance = Object.values(catalog.instances)
+              .flat()
+              .find(
+                (d) =>
+                  d.udid === lease.id &&
+                  d.name === lease.name &&
+                  d.name.startsWith("Local Build Desk "),
+              );
+            if (instance) {
+              const deleted = await run(
+                "xcrun",
+                ["simctl", "delete", lease.id],
+                {
+                  ...options,
+                  signal: undefined,
+                  allowFailure: true,
+                  timeout: 60000,
+                },
+              ).catch(() => ({ code: 1 }));
+              // CoreSimulator may still be tearing down a crashed runner. Keep
+              // the lease so the next run can clean up rather than forgetting it.
+              if (deleted.code) continue;
+            }
+            leases = leases.filter((l) => l.id !== lease.id);
           }
-          leases = leases.filter((l) => l.id !== lease.id);
-        }
-        ctx.store.setPreference("simulator-leases", leases);
-        for (const [index, choice] of policy.destinations.entries()) {
-          const { device, runtime } = resolveDestination(
-            choice,
-            catalog,
-            ctx.job.toolchain?.iosSdk,
-          );
-          // CoreSimulator frees a deleted device in the background, so the
-          // previous destination's space can take a minute to come back.
-          const needed = 3 * 1024 ** 3;
-          let enough = await freeSpace(tmpdir(), needed, 0);
-          if (!enough && index > 0) {
-            ctx.log(
-              "Waiting for the previous simulator's disk space to be released…",
-            );
-            enough = await freeSpace(tmpdir(), needed, 120000, ctx.signal);
-          }
-          invariant(
-            enough,
-            "SIMULATOR_STORAGE",
-            "Simulator tests need at least 3 GB free on the Mac's system disk, even when build storage is elsewhere. Free space and resume; other people's simulators and files will not be removed.",
-          );
-          await admitHeavyStep(3, `The ${device.name} simulator`, ctx);
-          const name = `Local Build Desk ${ctx.job.id} ${index}`;
-          ctx.stage("testing");
-          ctx.log(
-            `Preparing ${device.name} · ${runtime.name}. The first boot can take a few minutes…`,
-          );
-          const created = await run(
-            "xcrun",
-            ["simctl", "create", name, device.identifier, runtime.identifier],
-            { ...options, log: undefined },
-          );
-          const deviceId = created.stdout.trim();
-          invariant(
-            /^[0-9A-F-]{36}$/i.test(deviceId),
-            "SIMULATOR_CREATE",
-            "Simulator did not return a device ID.",
-          );
-          leases.push({ id: deviceId, name, jobId: ctx.job.id });
           ctx.store.setPreference("simulator-leases", leases);
-          try {
-            await run("xcrun", ["simctl", "boot", deviceId], {
-              ...options,
-              timeout: 180000,
-            });
-            await run("xcrun", ["simctl", "bootstatus", deviceId, "-b"], {
-              ...options,
-              timeout: 240000,
-            });
-            const folder = join(root, String(index));
-            await mkdir(folder, { recursive: true });
-            const derived = join(root, "DerivedData");
-            if (mode !== "screenshots" && policy.runner === "xcode") {
-              ctx.stage("testing");
-              ctx.log(
-                `Testing ${device.name} · ${runtime.name} (${result.configuration})…`,
-              );
-              const bundle = join(folder, "tests.xcresult");
-              const test = await run(
-                "xcodebuild",
-                testArguments(
-                  target!,
-                  source,
-                  policy,
-                  deviceId,
-                  bundle,
-                  derived,
-                ),
-                processOptions,
-              );
-              const summary = await resultSummary(bundle, options).catch(
-                () => undefined,
-              );
-              result.runs.push({
-                device: device.name,
-                runtime: runtime.version,
-                resultBundle: bundle,
-                status:
-                  test.code === 0 &&
-                  !!summary &&
-                  summary.passed > 0 &&
-                  summary.failed === 0
-                    ? "passed"
-                    : "failed",
-                ...summary,
-              });
-              await writeManifest();
-              invariant(
-                result.runs.at(-1)!.status === "passed",
-                "TEST_FAILURE",
-                `Tests failed or no tests ran on ${device.name}. Inspect the retained xcresult; required checks block upload.`,
-              );
-            }
-            const plan =
-              capturePlan &&
-              capturesFor(
-                capturePlan,
-                choice.deviceType,
-                device.name,
-                device.identifier,
-              );
-            if (plan && !plan.captures.length)
-              ctx.log(`No captures are assigned to ${device.name}.`);
-            if (plan?.captures.length) {
-              ctx.stage("screenshots");
-              ctx.log(
-                `Capturing ${plan.captures.length} screens on ${device.name}…`,
-              );
-              await run(
-                "xcrun",
-                ["simctl", "ui", deviceId, "appearance", plan.appearance],
-                options,
-              );
-              await run(
-                "xcrun",
-                [
-                  "simctl",
-                  "status_bar",
-                  deviceId,
-                  "override",
-                  "--time",
-                  "9:41",
-                  "--dataNetwork",
-                  "wifi",
-                  "--wifiMode",
-                  "active",
-                  "--wifiBars",
-                  "3",
-                  "--batteryState",
-                  "charged",
-                  "--batteryLevel",
-                  "100",
-                ],
-                options,
-              );
-              await run(
-                "xcodebuild",
-                [
-                  ...containerArguments(target!.container, source),
-                  "-scheme",
-                  target!.scheme,
-                  "-configuration",
-                  result.configuration,
-                  "-sdk",
-                  `iphonesimulator${ctx.job.toolchain?.iosSdk ?? ""}`,
-                  "-destination",
-                  `id=${deviceId}`,
-                  "-derivedDataPath",
-                  derived,
-                  // Sign to run locally: an unsigned simulator app has no
-                  // entitlements, so Keychain-backed storage fails at launch.
-                  ...SIMULATOR_LOCAL_SIGNING,
-                  "build",
-                ],
-                { ...options, timeout: policy.timeoutSeconds * 1000 },
-              );
-              const products = join(
-                derived,
-                "Build/Products",
-                `${result.configuration}-iphonesimulator`,
-              );
-              let app: string | undefined;
-              for (const entry of await readdir(products))
-                if (entry.endsWith(".app")) {
-                  const candidate = join(products, entry);
-                  const info = await run(
-                    "plutil",
-                    [
-                      "-extract",
-                      "CFBundleIdentifier",
-                      "raw",
-                      "-o",
-                      "-",
-                      join(candidate, "Info.plist"),
-                    ],
-                    { ...options, log: undefined, allowFailure: true },
-                  );
-                  if (info.stdout.trim() === ctx.job.bundleId) {
-                    invariant(
-                      !app,
-                      "SCREENSHOT_APP",
-                      "Several simulator apps have the selected bundle ID.",
-                    );
-                    app = candidate;
-                  }
-                }
-              invariant(
-                app,
-                "SCREENSHOT_APP",
-                "The simulator build did not produce the selected app.",
-              );
-              await run("xcrun", ["simctl", "install", deviceId, app], options);
-              const harness = join(folder, "capture-runner");
-              await createScreenshotRunner(harness, ctx.job.bundleId!, plan);
-              const bundle = join(folder, "screenshots.xcresult");
-              const captured = await run(
-                "xcodebuild",
-                [
-                  "-project",
-                  join(harness, "DeskScreenshots.xcodeproj"),
-                  "-scheme",
-                  "DeskScreenshots",
-                  "-destination",
-                  `id=${deviceId}`,
-                  "-derivedDataPath",
-                  join(root, "CaptureDerivedData"),
-                  "-resultBundlePath",
-                  bundle,
-                  "-parallel-testing-enabled",
-                  "NO",
-                  "CODE_SIGNING_ALLOWED=NO",
-                  "ONLY_ACTIVE_ARCH=YES",
-                  "test",
-                ],
-                processOptions,
-              );
-              const attachments = join(folder, "attachments");
-              await run(
-                "xcrun",
-                [
-                  "xcresulttool",
-                  "export",
-                  "attachments",
-                  "--path",
-                  bundle,
-                  "--output-path",
-                  attachments,
-                ],
-                { ...options, allowFailure: true },
-              );
-              result.runs.push({
-                device: device.name,
-                runtime: runtime.version,
-                resultBundle: bundle,
-                attachments,
-                status: captured.code === 0 ? "passed" : "failed",
-              });
-              await writeManifest();
-              invariant(
-                captured.code === 0,
-                "SCREENSHOT_FAILURE",
-                `The capture plan failed on ${device.name}. Failure screenshots and test results are retained; no store upload will proceed when checks are required.`,
-              );
-              result.screenshots.push(
-                ...(await exportedScreenshots(
-                  attachments,
-                  plan.captures.map((c) => c.name),
-                  device.name,
-                  runtime.version,
-                )),
-              );
-              await writeManifest();
-            }
-          } finally {
-            const cleanup = {
-              ...options,
-              signal: undefined,
-              timeout: 60000,
-              allowFailure: true,
-              log: undefined,
-            };
-            await run("xcrun", ["simctl", "shutdown", deviceId], cleanup).catch(
-              () => undefined,
+          for (const [index, choice] of policy.destinations.entries()) {
+            const { device, runtime } = resolveDestination(
+              choice,
+              catalog,
+              ctx.job.toolchain?.iosSdk,
             );
-            const deleted = await run(
+            // CoreSimulator frees a deleted device in the background, so the
+            // previous destination's space can take a minute to come back.
+            const needed = 3 * 1024 ** 3;
+            let enough = await freeSpace(tmpdir(), needed, 0);
+            if (!enough && index > 0) {
+              ctx.log(
+                "Waiting for the previous simulator's disk space to be released…",
+              );
+              enough = await freeSpace(tmpdir(), needed, 120000, ctx.signal);
+            }
+            invariant(
+              enough,
+              "SIMULATOR_STORAGE",
+              "Simulator tests need at least 3 GB free on the Mac's system disk, even when build storage is elsewhere. Free space and resume; other people's simulators and files will not be removed.",
+            );
+            await admitHeavyStep(3, `The ${device.name} simulator`, ctx);
+            const name = `Local Build Desk ${ctx.job.id} ${index}`;
+            ctx.stage("testing");
+            ctx.log(
+              `Preparing ${device.name} · ${runtime.name}. The first boot can take a few minutes…`,
+            );
+            const created = await run(
               "xcrun",
-              ["simctl", "delete", deviceId],
-              cleanup,
-            ).catch(() => ({ code: 1 }));
-            if (!deleted.code) {
-              leases = leases.filter((l) => l.id !== deviceId);
-              ctx.store.setPreference("simulator-leases", leases);
+              ["simctl", "create", name, device.identifier, runtime.identifier],
+              { ...options, log: undefined },
+            );
+            const deviceId = created.stdout.trim();
+            invariant(
+              /^[0-9A-F-]{36}$/i.test(deviceId),
+              "SIMULATOR_CREATE",
+              "Simulator did not return a device ID.",
+            );
+            owned.add(deviceId);
+            leases.push({ id: deviceId, name, jobId: ctx.job.id });
+            ctx.store.setPreference("simulator-leases", leases);
+            try {
+              await run("xcrun", ["simctl", "boot", deviceId], {
+                ...options,
+                timeout: 180000,
+              });
+              await run("xcrun", ["simctl", "bootstatus", deviceId, "-b"], {
+                ...options,
+                timeout: 240000,
+              });
+              const folder = join(root, String(index));
+              await mkdir(folder, { recursive: true });
+              const derived = join(root, "DerivedData");
+              if (mode !== "screenshots" && policy.runner === "xcode") {
+                ctx.stage("testing");
+                ctx.log(
+                  `Testing ${device.name} · ${runtime.name} (${result.configuration})…`,
+                );
+                const bundle = join(folder, "tests.xcresult");
+                const test = await run(
+                  "xcodebuild",
+                  testArguments(
+                    target!,
+                    source,
+                    policy,
+                    deviceId,
+                    bundle,
+                    derived,
+                  ),
+                  processOptions,
+                );
+                const summary = await resultSummary(bundle, options).catch(
+                  () => undefined,
+                );
+                result.runs.push({
+                  device: device.name,
+                  runtime: runtime.version,
+                  resultBundle: bundle,
+                  status:
+                    test.code === 0 &&
+                    !!summary &&
+                    summary.passed > 0 &&
+                    summary.failed === 0
+                      ? "passed"
+                      : "failed",
+                  ...summary,
+                });
+                await writeManifest();
+                invariant(
+                  result.runs.at(-1)!.status === "passed",
+                  "TEST_FAILURE",
+                  `Tests failed or no tests ran on ${device.name}. Inspect the retained xcresult; required checks block upload.`,
+                );
+              }
+              const plan =
+                capturePlan &&
+                capturesFor(
+                  capturePlan,
+                  choice.deviceType,
+                  device.name,
+                  device.identifier,
+                );
+              if (plan && !plan.captures.length)
+                ctx.log(`No captures are assigned to ${device.name}.`);
+              if (plan?.captures.length) {
+                ctx.stage("screenshots");
+                ctx.log(
+                  `Capturing ${plan.captures.length} screens on ${device.name}…`,
+                );
+                await run(
+                  "xcrun",
+                  ["simctl", "ui", deviceId, "appearance", plan.appearance],
+                  options,
+                );
+                await run(
+                  "xcrun",
+                  [
+                    "simctl",
+                    "status_bar",
+                    deviceId,
+                    "override",
+                    "--time",
+                    "9:41",
+                    "--dataNetwork",
+                    "wifi",
+                    "--wifiMode",
+                    "active",
+                    "--wifiBars",
+                    "3",
+                    "--batteryState",
+                    "charged",
+                    "--batteryLevel",
+                    "100",
+                  ],
+                  options,
+                );
+                await run(
+                  "xcodebuild",
+                  [
+                    ...containerArguments(target!.container, source),
+                    "-scheme",
+                    target!.scheme,
+                    "-configuration",
+                    result.configuration,
+                    "-sdk",
+                    `iphonesimulator${ctx.job.toolchain?.iosSdk ?? ""}`,
+                    "-destination",
+                    `id=${deviceId}`,
+                    "-derivedDataPath",
+                    derived,
+                    // Sign to run locally: an unsigned simulator app has no
+                    // entitlements, so Keychain-backed storage fails at launch.
+                    ...SIMULATOR_LOCAL_SIGNING,
+                    "build",
+                  ],
+                  { ...options, timeout: policy.timeoutSeconds * 1000 },
+                );
+                const products = join(
+                  derived,
+                  "Build/Products",
+                  `${result.configuration}-iphonesimulator`,
+                );
+                let app: string | undefined;
+                for (const entry of await readdir(products))
+                  if (entry.endsWith(".app")) {
+                    const candidate = join(products, entry);
+                    const info = await run(
+                      "plutil",
+                      [
+                        "-extract",
+                        "CFBundleIdentifier",
+                        "raw",
+                        "-o",
+                        "-",
+                        join(candidate, "Info.plist"),
+                      ],
+                      { ...options, log: undefined, allowFailure: true },
+                    );
+                    if (info.stdout.trim() === ctx.job.bundleId) {
+                      invariant(
+                        !app,
+                        "SCREENSHOT_APP",
+                        "Several simulator apps have the selected bundle ID.",
+                      );
+                      app = candidate;
+                    }
+                  }
+                invariant(
+                  app,
+                  "SCREENSHOT_APP",
+                  "The simulator build did not produce the selected app.",
+                );
+                await run(
+                  "xcrun",
+                  ["simctl", "install", deviceId, app],
+                  options,
+                );
+                const harness = join(folder, "capture-runner");
+                await createScreenshotRunner(harness, ctx.job.bundleId!, plan);
+                const bundle = join(folder, "screenshots.xcresult");
+                const captured = await run(
+                  "xcodebuild",
+                  [
+                    "-project",
+                    join(harness, "DeskScreenshots.xcodeproj"),
+                    "-scheme",
+                    "DeskScreenshots",
+                    "-destination",
+                    `id=${deviceId}`,
+                    "-derivedDataPath",
+                    join(root, "CaptureDerivedData"),
+                    "-resultBundlePath",
+                    bundle,
+                    "-parallel-testing-enabled",
+                    "NO",
+                    "CODE_SIGNING_ALLOWED=NO",
+                    "ONLY_ACTIVE_ARCH=YES",
+                    "test",
+                  ],
+                  processOptions,
+                );
+                const attachments = join(folder, "attachments");
+                await run(
+                  "xcrun",
+                  [
+                    "xcresulttool",
+                    "export",
+                    "attachments",
+                    "--path",
+                    bundle,
+                    "--output-path",
+                    attachments,
+                  ],
+                  { ...options, allowFailure: true },
+                );
+                result.runs.push({
+                  device: device.name,
+                  runtime: runtime.version,
+                  resultBundle: bundle,
+                  attachments,
+                  status: captured.code === 0 ? "passed" : "failed",
+                });
+                await writeManifest();
+                invariant(
+                  captured.code === 0,
+                  "SCREENSHOT_FAILURE",
+                  `The capture plan failed on ${device.name}. Failure screenshots and test results are retained; no store upload will proceed when checks are required.`,
+                );
+                result.screenshots.push(
+                  ...(await exportedScreenshots(
+                    attachments,
+                    plan.captures.map((c) => c.name),
+                    device.name,
+                    runtime.version,
+                  )),
+                );
+                await writeManifest();
+              }
+            } finally {
+              const cleanup = {
+                ...options,
+                signal: undefined,
+                timeout: 60000,
+                allowFailure: true,
+                log: undefined,
+              };
+              await run(
+                "xcrun",
+                ["simctl", "shutdown", deviceId],
+                cleanup,
+              ).catch(() => undefined);
+              const deleted = await run(
+                "xcrun",
+                ["simctl", "delete", deviceId],
+                cleanup,
+              ).catch(() => ({ code: 1 }));
+              if (!deleted.code) {
+                leases = leases.filter((l) => l.id !== deviceId);
+                ctx.store.setPreference("simulator-leases", leases);
+              }
             }
           }
-        }
-      });
+        }),
+      );
     }
     if (ctx.job.platform === "android" && capturePlan)
       await captureOnEmulators(ctx, policy, capturePlan, root, result, {
