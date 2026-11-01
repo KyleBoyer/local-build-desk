@@ -1767,6 +1767,11 @@ export class Engine extends EventEmitter {
       productTitle: product
         ? (Object.values(product.listings)[0]?.title ?? promo.productId)
         : promo.productId,
+      productKind: config.google.subscriptions.some(
+        (s) => s.productId === promo.productId,
+      )
+        ? ("subscription" as const)
+        : ("product" as const),
       codesFolder,
     };
   }

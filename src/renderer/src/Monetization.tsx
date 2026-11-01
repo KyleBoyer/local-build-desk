@@ -925,8 +925,8 @@ export function Monetization({ project }: { project: Project }) {
             <p className="muted">
               Google has no API for promo codes. Local Build Desk opens the
               promotion in its signed-in Play Console window and fills in what
-              it can; you choose Create. Downloaded codes are saved privately,
-              never in your repository.
+              it can; you review it and choose Save. Downloaded codes are saved
+              privately, never in your repository.
             </p>
             {config.google.promoCodes.map((p, index) => {
               const key = `google:promo:${p.name}`;
