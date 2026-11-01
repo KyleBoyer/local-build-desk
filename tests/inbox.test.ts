@@ -231,3 +231,27 @@ it("replaces an App Store reply, and replies on Play in one call", async () => {
   ).toBe("hi");
   expect(calls.at(-1)).toBe("POST /applications/com.app/reviews/r1:reply");
 });
+
+it("treats a crash report without a shared log as empty, not an error", async () => {
+  const { crashLog } = await import("../src/core/inbox");
+  const item = {
+    ...review("1", 1),
+    kind: "crash",
+    store: "apple",
+    sourceId: "c1",
+    read: false,
+    seenAt: "t",
+  } as InboxItem;
+  const missing = {
+    request: async () => {
+      throw Object.assign(new Error("Apple 404"), { code: "APPLE_404" });
+    },
+  } as any;
+  expect(await crashLog(missing, item)).toBe("");
+  const present = {
+    request: async () => ({
+      data: { attributes: { logText: "Thread 0 Crashed" } },
+    }),
+  } as any;
+  expect(await crashLog(present, item)).toBe("Thread 0 Crashed");
+});

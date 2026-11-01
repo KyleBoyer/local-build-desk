@@ -293,10 +293,15 @@ export async function replyPlay(
   };
 }
 export async function crashLog(api: AppleAPI, item: InboxItem) {
-  const log = await api.request(
-    `/betaFeedbackCrashSubmissions/${item.sourceId}/crashLog`,
-  );
-  return String(log.data?.attributes?.logText ?? "");
+  // Apple attaches a log only when the tester shares one; most crash reports
+  // have none, and Apple answers 404.
+  const log = await api
+    .request(`/betaFeedbackCrashSubmissions/${item.sourceId}/crashLog`)
+    .catch((error) => {
+      if (/APPLE_404/.test(error?.code ?? "")) return undefined;
+      throw error;
+    });
+  return String(log?.data?.attributes?.logText ?? "");
 }
 
 /** What deserves a notification: low ratings, any TestFlight feedback or crash. */

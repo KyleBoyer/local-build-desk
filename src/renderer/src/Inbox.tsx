@@ -346,7 +346,8 @@ export function Inbox({ project }: { project: Project }) {
               </button>
             </div>
             <pre className="inbox-log">
-              {log.text || "Apple returned an empty log."}
+              {log.text ||
+                "TestFlight has no log for this crash: the tester didn't share one. The report still shows the build, device and OS."}
             </pre>
             <div className="row-actions">
               <button
