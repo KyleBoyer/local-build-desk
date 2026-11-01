@@ -511,7 +511,7 @@ function offerItems(
             .map((b) =>
               b.kind === "custom"
                 ? `custom code ${b.code}`
-                : `${b.count} one-time codes`,
+                : `${b.count} one-time code${b.count === 1 ? "" : "s"}`,
             )
             .join(", ")}`,
         );
@@ -704,6 +704,7 @@ export function compareApple(m: Monetization, live: AppleLive): StoreItem[] {
           have.mode !== intro.mode ||
           have.duration !== intro.duration ||
           have.periods !== intro.periods ||
+          have.ids.length < wantedTerritories(live, sub.territories).length ||
           (intro.price && !same(have.price, intro.price)))
       )
         changes.push(
@@ -1376,20 +1377,31 @@ async function applySubscription(
       territories,
       sub.productId,
     );
-    await each([...points], async ([territory, point]) => {
-      await api.request("/subscriptionPrices", "POST", {
-        data: {
-          type: "subscriptionPrices",
-          attributes: { startDate: null, preserveCurrentPrice: !!found?.price },
-          relationships: {
-            subscription: { data: { type: "subscriptions", id } },
-            territory: { data: { type: "territories", id: territory } },
-            subscriptionPricePoint: {
-              data: { type: "subscriptionPricePoints", id: point },
-            },
+    // One request for every territory: Apple applies it all or nothing, and
+    // a request per territory runs into its rate limit.
+    const prices = [...points].map(([territory, point], index) => ({
+      type: "subscriptionPrices",
+      id: `\${price${index}}`,
+      attributes: { startDate: null, preserveCurrentPrice: !!found?.price },
+      relationships: {
+        subscription: { data: { type: "subscriptions", id } },
+        territory: { data: { type: "territories", id: territory } },
+        subscriptionPricePoint: {
+          data: { type: "subscriptionPricePoints", id: point },
+        },
+      },
+    }));
+    await api.request(`/subscriptions/${id}`, "PATCH", {
+      data: {
+        type: "subscriptions",
+        id,
+        relationships: {
+          prices: {
+            data: prices.map((p) => ({ type: p.type, id: p.id })),
           },
         },
-      });
+      },
+      included: prices,
     });
     ctx.log(
       `${sub.productId}: price ${money(sub.price)} in ${points.size} territories`,
@@ -1403,6 +1415,7 @@ async function applySubscription(
       have.mode !== intro.mode ||
       have.duration !== intro.duration ||
       have.periods !== intro.periods ||
+      have.ids.length < territories.length ||
       (intro.price && !same(have.price, intro.price)))
   ) {
     for (const old of have?.ids ?? [])
@@ -1420,28 +1433,37 @@ async function applySubscription(
               `${sub.productId}'s introductory offer`,
             )
           ).points;
-    await each([...points], async ([territory, point]) => {
-      await api.request("/subscriptionIntroductoryOffers", "POST", {
-        data: {
-          type: "subscriptionIntroductoryOffers",
-          attributes: {
-            duration: intro.duration,
-            offerMode: intro.mode,
-            numberOfPeriods: intro.periods,
-          },
-          relationships: {
-            subscription: { data: { type: "subscriptions", id } },
-            territory: { data: { type: "territories", id: territory } },
-            ...(point
-              ? {
-                  subscriptionPricePoint: {
-                    data: { type: "subscriptionPricePoints", id: point },
-                  },
-                }
-              : {}),
+    const offers = [...points].map(([territory, point], index) => ({
+      type: "subscriptionIntroductoryOffers",
+      id: `\${intro${index}}`,
+      attributes: {
+        duration: intro.duration,
+        offerMode: intro.mode,
+        numberOfPeriods: intro.periods,
+      },
+      relationships: {
+        subscription: { data: { type: "subscriptions", id } },
+        territory: { data: { type: "territories", id: territory } },
+        ...(point
+          ? {
+              subscriptionPricePoint: {
+                data: { type: "subscriptionPricePoints", id: point },
+              },
+            }
+          : {}),
+      },
+    }));
+    await api.request(`/subscriptions/${id}`, "PATCH", {
+      data: {
+        type: "subscriptions",
+        id,
+        relationships: {
+          introductoryOffers: {
+            data: offers.map((o) => ({ type: o.type, id: o.id })),
           },
         },
-      });
+      },
+      included: offers,
     });
     ctx.log(
       `${sub.productId}: introductory offer in ${points.size} territories`,
@@ -1601,7 +1623,9 @@ async function applyOffer(
     if (batch.kind === "oneTime") {
       const csv = await oneTimeCodes(api, sub ? "subscription" : "iap", id);
       result.codes.push({ key, batchId: id, csv });
-      ctx.log(`${offer.name}: generated ${batch.count} one-time codes`);
+      ctx.log(
+        `${offer.name}: generated ${batch.count} one-time code${batch.count === 1 ? "" : "s"}`,
+      );
     } else ctx.log(`${offer.name}: custom code ${batch.code} is live`);
   }
 }

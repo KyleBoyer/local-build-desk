@@ -66,9 +66,10 @@ export class AppleAPI {
       "Invalid Apple API path.",
     );
     const token = await this.token();
-    const maxAttempts = ["GET", "HEAD"].includes(method.toUpperCase())
-      ? (this.options.maxReadAttempts ?? 4)
-      : 1;
+    const read = ["GET", "HEAD"].includes(method.toUpperCase());
+    // Writes retry only on 429: Apple refused them unprocessed, so sending
+    // again can't apply them twice.
+    const maxAttempts = read ? (this.options.maxReadAttempts ?? 4) : 4;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       this.options.signal?.throwIfAborted();
       const started = Date.now();
@@ -106,9 +107,11 @@ export class AppleAPI {
         );
       const retry =
         attempt < maxAttempts &&
-        (transientNetwork ||
-          (!!response &&
-            [408, 429, 500, 502, 503, 504].includes(response.status)));
+        (read
+          ? transientNetwork ||
+            (!!response &&
+              [408, 429, 500, 502, 503, 504].includes(response.status))
+          : response?.status === 429);
       const retryAfter = response?.headers.get("retry-after");
       const serverDelay = retryAfter
         ? /^\d+(?:\.\d+)?$/.test(retryAfter)

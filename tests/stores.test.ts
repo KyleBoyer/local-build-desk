@@ -544,3 +544,29 @@ it("includes Apple's associated errors, and routes /v2/ paths", async () => {
     "https://api.appstoreconnect.apple.com/v2/inAppPurchases",
   );
 });
+it("retries a write only when Apple rate-limited it, which means it wasn't applied", async () => {
+  const waits: number[] = [];
+  const limited = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response("{}", { status: 429, headers: { "Retry-After": "3" } }),
+    )
+    .mockResolvedValueOnce(json({ data: { id: "made" } }, 201));
+  await expect(
+    new AppleAPI(apple, limited as any, undefined, {
+      wait: async (ms) => {
+        waits.push(ms);
+      },
+    }).request("/subscriptionPrices", "POST", { data: {} }),
+  ).resolves.toEqual({ data: { id: "made" } });
+  expect(limited).toHaveBeenCalledTimes(2);
+  expect(waits).toEqual([3000]);
+  // A failure after Apple may have applied it is never resent.
+  const failed = vi.fn().mockRejectedValueOnce(new TypeError("fetch failed"));
+  await expect(
+    new AppleAPI(apple, failed as any, undefined, {
+      wait: async () => {},
+    }).request("/subscriptionPrices", "POST", { data: {} }),
+  ).rejects.toThrow(/fetch failed/);
+  expect(failed).toHaveBeenCalledTimes(1);
+});

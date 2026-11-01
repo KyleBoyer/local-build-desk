@@ -323,22 +323,27 @@ describe("App Store", () => {
         log: () => undefined,
       },
     );
-    const prices = calls.filter((c) => c.path === "/subscriptionPrices");
+    // Every territory's price, then every trial, each in one atomic request.
+    const patches = calls.filter(
+      (c) => c.method === "PATCH" && c.path === "/subscriptions/new3",
+    );
+    expect(patches).toHaveLength(2);
+    const [prices, intro] = patches.map((c) => c.body);
     expect(
-      prices.map((c) => c.body.data.relationships.territory.data.id).sort(),
+      prices.included.map((p: any) => p.relationships.territory.data.id).sort(),
     ).toEqual(["CAN", "GBR", "USA"]);
+    expect(prices.data.relationships.prices.data).toHaveLength(3);
     expect(
-      prices.every(
-        (c) => c.body.data.attributes.preserveCurrentPrice === false,
+      prices.included.every(
+        (p: any) => p.attributes.preserveCurrentPrice === false,
       ),
     ).toBe(true);
-    const intro = calls.filter(
-      (c) => c.path === "/subscriptionIntroductoryOffers",
-    );
-    expect(intro).toHaveLength(3);
+    expect(intro.included).toHaveLength(3);
+    expect(intro.data.relationships.introductoryOffers.data).toHaveLength(3);
     expect(
-      intro[0]!.body.data.relationships.subscriptionPricePoint,
+      intro.included[0].relationships.subscriptionPricePoint,
     ).toBeUndefined();
+    expect(calls.some((c) => c.path === "/subscriptionPrices")).toBe(false);
     // The group exists before its subscription is created inside it.
     expect(
       calls.findIndex((c) => c.path === "/subscriptionGroups"),
