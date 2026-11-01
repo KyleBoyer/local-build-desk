@@ -88,6 +88,18 @@ import {
 } from "./config";
 import { Redactor, run } from "./process";
 import { DeskError, invariant, messageOf } from "./errors";
+import {
+  MonetizationService,
+  monetizationFile,
+  type MonetizationView,
+} from "./monetization-service";
+import {
+  loadMonetization,
+  saveMonetization,
+  type MonetizationInput,
+} from "./monetization";
+import { importApple } from "./monetization-apple";
+import { importGoogle } from "./monetization-google";
 import { buildLocal, hashArtifact } from "./build";
 import {
   AppleAPI,
@@ -1563,6 +1575,214 @@ export class Engine extends EventEmitter {
     );
     return { listing: file.relative, ...saved };
   }
+  /** Monetization for a project: the file, compared with each connected store. */
+  private monetizationService(project: Project, signal?: AbortSignal) {
+    const apple = project.settings.appleConnectionId,
+      google = project.settings.googleConnectionId;
+    return new MonetizationService(
+      project,
+      {
+        apple: apple
+          ? async () =>
+              new AppleAPI(
+                await this.vault.get(apple, "apple"),
+                fetch,
+                undefined,
+                { signal },
+              )
+          : undefined,
+        google: google
+          ? async () => {
+              const credential = await this.vault.get(google, "google");
+              return new GoogleAPI(credential, fetch, signal, () =>
+                this.assertGoogleIdle(credential.serviceAccount.client_email),
+              );
+            }
+          : undefined,
+      },
+      join(this.store.root, "offer-codes"),
+    );
+  }
+  readMonetization(projectId: string): Promise<MonetizationView> {
+    return this.monetizationService(
+      this.store.get<Project>("projects", projectId),
+    ).view();
+  }
+  /**
+   * Saves the file, then applies `applyNow` to the stores. Anything not
+   * applied now waits for the next release, which applies what still differs.
+   */
+  async saveMonetization(
+    projectId: string,
+    config: MonetizationInput,
+    applyNow: string[] = [],
+  ): Promise<MonetizationView & { log: string[] }> {
+    const project = this.store.get<Project>("projects", projectId);
+    const file = monetizationFile(project);
+    await saveMonetization(file.path, config);
+    const log: string[] = [];
+    const service = this.monetizationService(project);
+    if (applyNow.length)
+      await withLock(`monetization:${project.id}`, undefined, () =>
+        service.apply(applyNow, (line) => log.push(line)),
+      ).catch((error) => {
+        throw new DeskError(
+          (error as DeskError).code ?? "MONETIZATION_APPLY",
+          `${messageOf(error)} The file is saved; changes that weren't applied wait for the next release.`,
+        );
+      });
+    return { ...(await service.view()), log };
+  }
+  /** Adds store products the file doesn't list yet, as they are in the store. */
+  async importMonetization(projectId: string, productKeys: string[]) {
+    const project = this.store.get<Project>("projects", projectId);
+    const file = monetizationFile(project);
+    const config = await loadMonetization(file.path);
+    const service = this.monetizationService(project);
+    const view = await service.view();
+    const apple = productKeys
+      .filter((k) => k.startsWith("apple:unmanaged:"))
+      .map((k) => k.slice("apple:unmanaged:".length));
+    const google = productKeys
+      .filter((k) => k.startsWith("google:unmanaged:"))
+      .map((k) => k.slice("google:unmanaged:".length));
+    const live = service.liveSnapshot();
+    if (apple.length) {
+      invariant(
+        live.apple,
+        "APPLE_READ",
+        view.stores.apple.error ?? "App Store Connect couldn't be read.",
+      );
+      const imported = importApple(live.apple, apple);
+      config.apple.inAppPurchases.push(...imported.inAppPurchases);
+      for (const group of imported.groups) {
+        const existing = config.apple.subscriptionGroups.find(
+          (g) => g.referenceName === group.referenceName,
+        );
+        if (existing) existing.subscriptions.push(...group.subscriptions);
+        else config.apple.subscriptionGroups.push(group);
+      }
+      config.apple.offerCodes.push(...imported.offerCodes);
+    }
+    if (google.length) {
+      invariant(
+        live.google,
+        "GOOGLE_READ",
+        view.stores.google.error ?? "Google Play couldn't be read.",
+      );
+      const imported = importGoogle(live.google, google);
+      config.google.products.push(...imported.products);
+      config.google.subscriptions.push(...imported.subscriptions);
+    }
+    await saveMonetization(file.path, config);
+    return this.readMonetization(projectId);
+  }
+  /** What the Play Console assist needs for a promotion or the paid price. */
+  async playMonetizationTarget(projectId: string, key: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const config = await loadMonetization(monetizationFile(project).path);
+    const dashboard = this.playReleaseConsole(project);
+    const codesFolder = join(this.store.root, "offer-codes", project.id);
+    if (key === "google:appPrice") {
+      invariant(
+        config.google.appPrice !== undefined,
+        "MONETIZATION_ITEM",
+        "Set the paid app price in the file first.",
+      );
+      return {
+        kind: "appPrice" as const,
+        dashboard,
+        price: config.google.appPrice,
+        codesFolder,
+      };
+    }
+    const promo = config.google.promoCodes.find(
+      (p) => `google:promo:${p.name}` === key,
+    );
+    invariant(promo, "MONETIZATION_ITEM", "That promotion isn't in the file.");
+    const product =
+      config.google.products.find((p) => p.productId === promo.productId) ??
+      config.google.subscriptions.find((s) => s.productId === promo.productId);
+    return {
+      kind: "promo" as const,
+      dashboard,
+      promo,
+      productTitle: product
+        ? (Object.values(product.listings)[0]?.title ?? promo.productId)
+        : promo.productId,
+      codesFolder,
+    };
+  }
+  /** Records a Play Console promotion or price the desktop automation set. */
+  async markMonetizationDone(projectId: string, key: string) {
+    const project = this.store.get<Project>("projects", projectId);
+    const file = monetizationFile(project);
+    const config = await loadMonetization(file.path);
+    const promo = config.google.promoCodes.find(
+      (p) => `google:promo:${p.name}` === key,
+    );
+    invariant(promo, "MONETIZATION_ITEM", "That promotion isn't in the file.");
+    promo.generatedAt = new Date().toISOString();
+    await saveMonetization(file.path, config);
+  }
+  /** Releases apply whatever the stores don't match yet. */
+  async applyPendingMonetization(
+    project: Project,
+    store: "apple" | "google",
+    log: (line: string) => void,
+    signal?: AbortSignal,
+  ) {
+    const file = monetizationFile(project);
+    if (!existsSync(file.path)) return;
+    const service = this.monetizationService(project, signal);
+    const view = await service.view();
+    const keys = view.items
+      .filter(
+        (i) =>
+          i.managed &&
+          i.store === store &&
+          i.changes.length &&
+          i.key !== "google:appPrice" &&
+          !i.key.startsWith("google:promo:"),
+      )
+      .map((i) => i.key);
+    const console = view.items.filter(
+      (i) =>
+        i.store === store &&
+        i.managed &&
+        i.key.startsWith("google:promo:") &&
+        i.changes.length,
+    );
+    if (console.length)
+      log(
+        `${console.length} Play promotion(s) wait for Play Console; open Monetization to create them.`,
+      );
+    if (!keys.length) return;
+    log(
+      `Applying ${keys.length} monetization change(s) from ${file.relative}…`,
+    );
+    await withLock(`monetization:${project.id}`, signal, () =>
+      service.apply(keys, log),
+    );
+  }
+  /** Purchases and subscriptions from the monetization file that a version's
+   * review submission should carry. */
+  async monetizationReviewItems(project: Project, forReview = true) {
+    const file = monetizationFile(project).path;
+    if (!existsSync(file))
+      return {
+        inAppPurchases: [] as string[],
+        subscriptionItems: [] as Record<string, unknown>[],
+        ownsAppPrice: false,
+      };
+    return {
+      ...(forReview
+        ? await this.monetizationService(project).reviewItems()
+        : { inAppPurchases: [], subscriptionItems: [] }),
+      // The monetization file sets the app's price instead of the listing.
+      ownsAppPrice: !!(await loadMonetization(file)).apple.app,
+    };
+  }
   savePlayNotes(projectId: string, text: string, locale: string) {
     const project = this.store.get<Project>("projects", projectId);
     this.saveSettings(projectId, {
@@ -1800,6 +2020,7 @@ export class Engine extends EventEmitter {
     "minimumIosSdk",
     "iosSdk",
     "releaseChecks",
+    "monetizationFile",
   ] as const;
   portableBuildSettings(projectId: string) {
     const project = this.store.get<Project>("projects", projectId);
@@ -2567,6 +2788,18 @@ export class Engine extends EventEmitter {
       };
       this.saveJob(job);
     }
+    // Monetization changes saved "with the next release" go out with it. The
+    // upload already succeeded, so a store refusal is reported, not fatal.
+    await this.applyPendingMonetization(
+      project,
+      job.platform === "ios" ? "apple" : "google",
+      log,
+      signal,
+    ).catch((error) =>
+      log(
+        `Monetization changes weren't applied: ${messageOf(error)} They stay in the file; apply them from Monetization.`,
+      ),
+    );
   }
   reconcile(jobId: string): Promise<void> {
     const existing = this.reconciliations.get(jobId);

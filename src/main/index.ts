@@ -36,6 +36,7 @@ import { captureInvocationEnvironment } from "../cli/invocation";
 import { CONFIG_FILE, LEGACY_ENV_PREFIX } from "../core/naming";
 import { runCLI } from "../cli/commands";
 import { appleWebSession } from "./apple-web";
+import { openPlayAssist } from "./play-monetization";
 import { ACCOUNT_PARTITIONS, keepSessions } from "./session-keeper";
 import { invariant, messageOf } from "../core/errors";
 const dataRoot =
@@ -906,6 +907,17 @@ function registerIPC() {
           return { ok: true, value: await updater.check() };
         if (method === "installUpdate") {
           updater.install();
+          return { ok: true };
+        }
+        if (method === "openPlayMonetization") {
+          const [projectId, key] = values as [string, string];
+          const target = await engine.playMonetizationTarget(projectId, key);
+          // A downloaded code file means Play created the promotion.
+          void openPlayAssist(target, window, () => {
+            void engine
+              .markMonetizationDone(projectId, key)
+              .catch(() => undefined);
+          }).catch(() => undefined);
           return { ok: true };
         }
         if (method === "openExternal") {

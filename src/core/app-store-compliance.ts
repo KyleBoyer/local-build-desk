@@ -220,7 +220,7 @@ export interface AppleWebSession {
   ): Promise<any>;
 }
 
-async function pages(api: AppleAPI, path: string) {
+export async function pages(api: AppleAPI, path: string) {
   const items: any[] = [];
   let included: any[] = [];
   for (let page = 0; path && page < 30; page++) {

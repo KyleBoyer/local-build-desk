@@ -37,6 +37,7 @@ import {
   Download,
   ExternalLink,
   FileCode2,
+  CircleDollarSign,
   ClipboardCheck,
   FileKey2,
   Folder,
@@ -64,6 +65,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Setup } from "./Setup";
+import { Monetization } from "./Monetization";
 import { StoreCompliance } from "./StoreCompliance";
 import type {
   Artifact,
@@ -104,6 +106,7 @@ const pageNames = {
   preferences: "Preferences",
   release: "Release",
   compliance: "App Store",
+  monetization: "Monetization",
 } as const;
 const RetainedValidationWorkflow = memo(ValidationWorkflow);
 type Page = keyof typeof pageNames;
@@ -620,9 +623,7 @@ export function App() {
     });
   const localJobs = state.jobs.filter((j) => j.projectId === project?.id),
     currentBuild = localJobs.find((j) => j.id === selectedJob),
-    running = localJobs.filter((j) =>
-      ["running", "queued"].includes(j.status),
-    );
+    running = localJobs.filter((j) => ["running", "queued"].includes(j.status));
   const saveSettings = (settings: ProjectSettings) =>
     action(
       () =>
@@ -697,6 +698,7 @@ export function App() {
               preferences: Settings2,
               release: FileCode2,
               compliance: ClipboardCheck,
+              monetization: CircleDollarSign,
             }[p];
             return (
               <button
@@ -832,6 +834,14 @@ export function App() {
             ) : (
               <p className="muted">
                 Import a project to answer its App Store questions.
+              </p>
+            ))}
+          {page === "monetization" &&
+            (project ? (
+              <Monetization key={project.id} project={project} />
+            ) : (
+              <p className="muted">
+                Import a project to manage its prices, purchases and codes.
               </p>
             ))}
           {page === "release" &&

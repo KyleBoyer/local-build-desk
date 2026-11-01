@@ -3700,3 +3700,150 @@ footer span:first-child {
 .monitor-device-list > div { display:flex; align-items:center; justify-content:space-between; padding:14px 0; border-top:1px solid var(--line); gap:15px; }
 .monitor-device-list span { display:block; margin-top:5px; color:var(--muted); font-size:11px; }
 @media(max-width:1200px){.mobile-settings-layout{grid-template-columns:1fr 280px;gap:22px;}.monitor-pairing-panel{padding-left:20px;}}
+
+/* Monetization */
+.monetization-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.monetization-toolbar .store-channel-tabs {
+  margin: 0;
+}
+.monetization-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.monetization-section-head h2 {
+  margin: 0;
+}
+.monetization-pending {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-color: #5b4b2e;
+}
+.monetization-pending h2 {
+  margin: 0 0 4px;
+}
+.monetization-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 150px auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid #23323d;
+}
+.monetization-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.monetization-row-main strong {
+  font-weight: 500;
+  color: #dbe4ea;
+}
+.monetization-row-main .mono,
+.monetization-row-main .muted {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.monetization-row-price {
+  display: flex;
+  flex-direction: column;
+  font-variant-numeric: tabular-nums;
+  color: #c9d6de;
+}
+.monetization-row-price small {
+  color: #7f95a6;
+  font-size: 10px;
+}
+.monetization-row .row-actions {
+  justify-content: flex-end;
+  margin: 0;
+}
+.monetization-changes {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #c7aa7a;
+  line-height: 1.7;
+}
+.monetization-changes .warning {
+  color: #d39b86;
+  list-style: none;
+  margin-left: -16px;
+}
+.monetization-row-actions {
+  padding: 0 0 12px;
+}
+.monetization-group {
+  padding-left: 14px;
+  border-left: 2px solid #2c3d49;
+  margin: 8px 0;
+}
+.monetization-modal {
+  width: 720px;
+}
+.monetization-locales {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.monetization-locale {
+  display: grid;
+  grid-template-columns: 110px 1fr 1fr;
+  gap: 0 12px;
+  align-items: start;
+}
+.monetization-locale .text-button {
+  grid-column: 1 / -1;
+  margin: -8px 0 8px;
+}
+.monetization-subhead {
+  font-size: 13px;
+  font-weight: 500;
+  color: #c1cfd8;
+  margin: 14px 0 10px;
+}
+.monetization-batch {
+  padding: 10px 12px;
+  border: 1px solid #2c3d49;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+.monetization-when {
+  margin-top: 18px;
+}
+.monetization-log {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.8;
+  color: #a9b5bf;
+}
+@media (max-width: 900px) {
+  .monetization-row {
+    grid-template-columns: 1fr auto;
+  }
+  .monetization-locale {
+    grid-template-columns: 1fr;
+  }
+}
+.monetization-modal .check-label,
+.monetization-when .check-label {
+  font-size: 12px;
+  color: #c1cfd8;
+  gap: 8px;
+}

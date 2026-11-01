@@ -76,8 +76,9 @@ export class AppleAPI {
       let networkError: unknown;
       try {
         response = await this.fetcher(
-          // Most resources are v1; a few (in-app purchases) live under /v2/.
-          `https://api.appstoreconnect.apple.com${path.startsWith("/v2/") ? "" : "/v1"}${path}`,
+          // Most resources are v1; a few (in-app purchases, price points)
+          // live under /v2/ or /v3/.
+          `https://api.appstoreconnect.apple.com${/^\/v[23]\//.test(path) ? "" : "/v1"}${path}`,
           {
             method,
             headers: {
@@ -151,6 +152,9 @@ export class AppleAPI {
         );
       }
       if (response.status === 204) return {};
+      // Offer code values come back as CSV, not JSON.
+      if (/^text\//.test(response.headers?.get?.("content-type") ?? ""))
+        return response.text();
       return response.json();
     }
     throw new DeskError("APPLE_RETRIES", "Apple request retry limit reached.");

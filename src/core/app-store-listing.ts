@@ -912,6 +912,9 @@ export async function applyListing(
     fetcher?: typeof fetch;
     log?: (line: string) => void;
     wait?: (ms: number) => Promise<void>;
+    /** More review submission items, such as subscription versions waiting
+     * for their first review (see monetization). */
+    reviewItems?: Record<string, unknown>[];
   } = {},
 ) {
   if (plan.readOnly)
@@ -1281,7 +1284,15 @@ export async function applyListing(
     log(
       `Resubmitting review submission ${unresolved.id}, which App Review sent back`,
     );
-    await sendForReview(api, plan, versionId, log, unresolved, true);
+    await sendForReview(
+      api,
+      plan,
+      versionId,
+      log,
+      unresolved,
+      true,
+      options.reviewItems,
+    );
     log(`Submitted ${plan.version} for App Review`);
     return { versionId, submitted: true };
   }
@@ -1295,7 +1306,15 @@ export async function applyListing(
   );
   const draft = drafts[0] ?? null;
   try {
-    await sendForReview(api, plan, versionId, log, draft);
+    await sendForReview(
+      api,
+      plan,
+      versionId,
+      log,
+      draft,
+      false,
+      options.reviewItems,
+    );
   } catch (error) {
     // A draft that lost its version (Apple keeps listing it) can't be sent
     // and can't take the version back. Discard it, as App Store Connect's
@@ -1315,7 +1334,15 @@ export async function applyListing(
         attributes: { canceled: true },
       },
     });
-    await sendForReview(api, plan, versionId, log, null);
+    await sendForReview(
+      api,
+      plan,
+      versionId,
+      log,
+      null,
+      false,
+      options.reviewItems,
+    );
   }
   log(`Submitted ${plan.version} for App Review`);
   return { versionId, submitted: true };
@@ -1332,6 +1359,7 @@ async function sendForReview(
   log: (line: string) => void,
   draft: any | null,
   resubmit = false,
+  extra: Record<string, unknown>[] = [],
 ) {
   const submission =
     draft ??
@@ -1508,6 +1536,10 @@ async function sendForReview(
       });
     }
     log(`In-app purchase ${productId} added to review`);
+  }
+  for (const item of extra) {
+    await addItem(item);
+    log(`Added ${Object.keys(item)[0]?.replace(/Version$/, "")} to review`);
   }
   await api.request(`/reviewSubmissions/${submission.id}`, "PATCH", {
     data: {

@@ -796,6 +796,33 @@ export async function runCLI(
         );
       const writer = journal!.wrap(api);
       const log = (line: string) => write(line + "\n");
+      // Monetization saved "with the next release" goes out now, and new
+      // purchases and subscriptions ride along with the version's review.
+      await engine.applyPendingMonetization(project!, "apple", log);
+      const monetization = await engine.monetizationReviewItems(
+        project!,
+        !!v["submit-for-review"],
+      );
+      const withMonetization = <
+        T extends {
+          inAppPurchases: { productId: string }[];
+          compliance: { pricing?: unknown };
+        },
+      >(
+        p: T,
+      ): T => ({
+        ...p,
+        // The monetization file sets the app's price instead of the listing.
+        compliance: monetization.ownsAppPrice
+          ? { ...p.compliance, pricing: undefined }
+          : p.compliance,
+        inAppPurchases: [
+          ...p.inAppPurchases,
+          ...monetization.inAppPurchases
+            .filter((id) => !p.inAppPurchases.some((i) => i.productId === id))
+            .map((productId) => ({ productId })),
+        ],
+      });
       let result: Awaited<ReturnType<typeof applyListing>>;
       if (v["submit-for-review"] && !plan.versionId && !plan.readOnly) {
         // A new version's starting text, screenshots and review details are
@@ -824,16 +851,18 @@ export async function runCLI(
           });
           return CLI_EXIT.failure;
         }
-        result = await applyListing(writer, created, loaded, {
+        result = await applyListing(writer, withMonetization(created), loaded, {
           web: runtime.appleWeb,
           submit: true,
           log,
+          reviewItems: monetization.subscriptionItems,
         });
       } else
-        result = await applyListing(writer, plan, loaded, {
+        result = await applyListing(writer, withMonetization(plan), loaded, {
           web: runtime.appleWeb,
           submit: v["submit-for-review"],
           log,
+          reviewItems: monetization.subscriptionItems,
         });
       journal!.finish(result.submitted);
       // A submitted version is no longer editable, so there's nothing left to check.

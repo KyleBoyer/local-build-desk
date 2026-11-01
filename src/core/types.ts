@@ -104,6 +104,8 @@ export interface ProjectSettings {
   playReleaseNotesLanguage?: string;
   /** App Store listing JSON (relative to the project) used by `local-build-desk listing`. */
   appStoreListing?: string;
+  /** Monetization JSON (relative to the project); assets/store/monetization.json by default. */
+  monetizationFile?: string;
   ascAppId?: string;
   setupAppleComplete?: boolean;
   testFlightGroupId?: string;
@@ -558,6 +560,23 @@ export interface DesktopAPI {
     answers: Omit<import("./app-store-compliance").Compliance, "attestation">,
     attestBy?: string,
   ): Promise<ComplianceView>;
+  readMonetization(
+    projectId: string,
+  ): Promise<import("./monetization-service").MonetizationView>;
+  saveMonetization(
+    projectId: string,
+    config: import("./monetization").MonetizationInput,
+    applyNow?: string[],
+  ): Promise<
+    import("./monetization-service").MonetizationView & { log: string[] }
+  >;
+  importMonetization(
+    projectId: string,
+    keys: string[],
+  ): Promise<import("./monetization-service").MonetizationView>;
+  /** Opens Play Console's page for a promotion or the paid app price and fills it in. */
+  openPlayMonetization(projectId: string, key: string): Promise<void>;
+  markMonetizationDone(projectId: string, key: string): Promise<void>;
   releaseNoteDraft(jobId: string): Promise<{ text: string; note: string }>;
   notificationSettings(
     enabled?: boolean,

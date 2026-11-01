@@ -5,6 +5,7 @@ const text = z.string().max(4096),
   platform = z.enum(["ios", "android"]);
 export { settingsSchema } from "../core/settings-schema";
 import { settingsSchema } from "../core/settings-schema";
+import { monetizationSchema } from "../core/monetization";
 import {
   ageRatingSchema,
   appPrivacySchema,
@@ -181,6 +182,18 @@ export const methods = {
       .strict(),
     z.string().min(2).max(100).optional(),
   ]),
+  readMonetization: z.tuple([identifier]),
+  saveMonetization: z.tuple([
+    identifier,
+    monetizationSchema,
+    z.array(z.string().max(300)).max(500).optional(),
+  ]),
+  importMonetization: z.tuple([
+    identifier,
+    z.array(z.string().max(300)).min(1).max(500),
+  ]),
+  openPlayMonetization: z.tuple([identifier, z.string().max(300)]),
+  markMonetizationDone: z.tuple([identifier, z.string().max(300)]),
   notificationSettings: z.tuple([z.boolean().optional()]),
   testNotification: z.tuple([]),
   cliCommand: z.tuple([z.boolean().optional()]),
