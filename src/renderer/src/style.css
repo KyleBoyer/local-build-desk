@@ -3847,3 +3847,146 @@ footer span:first-child {
   color: #c1cfd8;
   gap: 8px;
 }
+
+/* Promote */
+.promote-panel {
+  margin: 18px 0;
+  padding: 16px 18px;
+  border: 1px solid #2c3d49;
+  border-radius: 7px;
+  background: #141d25;
+}
+.promote-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.promote-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+.promote-rollout {
+  padding: 10px 0 14px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #23323d;
+}
+.promote-inline {
+  margin: 0;
+  width: 110px;
+}
+.promote-group {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 6px 0;
+}
+
+/* Feedback inbox */
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.inbox-item {
+  padding: 16px 18px;
+  border: 1px solid #2c3d49;
+  border-radius: 7px;
+  background: #141d25;
+  cursor: default;
+}
+.inbox-item.unread {
+  border-color: #5b4b2e;
+}
+.inbox-item header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+.inbox-item header .nav-dot {
+  position: static;
+  margin-left: auto;
+}
+.inbox-stars {
+  display: inline-flex;
+  color: #e0b25c;
+}
+.inbox-item strong {
+  display: block;
+  font-weight: 500;
+  color: #dbe4ea;
+  margin-bottom: 4px;
+}
+.inbox-item p {
+  margin: 0 0 8px;
+  line-height: 1.6;
+  color: #c9d6de;
+  white-space: pre-wrap;
+}
+.inbox-meta {
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.inbox-reply {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 2px solid #3d5566;
+  color: #b8c7d1;
+  white-space: pre-wrap;
+}
+.inbox-reply span {
+  display: block;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+.inbox-compose textarea {
+  width: 100%;
+  background: #10171d;
+  color: #d2dbe2;
+  border: 1px solid #33404b;
+  border-radius: 5px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.inbox-log {
+  max-height: 60vh;
+  overflow: auto;
+  font-size: 10px;
+  line-height: 1.5;
+  background: #0d1419;
+  padding: 12px;
+  border-radius: 5px;
+  white-space: pre;
+}
+.promote-guard {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #23323d;
+}
+.promote-guard h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.promote-guard p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.promote-guard {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #23323d;
+}
+.promote-guard h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.promote-guard p {
+  font-size: 12px;
+  line-height: 1.6;
+}

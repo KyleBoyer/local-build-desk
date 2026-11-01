@@ -104,6 +104,8 @@ export interface ProjectSettings {
   playReleaseNotesLanguage?: string;
   /** App Store listing JSON (relative to the project) used by `local-build-desk listing`. */
   appStoreListing?: string;
+  /** Halts staged Play rollouts whose Android vitals cross these limits. On by default. */
+  rolloutGuard?: import("./rollout-guard").RolloutGuard;
   /** Monetization JSON (relative to the project); assets/store/monetization.json by default. */
   monetizationFile?: string;
   ascAppId?: string;
@@ -459,7 +461,15 @@ export interface UpdateStatus {
 }
 export interface DeskEvent {
   type:
-    "state" | "log" | "update" | "focus-job" | "operation-progress" | "monitor";
+    | "state"
+    | "log"
+    | "update"
+    | "focus-job"
+    | "operation-progress"
+    | "monitor"
+    | "alert";
+  /** A background check found something worth a notification. */
+  alert?: { title: string; body: string; projectId: string };
   operationId?: string;
   progress?: WorkProgress;
   jobId?: string;
@@ -565,7 +575,46 @@ export interface DesktopAPI {
     listing: string,
     releaseType: "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
     earliestReleaseDate?: string,
-  ): Promise<{ releaseType?: string; earliestReleaseDate?: string }>;
+    phasedRelease?: boolean,
+  ): Promise<{
+    releaseType?: string;
+    earliestReleaseDate?: string;
+    phasedRelease?: boolean;
+  }>;
+  promotionOptions(
+    projectId: string,
+    releaseId: string,
+  ): Promise<PromotionOptions>;
+  promoteRelease(
+    projectId: string,
+    releaseId: string,
+    request: PromotionRequest,
+  ): Promise<{ log: string[]; review?: boolean; submitted?: boolean }>;
+  rolloutHealth(projectId: string, releaseId: string): Promise<RolloutHealth>;
+  saveRolloutGuard(
+    projectId: string,
+    guard: import("./rollout-guard").RolloutGuard,
+  ): Promise<RolloutHealth["guard"]>;
+  setPhasedRelease(
+    projectId: string,
+    releaseId: string,
+    state: import("./rollout-guard").PhasedState,
+  ): Promise<import("./rollout-guard").PhasedRelease>;
+  readInbox(
+    projectId: string,
+    refresh?: boolean,
+  ): Promise<import("./inbox").InboxView>;
+  replyInbox(
+    projectId: string,
+    itemId: string,
+    body: string,
+  ): Promise<import("./inbox").InboxView>;
+  markInbox(
+    projectId: string,
+    itemIds: string[],
+    read: boolean,
+  ): Promise<import("./inbox").InboxView>;
+  inboxCrashLog(projectId: string, itemId: string): Promise<string>;
   readMonetization(
     projectId: string,
   ): Promise<import("./monetization-service").MonetizationView>;
@@ -916,5 +965,48 @@ export interface ComplianceView {
   attested?: boolean;
   statements?: string[];
   /** How approved versions go on sale; missing means App Store Connect's MANUAL. */
-  release?: { releaseType?: string; earliestReleaseDate?: string };
+  release?: {
+    releaseType?: string;
+    earliestReleaseDate?: string;
+    phasedRelease?: boolean;
+  };
+}
+
+/** Where a store release can go next without uploading again. */
+export type PromotionOptions =
+  | ({
+      channel: "play";
+      track: string;
+      versionCodes: string[];
+      status: string;
+      fraction?: number;
+    } & import("./promotion").PlayPromotionOptions)
+  | ({
+      channel: "testflight";
+    } & import("./promotion").TestFlightPromotionOptions);
+export type PromotionRequest =
+  | { kind: "play"; to: string; fraction?: number }
+  | { kind: "rollout"; change: import("./promotion").RolloutChange }
+  | {
+      kind: "testflight";
+      promotion: Omit<import("./promotion").TestFlightPromotion, "buildId">;
+    };
+
+export interface RolloutHealth {
+  guard: import("./rollout-guard").RolloutGuard;
+  vitals?: import("./rollout-guard").Vitals;
+  /** Why the guard would halt this rollout now. */
+  verdict?: string;
+  error?: string;
+  /** Link to enable the reporting API when Google says it's off. */
+  enableUrl?: string;
+  phased?: import("./rollout-guard").PhasedRelease;
+  /** Halts the guard made for this project, newest first. */
+  history: {
+    at: string;
+    track: string;
+    versionCodes: string[];
+    reason: string;
+  }[];
+  lastCheck?: { at: string; error?: string };
 }

@@ -1577,7 +1577,12 @@ export class AccountSetupManager {
         await this.googleAction(account, "create-project", "project");
         return;
       }
-      const apis = ["androidpublisher.googleapis.com", "iam.googleapis.com"];
+      // Reporting reads Android vitals for the rollout guard.
+      const apis = [
+        "androidpublisher.googleapis.com",
+        "playdeveloperreporting.googleapis.com",
+        "iam.googleapis.com",
+      ];
       const apiIndex = google.apiIndex ?? 0;
       if (apiIndex < apis.length) {
         const url = cloud + "/apis/library/" + apis[apiIndex] + query;

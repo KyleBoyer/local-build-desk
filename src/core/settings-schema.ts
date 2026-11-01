@@ -89,6 +89,15 @@ export const settingsSchema = z
     // App Store listing JSON, relative to the project, for `local-build-desk listing`.
     appStoreListing: z.string().max(1024).optional(),
     monetizationFile: z.string().max(1024).optional(),
+    rolloutGuard: z
+      .object({
+        enabled: z.boolean(),
+        maxCrashRate: z.number().gt(0).max(100),
+        maxAnrRate: z.number().gt(0).max(100),
+        minUsers: z.number().int().min(1).max(1000000),
+      })
+      .strict()
+      .optional(),
     // UTF-8 locale for native tools; the CLI fills it from the caller's locale.
     locale: z.string().regex(UTF8_LOCALE).optional(),
   })

@@ -367,7 +367,20 @@ function startOwner() {
         );
         engine.on("event", (event) => {
           if (event.type === "state") notifications.scan();
+          if (
+            event.type === "alert" &&
+            event.alert &&
+            notifications.settings().enabled
+          )
+            notifications.show(event.alert.title, event.alert.body);
         });
+        // Store watcher: reviews and TestFlight feedback, then rollout
+        // health, a little after launch and every hour.
+        if (!hideTestUI) {
+          const watch = () => void engine.watchStores().catch(() => undefined);
+          setTimeout(watch, 2 * 60 * 1000).unref();
+          setInterval(watch, 60 * 60 * 1000).unref();
+        }
       }
       updater = new Updater(
         (update) => {

@@ -83,7 +83,11 @@ test("Google account automation enables APIs, reuses scoped forms, encrypts a ke
     const outcome = await h.outcome();
     expect(outcome).toEqual({
       projects: 0,
-      apis: ["androidpublisher.googleapis.com", "iam.googleapis.com"],
+      apis: [
+        "androidpublisher.googleapis.com",
+        "playdeveloperreporting.googleapis.com",
+        "iam.googleapis.com",
+      ],
       services: 1,
       keys: 1,
       imports: 1,

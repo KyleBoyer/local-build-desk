@@ -99,6 +99,42 @@ import {
   type MonetizationInput,
 } from "./monetization";
 import { importApple } from "./monetization-apple";
+import {
+  crashLog,
+  loadInbox,
+  mergeInbox,
+  notable,
+  readAppleReviews,
+  readPlayReviews,
+  readTestFlightFeedback,
+  replyApple,
+  replyPlay,
+  saveInbox,
+  type InboxItem,
+  type InboxView,
+} from "./inbox";
+import {
+  changePlayRollout,
+  playTrackName,
+  playTracks,
+  promotePlay,
+  promoteTestFlight,
+  testFlightOptions,
+} from "./promotion";
+import type {
+  PromotionOptions,
+  PromotionRequest,
+  RolloutHealth,
+} from "./types";
+import {
+  DEFAULT_GUARD,
+  readPhasedRelease,
+  readVitals,
+  setPhasedRelease,
+  verdict,
+  type PhasedState,
+  type RolloutGuard,
+} from "./rollout-guard";
 import { importGoogle } from "./monetization-google";
 import { buildLocal, hashArtifact } from "./build";
 import {
@@ -588,6 +624,8 @@ export class Engine extends EventEmitter {
         typeof raw.earliestReleaseDate === "string"
           ? raw.earliestReleaseDate
           : undefined,
+      phasedRelease:
+        typeof raw.phasedRelease === "boolean" ? raw.phasedRelease : undefined,
     };
   }
   /** Saves how approved versions go on sale into the listing file. The next
@@ -597,6 +635,7 @@ export class Engine extends EventEmitter {
     listing: string,
     releaseType: "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED",
     earliestReleaseDate?: string,
+    phasedRelease?: boolean,
   ) {
     const project = this.store.get<Project>("projects", projectId);
     const file = await this.listingFile(project, listing);
@@ -611,6 +650,7 @@ export class Engine extends EventEmitter {
     if (releaseType === "SCHEDULED")
       raw.earliestReleaseDate = new Date(earliestReleaseDate!).toISOString();
     else delete raw.earliestReleaseDate;
+    if (phasedRelease !== undefined) raw.phasedRelease = phasedRelease;
     await writeFile(file.path, JSON.stringify(raw, null, 2) + "\n");
     if (project.settings.appStoreListing !== file.relative)
       this.saveSettings(projectId, {
@@ -1632,6 +1672,510 @@ export class Engine extends EventEmitter {
     );
     return { listing: file.relative, ...saved };
   }
+  private inboxPath(projectId: string) {
+    return join(this.store.root, "inbox", `${projectId}.json`);
+  }
+  private appleApi(project: Project, signal?: AbortSignal) {
+    return this.vault
+      .get(project.settings.appleConnectionId, "apple")
+      .then((c) => new AppleAPI(c, fetch, undefined, { signal }));
+  }
+  /**
+   * Reviews and TestFlight feedback, kept on this Mac and refreshed from the
+   * stores when asked or when older than 15 minutes. Returns the view and
+   * what's new since the last check.
+   */
+  private async refreshInbox(projectId: string, force: boolean) {
+    const project = this.store.get<Project>("projects", projectId);
+    const path = this.inboxPath(projectId);
+    return withLock(`inbox:${projectId}`, undefined, async () => {
+      const kept = await loadInbox(path);
+      const sources: InboxView["sources"] = {
+        appleReviews: {
+          connected: !!project.settings.appleConnectionId && !!project.bundleId,
+        },
+        testflight: {
+          connected: !!project.settings.appleConnectionId && !!project.bundleId,
+        },
+        playReviews: {
+          connected:
+            !!project.settings.googleConnectionId && !!project.packageName,
+        },
+      };
+      const stale =
+        !kept.checkedAt ||
+        Date.now() - Date.parse(kept.checkedAt) > 15 * 60 * 1000;
+      if (!force && !stale)
+        return { view: { ...kept, sources }, added: [] as InboxItem[] };
+      const fresh: Omit<InboxItem, "read" | "seenAt">[] = [];
+      const appleId = sources.appleReviews.connected
+        ? await this.appleApi(project)
+            .then(async (api) => ({
+              api,
+              app: await api.app(project.bundleId!),
+            }))
+            .catch((error) => {
+              sources.appleReviews.error = sources.testflight.error =
+                messageOf(error);
+              return undefined;
+            })
+        : undefined;
+      await Promise.all([
+        (async () => {
+          if (!appleId?.app) return;
+          try {
+            fresh.push(
+              ...(await readAppleReviews(appleId.api, appleId.app.id)),
+            );
+          } catch (error) {
+            sources.appleReviews.error = messageOf(error);
+          }
+        })(),
+        (async () => {
+          if (!appleId?.app) return;
+          try {
+            fresh.push(
+              ...(await readTestFlightFeedback(appleId.api, appleId.app.id)),
+            );
+          } catch (error) {
+            sources.testflight.error = messageOf(error);
+          }
+        })(),
+        (async () => {
+          if (!sources.playReviews.connected) return;
+          try {
+            const { api } = await this.playApi(project);
+            fresh.push(...(await readPlayReviews(api, project.packageName!)));
+          } catch (error) {
+            sources.playReviews.error = messageOf(error);
+          }
+        })(),
+      ]);
+      const merged = mergeInbox(kept.items, fresh);
+      const value = {
+        items: merged.items,
+        checkedAt: new Date().toISOString(),
+        primed: true,
+      };
+      await saveInbox(path, value);
+      // The first check is history, not news.
+      return {
+        view: { ...value, sources },
+        added: kept.primed ? merged.added : [],
+      };
+    });
+  }
+  async readInbox(projectId: string, refresh = false): Promise<InboxView> {
+    return (await this.refreshInbox(projectId, refresh)).view;
+  }
+  private async inboxItem(projectId: string, itemId: string) {
+    const kept = await loadInbox(this.inboxPath(projectId));
+    const item = kept.items.find((i) => i.id === itemId);
+    invariant(
+      item,
+      "INBOX_ITEM",
+      "That item isn't in the inbox any more. Refresh it.",
+    );
+    return {
+      kept,
+      item,
+      project: this.store.get<Project>("projects", projectId),
+    };
+  }
+  async replyInbox(projectId: string, itemId: string, body: string) {
+    const { item, project } = await this.inboxItem(projectId, itemId);
+    invariant(
+      item.kind === "review",
+      "INBOX_REPLY",
+      "Only reviews can be replied to.",
+    );
+    const text = body.trim();
+    invariant(text, "INBOX_REPLY", "Write a reply first.");
+    const reply =
+      item.store === "apple"
+        ? await replyApple(await this.appleApi(project), item, text)
+        : await (async () => {
+            invariant(
+              text.length <= 350,
+              "INBOX_REPLY",
+              "Google Play replies are limited to 350 characters.",
+            );
+            const { api } = await this.playApi(project);
+            return replyPlay(api, project.packageName!, item, text);
+          })();
+    await withLock(`inbox:${projectId}`, undefined, async () => {
+      const current = await loadInbox(this.inboxPath(projectId));
+      const target = current.items.find((i) => i.id === itemId);
+      if (target) Object.assign(target, { reply, read: true });
+      await saveInbox(this.inboxPath(projectId), current);
+    });
+    return this.readInbox(projectId);
+  }
+  async markInbox(projectId: string, itemIds: string[], read: boolean) {
+    await withLock(`inbox:${projectId}`, undefined, async () => {
+      const current = await loadInbox(this.inboxPath(projectId));
+      const ids = new Set(itemIds);
+      for (const item of current.items) if (ids.has(item.id)) item.read = read;
+      await saveInbox(this.inboxPath(projectId), current);
+    });
+    return this.readInbox(projectId);
+  }
+  async inboxCrashLog(projectId: string, itemId: string) {
+    const { item, project } = await this.inboxItem(projectId, itemId);
+    invariant(
+      item.kind === "crash",
+      "INBOX_CRASH",
+      "That item has no crash log.",
+    );
+    return crashLog(await this.appleApi(project), item);
+  }
+  private guardOf(project: Project) {
+    return project.settings.rolloutGuard ?? DEFAULT_GUARD;
+  }
+  private guardHistory(projectId: string) {
+    return this.store.preference<RolloutHealth["history"]>(
+      `rollout-guard-history:${projectId}`,
+      [],
+    );
+  }
+  /** Reporting API errors read better with what to do about them. */
+  private vitalsError(project: Project, error: unknown) {
+    const message = messageOf(error);
+    const cloud = /@([a-z0-9-]+)\.iam\.gserviceaccount\.com/.exec(
+      this.store
+        .credentialSummaries()
+        .find((c) => c.id === project.settings.googleConnectionId)?.detail ??
+        "",
+    )?.[1];
+    if (/has not been used|is disabled|SERVICE_DISABLED/i.test(message))
+      return {
+        error:
+          "The Play Developer Reporting API is off in this Google Cloud project, so Android vitals can't be read. Enable it, then check again.",
+        enableUrl: `https://console.cloud.google.com/apis/library/playdeveloperreporting.googleapis.com${cloud ? `?project=${cloud}` : ""}`,
+      };
+    if (/no hourly data/i.test(message))
+      return {
+        error:
+          "Android vitals has no data for this release yet; the guard keeps checking.",
+      };
+    return { error: message };
+  }
+  async rolloutHealth(
+    projectId: string,
+    releaseId: string,
+  ): Promise<RolloutHealth> {
+    const { project, release } = await this.promotionRelease(
+      projectId,
+      releaseId,
+    );
+    const health: RolloutHealth = {
+      guard: this.guardOf(project),
+      history: this.guardHistory(projectId),
+      lastCheck: this.store.preference<RolloutHealth["lastCheck"]>(
+        `rollout-guard-check:${projectId}`,
+        undefined,
+      ),
+    };
+    if (release.channel === "appstore") {
+      health.phased = await readPhasedRelease(
+        await this.appleApi(project),
+        release.resourceId,
+      );
+      return health;
+    }
+    if (release.channel !== "play" || !release.buildNumbers[0]) return health;
+    try {
+      const { api } = await this.playApi(project);
+      health.vitals = await readVitals(
+        api,
+        project.packageName!,
+        release.buildNumbers[0],
+      );
+      health.verdict = verdict(health.guard, health.vitals);
+    } catch (error) {
+      Object.assign(health, this.vitalsError(project, error));
+    }
+    return health;
+  }
+  async saveRolloutGuard(projectId: string, guard: RolloutGuard) {
+    const project = this.store.get<Project>("projects", projectId);
+    this.saveSettings(projectId, { ...project.settings, rolloutGuard: guard });
+    return guard;
+  }
+  async setPhasedRelease(
+    projectId: string,
+    releaseId: string,
+    state: PhasedState,
+  ) {
+    const { project, release } = await this.promotionRelease(
+      projectId,
+      releaseId,
+    );
+    invariant(
+      release.channel === "appstore",
+      "PHASED_RELEASE",
+      "Phased release is for App Store versions.",
+    );
+    try {
+      return await setPhasedRelease(
+        await this.appleApi(project),
+        release.resourceId,
+        state,
+      );
+    } finally {
+      this.invalidateStoreReads(projectId);
+      this.changed();
+    }
+  }
+  /** Background: halt staged Play rollouts whose vitals cross the guard. */
+  async guardRollouts() {
+    for (const project of this.store.list<Project>("projects")) {
+      if (!project.settings.googleConnectionId || !project.packageName)
+        continue;
+      const guard = this.guardOf(project);
+      if (!guard.enabled) continue;
+      const check: NonNullable<RolloutHealth["lastCheck"]> = {
+        at: new Date().toISOString(),
+      };
+      try {
+        const { api, locked } = await this.playApi(project);
+        const { tracks } = await locked(() =>
+          playTracks(api, project.packageName!),
+        );
+        for (const track of tracks)
+          for (const release of track.releases.filter(
+            (r) => r.status === "inProgress",
+          )) {
+            const codes = release.versionCodes.map(String);
+            const vitals = await readVitals(
+              api,
+              project.packageName!,
+              codes[0]!,
+            ).catch((error) => {
+              check.error = this.vitalsError(project, error).error;
+              return undefined;
+            });
+            const reason = vitals && verdict(guard, vitals);
+            if (!reason) continue;
+            await locked(() =>
+              changePlayRollout(api, project.packageName!, track.track, codes, {
+                action: "halt",
+              }),
+            );
+            const history = [
+              {
+                at: new Date().toISOString(),
+                track: track.track,
+                versionCodes: codes,
+                reason,
+              },
+              ...this.guardHistory(project.id),
+            ].slice(0, 50);
+            this.store.setPreference(
+              `rollout-guard-history:${project.id}`,
+              history,
+            );
+            this.emit("event", {
+              type: "alert",
+              alert: {
+                projectId: project.id,
+                title: `${project.name}: rollout halted`,
+                body: `${release.name ?? codes.join(", ")} on ${playTrackName(track.track)} at ${Math.round((release.userFraction ?? 0) * 1000) / 10}%: ${reason}. Resume it from Submitted releases once fixed.`,
+              },
+            } satisfies DeskEvent);
+            this.invalidateStoreReads(project.id);
+            this.changed();
+          }
+      } catch (error) {
+        check.error = messageOf(error);
+      }
+      this.store.setPreference(`rollout-guard-check:${project.id}`, check);
+    }
+  }
+  private watching?: Promise<void>;
+  /** The hourly store watcher; one run at a time. */
+  watchStores() {
+    this.watching ??= (async () => {
+      try {
+        await this.checkInboxes().catch(() => undefined);
+        await this.guardRollouts();
+      } finally {
+        this.watching = undefined;
+      }
+    })();
+    return this.watching;
+  }
+  /** Background: refresh every connected project's inbox and raise alerts
+   * for new low ratings and TestFlight feedback. */
+  async checkInboxes() {
+    for (const project of this.store.list<Project>("projects")) {
+      if (
+        !project.settings.appleConnectionId &&
+        !project.settings.googleConnectionId
+      )
+        continue;
+      const { added } = await this.refreshInbox(project.id, true).catch(() => ({
+        added: [] as InboxItem[],
+      }));
+      const notableItems = added.filter(notable);
+      if (!notableItems.length) continue;
+      const first = notableItems[0]!;
+      const where =
+        first.kind === "review"
+          ? first.store === "apple"
+            ? "App Store"
+            : "Google Play"
+          : "TestFlight";
+      this.emit("event", {
+        type: "alert",
+        alert: {
+          projectId: project.id,
+          title:
+            notableItems.length === 1
+              ? `${project.name}: ${first.kind === "review" ? `${first.rating}★ review on ${where}` : first.kind === "crash" ? "TestFlight crash report" : "TestFlight feedback"}`
+              : `${project.name}: ${notableItems.length} new reviews and feedback`,
+          body:
+            (first.title ? `${first.title}: ` : "") + first.body.slice(0, 160),
+        },
+      } satisfies DeskEvent);
+      this.changed();
+    }
+  }
+  /** The store release a promotion acts on, from the current snapshot. */
+  private async promotionRelease(projectId: string, releaseId: string) {
+    await this.storeReleases(projectId);
+    const release = this.storeReleaseCache
+      .get(projectId)
+      ?.releases.find((r) => r.id === releaseId);
+    invariant(
+      release,
+      "STORE_RELEASE_CHANGED",
+      "This release is no longer in the store snapshot. Refresh the submitted releases list.",
+    );
+    return { project: this.store.get<Project>("projects", projectId), release };
+  }
+  private async playApi(project: Project, signal?: AbortSignal) {
+    const credential = await this.vault.get(
+      project.settings.googleConnectionId,
+      "google",
+    );
+    const email = credential.serviceAccount.client_email;
+    return {
+      api: new GoogleAPI(credential, fetch, signal),
+      // Same lock as uploads: one Play edit per service account at a time.
+      locked: <T>(work: () => Promise<T>) =>
+        withLock(`google-edit:${email}`, signal, async () => {
+          this.assertGoogleIdle(email);
+          return work();
+        }),
+    };
+  }
+  /** Where a store release can go next without uploading again. */
+  async promotionOptions(
+    projectId: string,
+    releaseId: string,
+  ): Promise<PromotionOptions> {
+    const { project, release } = await this.promotionRelease(
+      projectId,
+      releaseId,
+    );
+    if (release.channel === "play") {
+      const { api, locked } = await this.playApi(project);
+      return {
+        channel: "play",
+        track: release.track!,
+        versionCodes: release.buildNumbers,
+        status: release.status,
+        fraction: release.fraction,
+        ...(await locked(() => playTracks(api, project.packageName!))),
+      };
+    }
+    invariant(
+      release.channel === "testflight",
+      "PROMOTE_CHANNEL",
+      "App Store versions are released from App Review, not promoted.",
+    );
+    const api = new AppleAPI(
+      await this.vault.get(project.settings.appleConnectionId, "apple"),
+    );
+    return {
+      channel: "testflight",
+      ...(await testFlightOptions(api, project.bundleId!, release.resourceId)),
+    };
+  }
+  /** Promotes a store release, or changes its rollout, without uploading. */
+  async promoteRelease(
+    projectId: string,
+    releaseId: string,
+    request: PromotionRequest,
+  ): Promise<{ log: string[]; review?: boolean; submitted?: boolean }> {
+    const { project, release } = await this.promotionRelease(
+      projectId,
+      releaseId,
+    );
+    const log: string[] = [];
+    try {
+      if (request.kind === "play" || request.kind === "rollout") {
+        invariant(
+          release.channel === "play",
+          "PROMOTE_CHANNEL",
+          "That's not a Play release.",
+        );
+        const { api, locked } = await this.playApi(project);
+        if (request.kind === "play") {
+          const result = await locked(() =>
+            promotePlay(api, project.packageName!, {
+              versionCodes: release.buildNumbers,
+              from: release.track!,
+              to: request.to,
+              fraction: request.fraction,
+            }),
+          );
+          log.push(
+            `${release.version ?? release.buildNumbers.join(", ")} is on ${playTrackName(request.to)}${request.fraction !== undefined ? ` for ${Math.round(request.fraction * 1000) / 10}% of users` : ""}.`,
+          );
+          return { log, review: result.review };
+        }
+        const result = await locked(() =>
+          changePlayRollout(
+            api,
+            project.packageName!,
+            release.track!,
+            release.buildNumbers,
+            request.change,
+          ),
+        );
+        log.push(
+          request.change.action === "fraction"
+            ? `Rollout widened to ${Math.round(request.change.fraction * 1000) / 10}%.`
+            : request.change.action === "halt"
+              ? "Rollout halted."
+              : request.change.action === "resume"
+                ? "Rollout resumed."
+                : "Rollout completed: everyone gets this release.",
+        );
+        return { log, review: result.review };
+      }
+      invariant(
+        release.channel === "testflight",
+        "PROMOTE_CHANNEL",
+        "That's not a TestFlight build.",
+      );
+      const api = new AppleAPI(
+        await this.vault.get(project.settings.appleConnectionId, "apple"),
+      );
+      const result = await promoteTestFlight(
+        api,
+        project.bundleId!,
+        { ...request.promotion, buildId: release.resourceId },
+        (line) => log.push(line),
+      );
+      return { log, submitted: result.submitted };
+    } finally {
+      this.invalidateStoreReads(projectId);
+      this.changed();
+    }
+  }
   /** Monetization for a project: the file, compared with each connected store. */
   private monetizationService(project: Project, signal?: AbortSignal) {
     const apple = project.settings.appleConnectionId,
@@ -2083,6 +2627,7 @@ export class Engine extends EventEmitter {
     "iosSdk",
     "releaseChecks",
     "monetizationFile",
+    "rolloutGuard",
   ] as const;
   portableBuildSettings(projectId: string) {
     const project = this.store.get<Project>("projects", projectId);

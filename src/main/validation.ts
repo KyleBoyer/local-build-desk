@@ -187,6 +187,110 @@ export const methods = {
     z.string().min(1).max(1024),
     z.enum(["MANUAL", "AFTER_APPROVAL", "SCHEDULED"]),
     z.string().max(64).optional(),
+    z.boolean().optional(),
+  ]),
+  rolloutHealth: z.tuple([identifier, z.string().max(300)]),
+  saveRolloutGuard: z.tuple([
+    identifier,
+    z
+      .object({
+        enabled: z.boolean(),
+        maxCrashRate: z.number().gt(0).max(100),
+        maxAnrRate: z.number().gt(0).max(100),
+        minUsers: z.number().int().min(1).max(1000000),
+      })
+      .strict(),
+  ]),
+  setPhasedRelease: z.tuple([
+    identifier,
+    z.string().max(300),
+    z.enum(["INACTIVE", "ACTIVE", "PAUSED", "COMPLETE"]),
+  ]),
+  readInbox: z.tuple([identifier, z.boolean().optional()]),
+  replyInbox: z.tuple([
+    identifier,
+    z.string().max(300),
+    z.string().min(1).max(5970),
+  ]),
+  markInbox: z.tuple([
+    identifier,
+    z.array(z.string().max(300)).max(2000),
+    z.boolean(),
+  ]),
+  inboxCrashLog: z.tuple([identifier, z.string().max(300)]),
+  promotionOptions: z.tuple([identifier, z.string().max(300)]),
+  promoteRelease: z.tuple([
+    identifier,
+    z.string().max(300),
+    z.union([
+      z
+        .object({
+          kind: z.literal("play"),
+          to: z.string().regex(/^[A-Za-z0-9:._ -]{1,100}$/),
+          fraction: z.number().gt(0).lt(1).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("rollout"),
+          change: z.union([
+            z
+              .object({
+                action: z.literal("fraction"),
+                fraction: z.number().gt(0).lt(1),
+              })
+              .strict(),
+            z
+              .object({ action: z.enum(["halt", "resume", "complete"]) })
+              .strict(),
+          ]),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("testflight"),
+          promotion: z
+            .object({
+              groupIds: z.array(z.string().max(100)).max(50),
+              newGroup: z
+                .object({
+                  name: z.string().min(1).max(50),
+                  publicLink: z.boolean(),
+                  publicLinkLimit: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .max(10000)
+                    .optional(),
+                })
+                .strict()
+                .optional(),
+              publicLinks: z
+                .array(
+                  z
+                    .object({
+                      groupId: z.string().max(100),
+                      enabled: z.boolean(),
+                      limit: z.number().int().min(1).max(10000).optional(),
+                    })
+                    .strict(),
+                )
+                .max(50)
+                .optional(),
+              contact: z
+                .object({
+                  contactFirstName: z.string().max(100).optional(),
+                  contactLastName: z.string().max(100).optional(),
+                  contactEmail: z.string().max(200).optional(),
+                  contactPhone: z.string().max(50).optional(),
+                })
+                .strict()
+                .optional(),
+            })
+            .strict(),
+        })
+        .strict(),
+    ]),
   ]),
   readMonetization: z.tuple([identifier]),
   saveMonetization: z.tuple([

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDetailNavigation } from "./useDetailNavigation";
 import { AppReview } from "./AppReview";
+import { Promote } from "./Promote";
 import {
   RefreshCw,
   ExternalLink,
@@ -578,6 +579,14 @@ export function SubmittedReleases({
                 </div>
               ) : null}
             </dl>
+            <Promote
+              key={selected.id}
+              project={project}
+              release={selected}
+              // The panel reloads its own options; a full refresh would close
+              // this release and its result.
+              onDone={() => undefined}
+            />
             {detail?.review && (
               <AppReview
                 review={detail.review}

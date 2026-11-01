@@ -293,19 +293,19 @@ export class GoogleAPI {
       },
     );
   }
-  private accessToken?: { token: string; expires: number };
+  private accessTokens = new Map<string, { token: string; expires: number }>();
   constructor(
     private credential: GoogleCredential,
     private fetcher: typeof fetch = fetch,
     private signal?: AbortSignal,
     private beforeEdit?: () => void,
   ) {}
-  async token() {
-    if (this.accessToken && this.accessToken.expires > Date.now() + 60000)
-      return this.accessToken.token;
+  async token(scope = "https://www.googleapis.com/auth/androidpublisher") {
+    const cached = this.accessTokens.get(scope);
+    if (cached && cached.expires > Date.now() + 60000) return cached.token;
     const account = this.credential.serviceAccount;
     const assertion = await new SignJWT({
-      scope: "https://www.googleapis.com/auth/androidpublisher",
+      scope,
     })
       .setProtectedHeader({ alg: "RS256", typ: "JWT" })
       .setIssuer(account.client_email)
@@ -328,10 +328,10 @@ export class GoogleAPI {
       "GOOGLE_AUTH",
       `Google authentication failed: ${data.error_description ?? data.error ?? response.status}`,
     );
-    this.accessToken = {
+    this.accessTokens.set(scope, {
       token: data.access_token,
       expires: Date.now() + Number(data.expires_in) * 1000,
-    };
+    });
     return data.access_token as string;
   }
   async request(path: string, method = "GET", body?: unknown): Promise<any> {
@@ -354,6 +354,30 @@ export class GoogleAPI {
       response.ok,
       `GOOGLE_${response.status}`,
       `Google Play ${response.status}: ${data.error?.message ?? response.statusText}`,
+    );
+    return data;
+  }
+  /** The Play Developer Reporting API (Android vitals), which takes its own scope. */
+  async reporting(path: string, body?: unknown): Promise<any> {
+    const response = await this.fetcher(
+      `https://playdeveloperreporting.googleapis.com/v1beta1${path}`,
+      {
+        method: body ? "POST" : "GET",
+        headers: {
+          Authorization: `Bearer ${await this.token("https://www.googleapis.com/auth/playdeveloperreporting")}`,
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: this.signal
+          ? AbortSignal.any([this.signal, AbortSignal.timeout(60000)])
+          : AbortSignal.timeout(60000),
+      },
+    );
+    const data: any = await response.json().catch(() => ({}));
+    invariant(
+      response.ok,
+      `GOOGLE_REPORTING_${response.status}`,
+      `Android vitals ${response.status}: ${data.error?.message ?? response.statusText}`,
     );
     return data;
   }

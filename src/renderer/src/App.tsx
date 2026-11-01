@@ -38,6 +38,7 @@ import {
   ExternalLink,
   FileCode2,
   CircleDollarSign,
+  MessageSquare,
   ClipboardCheck,
   FileKey2,
   Folder,
@@ -66,6 +67,7 @@ import {
 } from "lucide-react";
 import { Setup } from "./Setup";
 import { Monetization } from "./Monetization";
+import { Inbox } from "./Inbox";
 import { StoreCompliance } from "./StoreCompliance";
 import type {
   Artifact,
@@ -107,6 +109,7 @@ const pageNames = {
   release: "Release",
   compliance: "App Store",
   monetization: "Monetization",
+  feedback: "Feedback",
 } as const;
 const RetainedValidationWorkflow = memo(ValidationWorkflow);
 type Page = keyof typeof pageNames;
@@ -699,6 +702,7 @@ export function App() {
               release: FileCode2,
               compliance: ClipboardCheck,
               monetization: CircleDollarSign,
+              feedback: MessageSquare,
             }[p];
             return (
               <button
@@ -834,6 +838,14 @@ export function App() {
             ) : (
               <p className="muted">
                 Import a project to answer its App Store questions.
+              </p>
+            ))}
+          {page === "feedback" &&
+            (project ? (
+              <Inbox key={project.id} project={project} />
+            ) : (
+              <p className="muted">
+                Import a project to see its reviews and feedback.
               </p>
             ))}
           {page === "monetization" &&

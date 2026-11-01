@@ -469,7 +469,7 @@ function GoogleSetupControls({
           </strong>
           <p>
             {google.approval === "cloud"
-              ? `${google.createProject ? "Create the Cloud project, enable" : "Enable"} the Publisher and IAM APIs, create or reuse the service account in ${google.cloudProject}, and generate one JSON key for encrypted storage on this Mac.`
+              ? `${google.createProject ? "Create the Cloud project, enable" : "Enable"} the Publisher, Play Developer Reporting and IAM APIs, create or reuse the service account in ${google.cloudProject}, and generate one JSON key for encrypted storage on this Mac.`
               : "Grant the displayed service account read access, testing-release access and store presence (in-app products, prices and promotions) for this app. Play adds policy declarations with store presence. Account-wide, production, financial, and user-management access remain unselected."}
           </p>
           <button

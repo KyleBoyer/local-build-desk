@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import { invariant } from "./errors";
 import type { AppleAPI } from "./stores";
+import { readPhasedRelease, setPhasedRelease } from "./rollout-guard";
 import {
   ageRatingSchema,
   appPrivacySchema,
@@ -51,6 +52,8 @@ export const listingSchema = z
     releaseType: z.enum(["MANUAL", "AFTER_APPROVAL", "SCHEDULED"]).optional(),
     /** ISO date-time for SCHEDULED, such as 2027-03-01T17:00:00Z. */
     earliestReleaseDate: z.string().datetime({ offset: true }).optional(),
+    /** Release the approved version in phases over 7 days (pausable). */
+    phasedRelease: z.boolean().optional(),
     /** iPhone and iPad screenshots, ordered within each display type, relative to this file. */
     screenshots: z.array(z.string()).max(100).optional(),
     review: z
@@ -1063,6 +1066,25 @@ export async function applyListing(
     log(
       `Release: ${releaseType === "AFTER_APPROVAL" ? "automatically after approval" : releaseType === "SCHEDULED" ? `automatically, not before ${earliestReleaseDate}` : "manually"}`,
     );
+  // Phased release is its own resource. It can be set up while the version
+  // is prepared; Apple starts it when the version is released.
+  if (listing.phasedRelease !== undefined && versionId) {
+    const phased = await readPhasedRelease(api, versionId);
+    if (listing.phasedRelease && !phased.id) {
+      await setPhasedRelease(api, versionId, "INACTIVE");
+      log("Phased release: on, over 7 days");
+    } else if (
+      !listing.phasedRelease &&
+      phased.id &&
+      phased.state === "INACTIVE"
+    ) {
+      await api.request(
+        `/appStoreVersionPhasedReleases/${phased.id}`,
+        "DELETE",
+      );
+      log("Phased release: off");
+    }
+  }
   let localizationId = plan.versionLocalizationId;
   if (!localizationId) {
     const existing = (

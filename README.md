@@ -301,6 +301,14 @@ local-build-desk resume --job JOB_ID
 
 Store rules still apply. Apple doesn't allow changing an offer's terms, a purchase's type or turning Family Sharing off after creation, and Play doesn't allow changing a base plan's billing period. The page shows these as warnings instead of trying. A subscription price change applies to new subscribers; current subscribers keep their price.
 
+## Promotion, rollouts and feedback
+
+**Promote without re-uploading.** In **App Store → Submitted releases**, a Play release can move to another track (internal → closed → open → production) by version code. Its release notes come with it, and production can start as a staged rollout to a share of users. A TestFlight build can join external groups: the app submits it for Beta App Review when Apple requires that, fills in the review contact if it's missing, and creates groups and turns public links on or off. Staged Play rollouts can be widened, halted, resumed or released to everyone from the same panel.
+
+**Rollout guard.** Every hour, staged Play rollouts are checked against Android vitals (the Play Developer Reporting API). A rollout halts automatically, with a notification, when its user-perceived crash or ANR rate over the last 24 hours crosses the limit. The defaults are Google's bad-behavior thresholds, 1.09% and 0.47%, and only count once at least 100 users have the release. Limits are per project and can be turned off. Guided setup enables the reporting API; older Cloud projects need it enabled once. The guard links to it when vitals can't be read. Apple has no live crash API, so App Store **phased release** (7 days, pausable) is controlled by hand from the release, or turned on for every version with the App Store page's "Release in phases" option (`phasedRelease` in the listing).
+
+**Feedback.** One inbox for App Store and Google Play reviews and TestFlight feedback and crash reports, kept on this Mac (Play's API only returns the last week of reviews). You can reply to reviews from the inbox (Apple shows replies after its own check; Play limits replies to 350 characters) and open TestFlight crash logs. New 1–2★ reviews, feedback and crashes arrive as notifications from the hourly check.
+
 ## Storage and security
 
 Data lives in `~/Library/Application Support/Local Build Desk`:

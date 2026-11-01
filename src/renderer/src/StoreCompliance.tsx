@@ -496,7 +496,11 @@ function ReleaseOption({
 }: {
   projectId: string;
   listing: string;
-  saved?: { releaseType?: string; earliestReleaseDate?: string };
+  saved?: {
+    releaseType?: string;
+    earliestReleaseDate?: string;
+    phasedRelease?: boolean;
+  };
 }) {
   type Kind = "MANUAL" | "AFTER_APPROVAL" | "SCHEDULED";
   const [kind, setKind] = useState<Kind>(
@@ -511,11 +515,13 @@ function ReleaseOption({
       .slice(0, 16);
   };
   const [date, setDate] = useState(local(saved?.earliestReleaseDate));
+  const [phased, setPhased] = useState(!!saved?.phasedRelease);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [current, setCurrent] = useState(saved);
   const dirty =
     kind !== (current?.releaseType ?? "MANUAL") ||
+    phased !== !!current?.phasedRelease ||
     (kind === "SCHEDULED" && date !== local(current?.earliestReleaseDate));
   return (
     <section className="section-card">
@@ -550,6 +556,15 @@ function ReleaseOption({
           />
         </label>
       )}
+      <label className="check-label">
+        <input
+          type="checkbox"
+          checked={phased}
+          onChange={(e) => setPhased(e.target.checked)}
+        />
+        Release in phases over 7 days (pausable; existing users update
+        gradually)
+      </label>
       <div className="row-actions">
         <button
           className="button"
@@ -562,6 +577,7 @@ function ReleaseOption({
                 listing,
                 kind,
                 kind === "SCHEDULED" ? new Date(date).toISOString() : undefined,
+                phased,
               )
               .then(
                 (value) => {
@@ -581,9 +597,9 @@ function ReleaseOption({
         )}
       </div>
       <p className="muted">
-        Saved in the listing file as releaseType. App Store Connect starts every new
-        version as a manual release; the next listing apply or release sets this
-        choice on the version it prepares. A version Apple already approved
+        Saved in the listing file as releaseType. App Store Connect starts every
+        new version as a manual release; the next listing apply or release sets
+        this choice on the version it prepares. A version Apple already approved
         keeps the option it was submitted with.
       </p>
       {error && (
