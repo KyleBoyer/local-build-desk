@@ -102,6 +102,32 @@ afterEach(async () => {
   store.close();
   await rm(root, { recursive: true, force: true });
 });
+it.each([false, true])(
+  "keeps existing Android project tests alongside billing checks and avoids running the same command twice (%s)",
+  async (same) => {
+    ctx.job.platform = "android";
+    ctx.project.settings.releaseChecks = releaseChecksSchema.parse({
+      runner: "command",
+      command: ["node", "project-tests"],
+      androidBillingCommand: ["node", same ? "project-tests" : "billing-tests"],
+    });
+    await runReleaseChecks(
+      ctx,
+      undefined,
+      profile,
+      join(root, "source"),
+      join(root, "artifacts"),
+      {},
+    );
+    const commands = vi
+      .mocked(run)
+      .mock.calls.filter(([command]) => command === "node");
+    expect(commands.map(([, args]) => args[0])).toEqual(
+      same ? ["project-tests"] : ["project-tests", "billing-tests"],
+    );
+    expect(ctx.job.validation?.state).toBe("passed");
+  },
+);
 it("fails closed when Xcode exits successfully but executes zero tests, then cleans up its simulator", async () => {
   vi.mocked(run).mockImplementation(async (command, args) =>
     args[0] === "xcresulttool"

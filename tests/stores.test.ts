@@ -2,7 +2,8 @@ import { beforeAll, it, expect, vi } from "vitest";
 import { generateKeyPair, exportPKCS8, jwtVerify } from "jose";
 import { AppleAPI, GoogleAPI, appleBuildState } from "../src/core/stores";
 import type { Artifact, Credential } from "../src/core/types";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir, readFile } from "node:fs/promises";
+import { run } from "../src/core/process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -291,6 +292,97 @@ it("does not commit a Google edit when the binary response is ambiguous", async 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  "uploads matching mapping files once, skipping embedded AAB metadata (%s)",
+  async (embedded) => {
+    const root = await mkdtemp(join(tmpdir(), "desk-google-symbols-"));
+    try {
+      const path = join(root, "app.aab"),
+        mapping = join(root, "mapping.txt");
+      await writeFile(mapping, "fixture mapping");
+      if (embedded) {
+        const metadata = join(
+          root,
+          "BUNDLE-METADATA/com.android.tools.build.obfuscation",
+        );
+        await mkdir(metadata, { recursive: true });
+        await writeFile(join(metadata, "proguard.map"), "fixture mapping");
+        await run("zip", ["-q", "-r", path, "BUNDLE-METADATA"], { cwd: root });
+      } else await writeFile(path, "fixture bundle");
+      const checksum = createHash("sha256")
+        .update(await readFile(path))
+        .digest("hex");
+      const sent: string[] = [];
+      const f = async (url: any, options: any = {}) => {
+        const u = String(url);
+        sent.push(u);
+        if (u.includes("oauth2"))
+          return json({ access_token: "test", expires_in: 3600 });
+        if (u.includes("deobfuscationFiles")) {
+          expect(u).toContain("/apks/42/deobfuscationFiles/proguard");
+          expect(
+            Buffer.from(
+              await new Response(options.body).arrayBuffer(),
+            ).toString(),
+          ).toBe("fixture mapping");
+          return json({});
+        }
+        if (u.includes("/bundles?")) {
+          await new Response(options.body).arrayBuffer();
+          return json({ versionCode: 42, sha256: checksum });
+        }
+        if (u.endsWith("/edits")) return json({ id: "edit" });
+        return json({ releases: [] });
+      };
+      const artifact = {
+        path,
+        bundleId: "com.example.app",
+        buildNumber: "42",
+        version: "1.0",
+        sha256: checksum,
+      } as Artifact;
+      const symbols = {
+        kind: "mapping" as const,
+        bundleId: artifact.bundleId,
+        buildNumber: "42",
+        path: mapping,
+        size: 15,
+        sha256: createHash("sha256").update("fixture mapping").digest("hex"),
+      };
+      await new GoogleAPI(google, f as any).upload(
+        artifact,
+        "internal",
+        () => {},
+        undefined,
+        undefined,
+        { symbols: [symbols] },
+      );
+      expect(sent.filter((u) => u.includes("deobfuscationFiles"))).toHaveLength(
+        embedded ? 0 : 1,
+      );
+      expect(sent.some((u) => u.includes(":commit"))).toBe(true);
+      sent.length = 0;
+      await expect(
+        new GoogleAPI(google, f as any).upload(
+          artifact,
+          "internal",
+          () => {},
+          undefined,
+          undefined,
+          { symbols: [{ ...symbols, sha256: "0".repeat(64) }] },
+        ),
+      ).rejects.toThrow(/checksum changed/);
+      expect(
+        sent.some(
+          (u) => u.includes("deobfuscationFiles") || u.includes(":commit"),
+        ),
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 it("reconciles Google draft status without uploading again", async () => {
   const calls: string[] = [];
   const f = async (url: any) => {

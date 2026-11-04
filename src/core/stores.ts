@@ -1,6 +1,7 @@
 import { withLock } from "./locks";
 import { importPKCS8, SignJWT } from "jose";
 import { stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import type { Credential, Submission, Artifact } from "./types";
 import { DeskError, invariant } from "./errors";
@@ -255,6 +256,10 @@ export class AppleAPI {
   }
 }
 export interface GoogleUploadOptions {
+  symbols?: Pick<
+    Artifact,
+    "path" | "sha256" | "size" | "kind" | "buildNumber" | "bundleId"
+  >[];
   /** Commit a completed release instead of a draft. Internal track only. */
   rollout?: boolean;
   /** Whether Local Build Desk uploaded this version code for the same app. */
@@ -690,6 +695,94 @@ export class GoogleAPI {
         "GOOGLE_CHECKSUM",
         "Google returned a different artifact checksum.",
       );
+    const bundledSymbols = options.symbols?.length
+      ? await run("unzip", ["-Z1", artifact.path], {
+          signal,
+          log: undefined,
+          allowFailure: true,
+          timeout: 10000,
+        })
+      : undefined;
+    for (const symbols of options.symbols ?? []) {
+      invariant(
+        symbols.bundleId === artifact.bundleId &&
+          symbols.buildNumber === artifact.buildNumber &&
+          ["mapping", "native-symbols"].includes(symbols.kind),
+        "GOOGLE_SYMBOLS",
+        "Debug symbols must belong to this exact app and build.",
+      );
+      const info = await stat(symbols.path),
+        hash = createHash("sha256");
+      invariant(
+        info.isFile() && info.size === symbols.size,
+        "GOOGLE_SYMBOLS",
+        "The retained debug-symbol file changed. Build again before uploading.",
+      );
+      for await (const chunk of createReadStream(symbols.path))
+        hash.update(chunk);
+      invariant(
+        hash.digest("hex") === symbols.sha256,
+        "GOOGLE_SYMBOLS",
+        "The retained debug-symbol checksum changed. No symbol file was sent.",
+      );
+      const kind = symbols.kind === "mapping" ? "proguard" : "nativeCode";
+      const embedded =
+        bundledSymbols?.code === 0 &&
+        (kind === "proguard"
+          ? bundledSymbols.stdout.includes(
+              "BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map",
+            )
+          : bundledSymbols.stdout.includes(
+              "BUNDLE-METADATA/com.android.tools.build.debugsymbols/",
+            ));
+      if (embedded) {
+        options.log?.(
+          `${kind} debug symbols are embedded in this exact AAB; Google extracts them automatically.`,
+        );
+        continue;
+      }
+      const transfer = uploadStream(
+        symbols.path,
+        info.size,
+        (completedBytes) =>
+          progress?.({
+            kind: "upload",
+            label: `Uploading ${kind === "proguard" ? "Android mapping" : "native debug symbols"}`,
+            completedBytes,
+            totalBytes: info.size,
+          }),
+        signal,
+      );
+      try {
+        const response = await this.fetcher(
+          `https://androidpublisher.googleapis.com/upload/androidpublisher/v3${base}/apks/${artifact.buildNumber}/deobfuscationFiles/${kind}?uploadType=media`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${await this.token()}`,
+              "Content-Type": "application/octet-stream",
+              "Content-Length": String(info.size),
+            },
+            body: transfer.body,
+            duplex: "half",
+            signal: signal
+              ? AbortSignal.any([signal, AbortSignal.timeout(5 * 60 * 1000)])
+              : AbortSignal.timeout(5 * 60 * 1000),
+          } as RequestInit,
+        );
+        const result: any = await response.json().catch(() => ({}));
+        invariant(
+          response.ok,
+          "GOOGLE_SYMBOL_UPLOAD",
+          `Google rejected ${kind} debug symbols: ${result.error?.message ?? response.status}. Reconcile the uploaded bundle before retrying.`,
+        );
+        options.log?.(
+          `Uploaded ${kind} debug symbols for version ${artifact.buildNumber}.`,
+        );
+      } finally {
+        transfer.dispose();
+      }
+    }
     const release = (status: "draft" | "completed") => ({
       name: `${artifact.version} (${artifact.buildNumber})`,
       versionCodes: [artifact.buildNumber],

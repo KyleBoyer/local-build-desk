@@ -165,3 +165,45 @@ it("fills a one-time product promotion the way Play Console's form expects", () 
     ),
   ).toBe(false);
 });
+
+it("appends testers only to one labelled editor and never saves the Console form", () => {
+  const { doc, run } = console_();
+  doc.body.innerHTML = `<label for="emails">Email addresses</label><textarea id="emails">existing@example.com</textarea><input type="password" aria-label="Email addresses" value="untouched"><button id="save">Save</button>`;
+  let saved = false;
+  doc.getElementById("save")!.addEventListener("click", () => {
+    saved = true;
+  });
+  expect(
+    run({
+      step: "fill-testers",
+      emails: ["new@example.com", "existing@example.com"],
+    }).done,
+  ).toBe(true);
+  expect(doc.querySelector("textarea")!.value).toBe(
+    "existing@example.com, new@example.com",
+  );
+  expect(doc.querySelector<HTMLInputElement>("[type=password]")!.value).toBe(
+    "untouched",
+  );
+  expect(saved).toBe(false);
+});
+
+it("refuses ambiguous or disabled tester email editors", () => {
+  const { doc, run } = console_();
+  for (const markup of [
+    `<textarea aria-label="Email addresses"></textarea><input aria-label="Email addresses">`,
+    `<textarea aria-label="Email addresses" disabled></textarea>`,
+    `<textarea aria-label="Email addresses" readonly></textarea>`,
+    `<input type="password" aria-label="Email addresses">`,
+  ]) {
+    doc.body.innerHTML = markup;
+    expect(
+      run({ step: "fill-testers", emails: ["new@example.com"] }).done,
+    ).toBe(false);
+    expect(
+      [...doc.querySelectorAll("input,textarea")].every(
+        (el) => !(el as HTMLInputElement).value,
+      ),
+    ).toBe(true);
+  }
+});

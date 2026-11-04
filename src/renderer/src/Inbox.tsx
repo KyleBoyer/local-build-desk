@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import type { ReadableCrash } from "../../core/crash-symbols";
 import { Bug, MessageSquare, RefreshCw, Star, X } from "lucide-react";
 import type { Project } from "../../core/types";
 import type { InboxItem, InboxView } from "../../core/inbox";
@@ -36,7 +37,37 @@ export function Inbox({ project }: { project: Project }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [replying, setReplying] = useState<string>();
   const [draft, setDraft] = useState("");
-  const [log, setLog] = useState<{ id: string; text: string }>();
+  const [log, setLog] = useState<{
+    id: string;
+    report?: ReadableCrash;
+    loading?: boolean;
+    error?: string;
+  }>();
+  const [rawLog, setRawLog] = useState(false);
+  const crashDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (log && !crashDialog.current?.open) crashDialog.current?.showModal();
+  }, [!!log]);
+  const crashRequest = useRef(0);
+  const activeCrash = useRef<string | undefined>(undefined);
+  const closeLog = () => {
+    crashRequest.current++;
+    if (log) void api.cancelReadableCrash(project.id, log.id).catch(() => {});
+    activeCrash.current = undefined;
+    setLog(undefined);
+    setRawLog(false);
+  };
+  useEffect(
+    () => () => {
+      crashRequest.current++;
+      if (activeCrash.current)
+        void api
+          .cancelReadableCrash(project.id, activeCrash.current)
+          .catch(() => {});
+      activeCrash.current = undefined;
+    },
+    [project.id],
+  );
 
   const load = useCallback(
     (refresh = false) => {
@@ -246,14 +277,24 @@ export function Inbox({ project }: { project: Project }) {
                   className="button"
                   disabled={busy}
                   onClick={() => {
-                    setBusy(true);
-                    void api
-                      .inboxCrashLog(project.id, item.id)
-                      .then(
-                        (text: string) => setLog({ id: item.id, text }),
-                        (e: Error) => setError(e.message),
-                      )
-                      .finally(() => setBusy(false));
+                    if (activeCrash.current)
+                      void api
+                        .cancelReadableCrash(project.id, activeCrash.current)
+                        .catch(() => {});
+                    activeCrash.current = item.id;
+                    const request = ++crashRequest.current;
+                    setLog({ id: item.id, loading: true });
+                    setRawLog(false);
+                    void api.readableCrash(project.id, item.id).then(
+                      (report) => {
+                        if (request === crashRequest.current)
+                          setLog({ id: item.id, report });
+                      },
+                      (e: Error) => {
+                        if (request === crashRequest.current)
+                          setLog({ id: item.id, error: e.message });
+                      },
+                    );
                   }}
                 >
                   Crash log
@@ -322,43 +363,89 @@ export function Inbox({ project }: { project: Project }) {
         </p>
       )}
       {log && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(e) => e.target === e.currentTarget && setLog(undefined)}
+        <dialog
+          ref={crashDialog}
+          className="modal monetization-modal"
+          aria-label="Crash log"
+          onCancel={(e) => {
+            e.preventDefault();
+            closeLog();
+          }}
         >
-          <div
-            className="modal monetization-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Crash log"
-          >
-            <div className="modal-heading">
-              <div>
-                <h2>Crash log</h2>
-                <p>From TestFlight; symbolicate in Xcode for function names.</p>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="Close dialog"
-                onClick={() => setLog(undefined)}
-              >
-                <X size={19} />
-              </button>
+          <div className="modal-heading">
+            <div>
+              <h2>Crash log</h2>
+              <p>
+                {log.loading
+                  ? "Matching retained dSYMs and decoding stack frames…"
+                  : `${log.report?.state ?? "Unavailable"} · ${log.report?.resolved ?? 0} frames decoded locally`}
+              </p>
             </div>
-            <pre className="inbox-log">
-              {log.text ||
-                "TestFlight has no log for this crash: the tester didn't share one. The report still shows the build, device and OS."}
-            </pre>
-            <div className="row-actions">
-              <button
-                className="button"
-                onClick={() => void navigator.clipboard.writeText(log.text)}
-              >
-                Copy
-              </button>
-            </div>
+            <button
+              className="icon-button"
+              aria-label="Close dialog"
+              autoFocus
+              onClick={closeLog}
+            >
+              <X size={19} />
+            </button>
           </div>
-        </div>
+          {log.loading && (
+            <p role="status">
+              Reading the report and checking UUID/architecture matches. This
+              can take a minute. Closing cancels the operation.
+            </p>
+          )}
+          {log.error && <p role="alert">{log.error}</p>}
+          {log.report?.notes.map((n) => (
+            <p className="muted" key={n}>
+              {n}
+            </p>
+          ))}
+          {!!log.report?.missingUuids.length && (
+            <details>
+              <summary>
+                Missing matching symbols ({log.report.missingUuids.length})
+              </summary>
+              <ul>
+                {log.report.missingUuids.map((id) => (
+                  <li key={id} className="mono">
+                    {id}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {log.report && (
+            <>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={rawLog}
+                  onChange={(e) => setRawLog(e.target.checked)}
+                />
+                Show original report
+              </label>
+              <pre className="inbox-log">
+                {(rawLog ? log.report.raw : log.report.text).slice(0, 200000) ||
+                  "TestFlight has no log for this crash: the tester didn't share one. The report still shows the build, device and OS."}
+              </pre>
+            </>
+          )}
+          <div className="row-actions">
+            <button
+              className="button"
+              disabled={!log.report}
+              onClick={() =>
+                void navigator.clipboard.writeText(
+                  rawLog ? log.report!.raw : log.report!.text,
+                )
+              }
+            >
+              Copy
+            </button>
+          </div>
+        </dialog>
       )}
     </>
   );

@@ -1,5 +1,8 @@
 import { monitorConfigSchema } from "../mobile/config";
 import { z } from "zod";
+import { publishActionSchema } from "../core/publishing";
+import { testerActionSchema } from "../core/testers";
+import { purchaseTestingSchema } from "../core/purchase-test-schema";
 const text = z.string().max(4096),
   identifier = z.string().min(1).max(128),
   platform = z.enum(["ios", "android"]);
@@ -60,6 +63,46 @@ const credential = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 export const methods = {
+  reconcileTesterAction: z.tuple([identifier, z.string().uuid()]),
+  acknowledgeStoreAction: z.tuple([
+    identifier,
+    z.string().uuid(),
+    z.literal(true),
+  ]),
+  saveAndroidPurchaseTesting: z.tuple([
+    identifier,
+    z.array(z.string().min(1).max(1000)).min(1).max(100),
+  ]),
+  readPurchaseTesting: z.tuple([identifier]),
+  savePurchaseTesting: z.tuple([
+    identifier,
+    purchaseTestingSchema,
+    z
+      .object({
+        deviceType: z.string().min(1).max(200),
+        runtime: z.string().max(200).optional(),
+      })
+      .strict(),
+  ]),
+  exportPurchaseConfiguration: z.tuple([identifier]),
+  readableCrash: z.tuple([identifier, z.string().min(1).max(300)]),
+  cancelReadableCrash: z.tuple([identifier, z.string().min(1).max(300)]),
+  readTesters: z.tuple([identifier, z.enum(["apple", "google"])]),
+  prepareTesterAction: z.tuple([identifier, testerActionSchema]),
+  openStoreConsole: z.tuple([
+    identifier,
+    z.enum(["publishing", "testers", "license", "prelaunch"]),
+    z.array(z.email().max(254)).max(50).optional(),
+    identifier.optional(),
+    z
+      .string()
+      .regex(/^\d{1,12}$/)
+      .optional(),
+  ]),
+  readPublishing: z.tuple([identifier, text]),
+  preparePublishing: z.tuple([identifier, text, publishActionSchema]),
+  applyStoreAction: z.tuple([identifier, z.string().uuid()]),
+  reconcilePublishing: z.tuple([identifier, z.string().uuid()]),
   readRelease: z.tuple([
     identifier,
     z

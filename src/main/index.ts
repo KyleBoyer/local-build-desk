@@ -922,6 +922,17 @@ function registerIPC() {
           updater.install();
           return { ok: true };
         }
+        if (method === "openStoreConsole") {
+          const target = engine.storeConsoleTarget(
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+          );
+          void openPlayAssist(target, window, () => {}).catch(() => undefined);
+          return { ok: true };
+        }
         if (method === "openPlayMonetization") {
           const [projectId, key] = values as [string, string];
           const target = await engine.playMonetizationTarget(projectId, key);

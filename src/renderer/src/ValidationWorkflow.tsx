@@ -404,7 +404,8 @@ export function ValidationWorkflow({
                   onChange={(e) =>
                     setPolicy({
                       ...policy,
-                      runner: e.target.value as "xcode" | "command",
+                      runner: e.target.value as
+                        "xcode" | "command" | "purchase",
                     })
                   }
                 >
@@ -412,6 +413,7 @@ export function ValidationWorkflow({
                     Xcode tests · XCTest / Swift Testing
                   </option>
                   <option value="command">Project-owned test command</option>
+                  <option value="purchase">Purchase workflows</option>
                 </select>
               </label>
               {policy.runner === "xcode" ? (
@@ -455,7 +457,7 @@ export function ValidationWorkflow({
                     </datalist>
                   </label>
                 </div>
-              ) : (
+              ) : policy.runner === "command" ? (
                 <label>
                   Executable and arguments · JSON array
                   <input
@@ -468,6 +470,12 @@ export function ValidationWorkflow({
                     project's locked test tools.
                   </span>
                 </label>
+              ) : (
+                <p className="muted">
+                  Configure products, app controls and scenarios in Tests →
+                  Purchase tests. The saved purchase policy runs here before
+                  upload.
+                </p>
               )}
               <div className="form-grid">
                 <label>

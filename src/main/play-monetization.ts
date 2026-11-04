@@ -20,6 +20,15 @@ import { playAssist, type PageTask } from "./play-assist";
  */
 export type PlayAssistTarget =
   | {
+      kind: "console";
+      dashboard: string;
+      section: "publishing" | "testers" | "license" | "prelaunch";
+      packageName: string;
+      versionCode?: string;
+      emails: string[];
+      track?: string;
+    }
+  | {
       kind: "promo";
       dashboard: string;
       promo: GooglePromo;
@@ -79,9 +88,11 @@ export async function openPlayAssist(
     width: 1240,
     height: 880,
     title:
-      target.kind === "promo"
-        ? `Create promotion ${target.promo.name} · Local Build Desk`
-        : "Set the paid app price · Local Build Desk",
+      target.kind === "console"
+        ? `Google Play ${target.section} · Local Build Desk`
+        : target.kind === "promo"
+          ? `Create promotion ${target.promo.name} · Local Build Desk`
+          : "Set the paid app price · Local Build Desk",
     backgroundColor: "#101a23",
     ...(parent && !parent.isDestroyed() ? { parent } : {}),
     webPreferences: {
@@ -127,9 +138,125 @@ export async function openPlayAssist(
   const signedIn = await poll(
     async () => (contents.isDestroyed() ? "" : contents.getURL()),
     (url) => new URL(url).hostname === "play.google.com",
-    15000,
+    180000,
   );
   if (!signedIn || new URL(signedIn).hostname !== "play.google.com") return; // Google's sign-in is on screen.
+  if (target.kind === "console") {
+    const appBase =
+      /^(https:\/\/play\.google\.com\/console\/developers\/\d+\/app\/\d+)\//.exec(
+        target.dashboard,
+      )?.[1];
+    if (!appBase || !contents.getURL().startsWith(appBase + "/")) {
+      await banner(
+        `Select ${target.packageName} in this account before making any changes. The app-specific Console address is not verified, so automatic navigation and address filling are paused. Finish this step here; no change is saved automatically.`,
+      );
+      return;
+    }
+    const patterns =
+      target.section === "publishing"
+        ? ["^publishing overview$"]
+        : target.section === "prelaunch"
+          ? ["^pre-launch report$", "^prelaunch report$"]
+          : target.section === "license"
+            ? ["^license testing$"]
+            : target.track && target.track !== "internal"
+              ? ["^closed testing$"]
+              : ["^internal testing$"];
+    let found = await poll(
+      () =>
+        inPage<{ href?: string }>(contents, { step: "find-link", patterns }),
+      (r) => !!r.href,
+      12000,
+    );
+    if (!found?.href && target.section === "license") {
+      await inPage(contents, {
+        step: "open-form",
+        patterns: ["^settings$", "^setup$"],
+      });
+      found = await poll(
+        () =>
+          inPage<{ href?: string }>(contents, { step: "find-link", patterns }),
+        (r) => !!r.href,
+        8000,
+      );
+    }
+    if (
+      found?.href &&
+      target.section !== "license" &&
+      !found.href.startsWith(appBase + "/")
+    ) {
+      await banner(
+        `The Console link points outside the verified ${target.packageName} app. Select this app and finish the step here; no addresses were filled or changes saved.`,
+      );
+      return;
+    }
+    if (found?.href && allowed(found.href))
+      await contents.loadURL(found.href).catch(() => undefined);
+    if (
+      target.section === "testers" &&
+      target.track &&
+      target.track !== "internal"
+    ) {
+      const escaped = target.track.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const trackLink = await inPage<{ href?: string }>(contents, {
+        step: "find-link",
+        patterns: [`^${escaped}$`],
+      });
+      if (
+        trackLink?.href &&
+        allowed(trackLink.href) &&
+        trackLink.href.startsWith(appBase + "/")
+      )
+        await contents.loadURL(trackLink.href);
+      else {
+        await banner(
+          `Select the closed track ${target.track}, then Testers. The guide did not find an unambiguous track link, so no address list is filled or saved.`,
+        );
+        return;
+      }
+    }
+    if (target.section === "testers") {
+      if (!contents.getURL().startsWith(appBase + "/")) return;
+      await poll(
+        () =>
+          inPage<{ done?: boolean }>(contents, {
+            step: "open-form",
+            patterns: ["^testers$"],
+          }),
+        (r) => !!r.done,
+        10000,
+      );
+      if (target.emails.length) {
+        await inPage(contents, {
+          step: "open-form",
+          patterns: ["^create email list$", "^create new email list$"],
+        });
+        await poll(
+          () =>
+            contents.getURL().startsWith(appBase + "/")
+              ? inPage<{ done?: boolean }>(contents, {
+                  step: "fill-testers",
+                  emails: target.emails,
+                })
+              : Promise.resolve(undefined),
+          (r) => !!r.done,
+          10000,
+        );
+      }
+    } else if (target.section === "license" && target.emails.length) {
+      await inPage(contents, { step: "fill-testers", emails: target.emails });
+    }
+    const note =
+      target.section === "publishing"
+        ? "Review the exact pending app changes here, then choose Send for review or Publish changes when you are ready. Track status alone does not prove review approval."
+        : target.section === "prelaunch"
+          ? `Review Google's stability, compatibility, performance and accessibility results for ${target.packageName}${target.versionCode ? `, version code ${target.versionCode}` : ""}. Verify the selected version in Console. Results depend on Google's test-lab capacity; unavailable is not a passed test. This guide does not mark the release as tested automatically.`
+          : target.section === "license"
+            ? `License testing is an account-wide setting. Verify the test accounts${target.emails.length ? ` (${target.emails.length} supplied)` : ""} and review before saving. Testing-track membership alone does not enable free test purchases.`
+            : `Review ${target.track ?? "internal"} → Testers. ${target.emails.length ? "The guide prepares an email list where the editor is available; verify every address, choose the list, and save." : "Manage email lists or Google Groups and copy the opt-in link."} A tester must opt in with the same Google account used on their device.`;
+    await banner(`${found?.href ? "" : "Navigation needs your help. "}${note}`);
+    return;
+  }
   const patterns =
     target.kind === "promo"
       ? ["^promo codes$", "promo code"]

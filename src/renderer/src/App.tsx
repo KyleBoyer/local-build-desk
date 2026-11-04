@@ -62,12 +62,15 @@ import {
   Terminal,
   Trash2,
   Upload,
+  Users,
   X,
   Zap,
 } from "lucide-react";
 import { Setup } from "./Setup";
 import { Monetization } from "./Monetization";
 import { Inbox } from "./Inbox";
+import { Testers } from "./Testers";
+import { PurchaseTesting } from "./PurchaseTesting";
 import { StoreCompliance } from "./StoreCompliance";
 import type {
   Artifact,
@@ -110,6 +113,8 @@ const pageNames = {
   compliance: "App Store",
   monetization: "Monetization",
   feedback: "Feedback",
+  testers: "Testers",
+  purchases: "Purchase tests",
 } as const;
 const RetainedValidationWorkflow = memo(ValidationWorkflow);
 type Page = keyof typeof pageNames;
@@ -688,44 +693,53 @@ export function App() {
           <ChevronDown size={14} />
         </div>
         <nav aria-label="Main navigation">
-          {(Object.keys(pageNames) as Page[]).map((p) => {
-            const Icon = {
-              project: Box,
-              setup: Zap,
-              builds: Layers3,
-              tests: ClipboardCheck,
-              readiness: ShieldCheck,
-              signing: ShieldCheck,
-              connections: Link2,
-              toolchain: CircuitBoard,
-              preferences: Settings2,
-              release: FileCode2,
-              compliance: ClipboardCheck,
-              monetization: CircleDollarSign,
-              feedback: MessageSquare,
-            }[p];
-            return (
-              <button
-                key={p}
-                className={page === p ? "active" : ""}
-                onClick={() => {
-                  if (p === "tests") setVisitedTests(true);
-                  if (p === "builds") {
-                    showBuildHistory();
-                    return;
+          {(Object.keys(pageNames) as Page[])
+            .filter((p) => !["testers", "purchases"].includes(p))
+            .map((p) => {
+              const Icon = {
+                project: Box,
+                setup: Zap,
+                builds: Layers3,
+                tests: ClipboardCheck,
+                readiness: ShieldCheck,
+                signing: ShieldCheck,
+                connections: Link2,
+                toolchain: CircuitBoard,
+                preferences: Settings2,
+                release: FileCode2,
+                compliance: ClipboardCheck,
+                monetization: CircleDollarSign,
+                feedback: MessageSquare,
+                testers: Users,
+                purchases: CircleDollarSign,
+              }[p];
+              return (
+                <button
+                  key={p}
+                  className={
+                    page === p ||
+                    (p === "tests" && ["testers", "purchases"].includes(page))
+                      ? "active"
+                      : ""
                   }
-                  setPage(p);
-                }}
-              >
-                <Icon size={18} />
-                <span>{pageNames[p]}</span>
-                {p === "builds" && running.length > 0 && (
-                  <b>{running.length}</b>
-                )}
-                {page === p && <span className="nav-dot" />}
-              </button>
-            );
-          })}
+                  onClick={() => {
+                    if (p === "tests") setVisitedTests(true);
+                    if (p === "builds") {
+                      showBuildHistory();
+                      return;
+                    }
+                    setPage(p);
+                  }}
+                >
+                  <Icon size={18} />
+                  <span>{pageNames[p]}</span>
+                  {p === "builds" && running.length > 0 && (
+                    <b>{running.length}</b>
+                  )}
+                  {page === p && <span className="nav-dot" />}
+                </button>
+              );
+            })}
         </nav>
         <div className="sidebar-bottom">
           <div className="machine">
@@ -804,6 +818,26 @@ export function App() {
           </div>
         </header>
         <div className="content">
+          {["tests", "testers", "purchases"].includes(page) && (
+            <nav
+              className="store-channel-tabs testing-workflows"
+              aria-label="Testing workflows"
+            >
+              {(["tests", "testers", "purchases"] as const).map((p) => (
+                <button
+                  key={p}
+                  className={page === p ? "selected" : ""}
+                  aria-pressed={page === p}
+                  onClick={() => {
+                    if (p === "tests") setVisitedTests(true);
+                    setPage(p);
+                  }}
+                >
+                  {p === "tests" ? "Runs & screenshots" : pageNames[p]}
+                </button>
+              ))}
+            </nav>
+          )}
           {(page === "tests" || visitedTests) && (
             <div hidden={page !== "tests"}>
               {project ? (
@@ -840,6 +874,22 @@ export function App() {
               <p className="muted">
                 Import a project to answer its App Store questions.
               </p>
+            ))}
+          {page === "testers" &&
+            (project ? (
+              <Testers key={project.id} project={project} />
+            ) : (
+              <p className="muted">Import a project to manage its testers.</p>
+            ))}
+          {page === "purchases" &&
+            (project ? (
+              <PurchaseTesting
+                key={project.id}
+                project={project}
+                onJob={openCheckedJob}
+              />
+            ) : (
+              <p className="muted">Import a project to test purchases.</p>
             ))}
           {page === "feedback" &&
             (project ? (

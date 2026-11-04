@@ -23,6 +23,8 @@ export interface InboxItem {
   language?: string;
   createdAt: string;
   appVersion?: string;
+  buildNumber?: string;
+  buildId?: string;
   device?: string;
   os?: string;
   screenshots?: number;
@@ -139,6 +141,10 @@ export async function readTestFlightFeedback(
       appVersion: version(included, f)
         ? `build ${version(included, f)}`
         : undefined,
+      buildNumber: version(included, f)
+        ? String(version(included, f))
+        : undefined,
+      buildId: f.relationships?.build?.data?.id,
       device: f.attributes.deviceModel ?? undefined,
       os: f.attributes.osVersion ?? undefined,
       language: f.attributes.locale ?? undefined,

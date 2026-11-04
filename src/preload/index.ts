@@ -1,6 +1,21 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { DesktopAPI, DeskEvent } from "../core/types";
 const names = [
+  "reconcileTesterAction",
+  "acknowledgeStoreAction",
+  "saveAndroidPurchaseTesting",
+  "readPurchaseTesting",
+  "savePurchaseTesting",
+  "exportPurchaseConfiguration",
+  "readableCrash",
+  "cancelReadableCrash",
+  "readTesters",
+  "prepareTesterAction",
+  "openStoreConsole",
+  "readPublishing",
+  "preparePublishing",
+  "applyStoreAction",
+  "reconcilePublishing",
   "exportBuildSettings",
   "importBuildSettings",
   "readRelease",

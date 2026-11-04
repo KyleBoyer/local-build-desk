@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { purchaseTestingSchema } from "./purchase-test-schema";
 const text = z.string().min(1).max(4096);
 export const simulatorDestinationSchema = z
   .object({
@@ -199,7 +200,13 @@ export const releaseChecksSchema = z
   .object({
     enabled: z.boolean().default(true),
     required: z.boolean().default(true),
-    runner: z.enum(["xcode", "command"]).default("xcode"),
+    runner: z.enum(["xcode", "command", "purchase"]).default("xcode"),
+    purchaseTesting: purchaseTestingSchema.optional(),
+    androidBillingCommand: z
+      .array(z.string().min(1).max(1000))
+      .min(1)
+      .max(100)
+      .optional(),
     scheme: z.string().min(1).max(200).optional(),
     testPlan: z.string().min(1).max(200).optional(),
     configuration: z.string().min(1).max(100).optional(),
@@ -234,7 +241,16 @@ export const releaseChecksSchema = z
         message: "Use either an inline capture plan or a plan file.",
         path: ["screenshotPlanFile"],
       });
-    if (c.runner === "xcode" && !c.destinations.length)
+    if (c.runner === "purchase" && !c.purchaseTesting)
+      ctx.addIssue({
+        code: "custom",
+        message: "Configure a purchase test product and app UI assertions.",
+        path: ["purchaseTesting"],
+      });
+    if (
+      (c.runner === "xcode" || c.runner === "purchase" || c.purchaseTesting) &&
+      !c.destinations.length
+    )
       ctx.addIssue({
         code: "custom",
         message: "Choose at least one simulator device and runtime.",

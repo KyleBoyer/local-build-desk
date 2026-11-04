@@ -24,6 +24,9 @@ import type {
   ValidationResult,
 } from "./types";
 import { containerArguments } from "./xcode-project";
+import { addPurchaseRunner, runPurchaseRunner } from "./purchase-tests";
+import { loadMonetization } from "./monetization";
+import { MONETIZATION_FILE } from "./monetization";
 import {
   releaseChecksSchema,
   screenshotPlanSchema,
@@ -591,9 +594,21 @@ export async function runReleaseChecks(
   );
   const policy = releaseChecksSchema.parse(raw);
   const mode = ctx.job.checksMode ?? "all";
+  const androidBilling =
+    ctx.job.platform === "android"
+      ? (policy.androidBillingCommand ?? policy.purchaseTesting?.androidCommand)
+      : undefined;
+  invariant(
+    ctx.job.platform !== "android" ||
+      policy.runner !== "purchase" ||
+      !!androidBilling?.length,
+    "ANDROID_PURCHASE_TESTS",
+    "Configure a project-owned Android billing test command in Purchase tests before building Android with a required purchase policy. iOS StoreKit tests cannot approve an Android build.",
+  );
   invariant(
     ctx.job.platform === "ios" ||
       policy.runner === "command" ||
+      !!androidBilling?.length ||
       policy.screenshots ||
       policy.screenshotPlanFile,
     "TEST_PLATFORM",
@@ -635,10 +650,20 @@ export async function runReleaseChecks(
     // Read inside the try so a broken plan file is recorded as a failed run.
     const capturePlan =
       mode === "tests" ? undefined : await screenshotPlanFor(policy, source);
-    if (mode !== "screenshots" && policy.runner === "command") {
+    const commands = [
+      ...new Map(
+        [
+          ...(mode !== "screenshots" && policy.runner === "command"
+            ? [policy.command!]
+            : []),
+          ...(mode !== "screenshots" && androidBilling ? [androidBilling] : []),
+        ].map((command) => [JSON.stringify(command), command]),
+      ).values(),
+    ];
+    for (const executableAndArgs of commands) {
       ctx.stage("testing");
       ctx.log("Running the project's test command in the isolated snapshot…");
-      const [executable, ...args] = policy.command!;
+      const [executable, ...args] = executableAndArgs;
       const command = executable!.includes("/")
         ? resolve(options.cwd ?? source, executable!)
         : executable!;
@@ -662,7 +687,7 @@ export async function runReleaseChecks(
     }
     if (
       ctx.job.platform === "ios" &&
-      (policy.runner === "xcode" || capturePlan)
+      (policy.runner === "xcode" || policy.purchaseTesting || capturePlan)
     ) {
       invariant(
         target,
@@ -811,14 +836,24 @@ export async function runReleaseChecks(
                 );
               if (plan && !plan.captures.length)
                 ctx.log(`No captures are assigned to ${device.name}.`);
-              if (plan?.captures.length) {
+              const purchase =
+                mode !== "screenshots" ? policy.purchaseTesting : undefined;
+              if (plan?.captures.length || purchase) {
                 ctx.stage("screenshots");
                 ctx.log(
-                  `Capturing ${plan.captures.length} screens on ${device.name}…`,
+                  purchase
+                    ? `Testing purchase entitlement handling on ${device.name}…`
+                    : `Capturing ${plan!.captures.length} screens on ${device.name}…`,
                 );
                 await run(
                   "xcrun",
-                  ["simctl", "ui", deviceId, "appearance", plan.appearance],
+                  [
+                    "simctl",
+                    "ui",
+                    deviceId,
+                    "appearance",
+                    plan?.appearance ?? "light",
+                  ],
                   options,
                 );
                 await run(
@@ -905,29 +940,62 @@ export async function runReleaseChecks(
                   options,
                 );
                 const harness = join(folder, "capture-runner");
-                await createScreenshotRunner(harness, ctx.job.bundleId!, plan);
-                const bundle = join(folder, "screenshots.xcresult");
-                const captured = await run(
-                  "xcodebuild",
-                  [
-                    "-project",
-                    join(harness, "DeskScreenshots.xcodeproj"),
-                    "-scheme",
-                    "DeskScreenshots",
-                    "-destination",
-                    `id=${deviceId}`,
-                    "-derivedDataPath",
-                    join(root, "CaptureDerivedData"),
-                    "-resultBundlePath",
-                    bundle,
-                    "-parallel-testing-enabled",
-                    "NO",
-                    "CODE_SIGNING_ALLOWED=NO",
-                    "ONLY_ACTIVE_ARCH=YES",
-                    "test",
-                  ],
-                  processOptions,
+                await createScreenshotRunner(
+                  harness,
+                  ctx.job.bundleId!,
+                  plan ?? {
+                    appearance: "light",
+                    language: "en",
+                    locale: "en_US",
+                    captures: [],
+                  },
                 );
+                if (purchase)
+                  await addPurchaseRunner(
+                    harness,
+                    await loadMonetization(
+                      resolve(
+                        source,
+                        ctx.project.settings.monetizationFile ??
+                          MONETIZATION_FILE,
+                      ),
+                    ),
+                    purchase,
+                  );
+                const bundle = join(folder, "screenshots.xcresult");
+                const captured = purchase
+                  ? await runPurchaseRunner(
+                      {
+                        root: harness,
+                        appPath: app,
+                        bundleId: ctx.job.bundleId!,
+                        deviceId,
+                        derived: join(root, "CaptureDerivedData"),
+                        resultBundle: bundle,
+                      },
+                      processOptions,
+                    )
+                  : await run(
+                      "xcodebuild",
+                      [
+                        "-project",
+                        join(harness, "DeskScreenshots.xcodeproj"),
+                        "-scheme",
+                        "DeskScreenshots",
+                        "-destination",
+                        `id=${deviceId}`,
+                        "-derivedDataPath",
+                        join(root, "CaptureDerivedData"),
+                        "-resultBundlePath",
+                        bundle,
+                        "-parallel-testing-enabled",
+                        "NO",
+                        "CODE_SIGNING_ALLOWED=NO",
+                        "ONLY_ACTIVE_ARCH=YES",
+                        "test",
+                      ],
+                      processOptions,
+                    );
                 const attachments = join(folder, "attachments");
                 await run(
                   "xcrun",
@@ -942,27 +1010,38 @@ export async function runReleaseChecks(
                   ],
                   { ...options, allowFailure: true },
                 );
+                const purchaseSummary = purchase
+                  ? await resultSummary(bundle, options).catch(() => undefined)
+                  : undefined;
+                const passed =
+                  captured.code === 0 &&
+                  (!purchase ||
+                    (!!purchaseSummary &&
+                      purchaseSummary.passed >= 2 &&
+                      purchaseSummary.failed === 0));
                 result.runs.push({
                   device: device.name,
                   runtime: runtime.version,
                   resultBundle: bundle,
                   attachments,
-                  status: captured.code === 0 ? "passed" : "failed",
+                  status: passed ? "passed" : "failed",
+                  ...purchaseSummary,
                 });
                 await writeManifest();
                 invariant(
-                  captured.code === 0,
-                  "SCREENSHOT_FAILURE",
-                  `The capture plan failed on ${device.name}. Failure screenshots and test results are retained; no store upload will proceed when checks are required.`,
+                  passed,
+                  purchase ? "PURCHASE_FAILURE" : "SCREENSHOT_FAILURE",
+                  `${purchase ? "Purchase assertions failed or did not execute" : "The capture plan failed"} on ${device.name}. Failure screenshots and test results are retained; no store upload will proceed when checks are required.`,
                 );
-                result.screenshots.push(
-                  ...(await exportedScreenshots(
-                    attachments,
-                    plan.captures.map((c) => c.name),
-                    device.name,
-                    runtime.version,
-                  )),
-                );
+                if (plan?.captures.length)
+                  result.screenshots.push(
+                    ...(await exportedScreenshots(
+                      attachments,
+                      plan.captures.map((c) => c.name),
+                      device.name,
+                      runtime.version,
+                    )),
+                  );
                 await writeManifest();
               }
             } finally {

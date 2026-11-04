@@ -2883,6 +2883,73 @@ footer span:first-child {
   resize: vertical;
   line-height: 1.6;
 }
+.tester-editor label,
+.publishing-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+  font-size: 12px;
+}
+.tester-editor input:not([type="checkbox"]),
+.tester-editor textarea,
+.tester-editor select,
+.publishing-controls input,
+.publishing-controls select {
+  color-scheme: dark;
+  color: var(--text, #dce3e9);
+  background: #0d1318;
+  border: 1px solid #303b44;
+  border-radius: 5px;
+  padding: 10px 12px;
+  width: 100%;
+  font: inherit;
+}
+.tester-editor textarea {
+  resize: vertical;
+  line-height: 1.6;
+  min-height: 90px;
+}
+.tester-editor .row-actions,
+.publishing-controls .row-actions {
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+.tester-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+.tester-group {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.purchase-scenarios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 22px;
+  margin: 12px 0;
+}
+.store-action-dialog {
+  max-width: min(680px, 90vw);
+  color: var(--text, #dce3e9);
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.store-action-dialog::backdrop {
+  background: #05090de0;
+}
+.store-action-dialog li {
+  margin: 10px 0;
+  line-height: 1.65;
+}
+.testing-workflows {
+  margin-bottom: 28px;
+}
+.testing-workflows button.selected {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
 .release-preview {
   border-top: 1px solid #37424b;
   margin-top: 28px;
@@ -3794,6 +3861,7 @@ footer span:first-child {
 }
 .monetization-modal {
   width: 720px;
+  color: #dbe2e8;
 }
 .monetization-locales {
   display: flex;
@@ -3990,3 +4058,5 @@ footer span:first-child {
   font-size: 12px;
   line-height: 1.6;
 }
+
+.monetization-modal::backdrop { background: #05090de0; }

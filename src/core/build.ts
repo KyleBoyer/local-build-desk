@@ -27,7 +27,7 @@ import {
   stat,
   symlink,
 } from "node:fs/promises";
-import { join, basename, resolve, dirname, relative } from "node:path";
+import { join, basename, resolve, dirname, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -1105,6 +1105,7 @@ export async function buildAndroid(
     if (ctx.job.kind === "test") return;
     ctx.stage("compile");
     await admitHeavyStep(3, "The Gradle build", ctx);
+    const compileStartedAt = Date.now();
     await run(
       join(android, "gradlew"),
       [
@@ -1264,5 +1265,42 @@ export async function buildAndroid(
       );
     }
     await artifact(ctx, target, extension === ".apk" ? "apk" : "aab");
+    // Retain only symbols for the exact output variant, never a neighbouring
+    // cached build's mapping. Gradle's bundle folder names its resolved variant.
+    const moduleOutputs = join(
+      android,
+      (ctx.project.settings.androidModule ?? "app")
+        .replace(/^:/, "")
+        .replaceAll(":", "/"),
+      "build/outputs",
+    );
+    const variant = relative(moduleOutputs, candidates[0]).split(sep)[1];
+    if (variant && /^[A-Za-z0-9_-]+$/.test(variant)) {
+      for (const [source, name, kind] of [
+        [
+          join(moduleOutputs, "mapping", variant, "mapping.txt"),
+          `mapping-${variant}.txt`,
+          "mapping",
+        ],
+        [
+          join(
+            moduleOutputs,
+            "native-debug-symbols",
+            variant,
+            "native-debug-symbols.zip",
+          ),
+          `native-debug-symbols-${variant}.zip`,
+          "native-symbols",
+        ],
+      ] as const)
+        if (
+          (await hasFile(source)) &&
+          (await stat(source)).mtimeMs >= compileStartedAt - 2000
+        ) {
+          const saved = join(output, name);
+          await cp(source, saved);
+          await artifact(ctx, saved, kind);
+        }
+    }
   });
 }

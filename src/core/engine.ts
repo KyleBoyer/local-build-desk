@@ -1,4 +1,28 @@
 import { StoreReadCache } from "./store-read-cache";
+import { StoreActions, actionHash } from "./store-actions";
+import { symbolicateCrash } from "./crash-symbols";
+import { purchasePlan, storeKitConfiguration } from "./purchase-tests";
+import {
+  purchaseTestingSchema,
+  type PurchaseTesting,
+} from "./purchase-test-schema";
+import { releaseChecksSchema } from "./release-check-schema";
+import {
+  appleTesters,
+  playTesters,
+  planAppleTesters,
+  planPlayTesters,
+  testerActionSchema,
+  appleTesterSatisfied,
+  type TesterAction,
+} from "./testers";
+import {
+  planPublishing,
+  publishingState,
+  publishBuilds,
+  publishingSatisfied,
+  type PublishAction,
+} from "./publishing";
 import { readAppReview } from "./app-review";
 import type { AppleWebSession } from "./app-store-compliance";
 import { readLogPage } from "./log-reader";
@@ -267,6 +291,7 @@ export class Engine extends EventEmitter {
   >();
   isBusy() {
     return (
+      this.storeActions.busy ||
       !!this.controllers.size ||
       !!this.toolchainOperations.size ||
       !!this.toolInstalls.size ||
@@ -1829,6 +1854,52 @@ export class Engine extends EventEmitter {
     );
     return crashLog(await this.appleApi(project), item);
   }
+  private crashReads = new Map<string, AbortController>();
+  cancelReadableCrash(projectId: string, itemId: string) {
+    this.crashReads.get(`${projectId}:${itemId}`)?.abort();
+  }
+  async readableCrash(projectId: string, itemId: string) {
+    const key = `${projectId}:${itemId}`;
+    this.crashReads.get(key)?.abort();
+    const controller = new AbortController();
+    this.crashReads.set(key, controller);
+    try {
+      const { item, project } = await this.inboxItem(projectId, itemId);
+      invariant(
+        item.kind === "crash" && item.store === "apple",
+        "CRASH_SOURCE",
+        "Choose a TestFlight crash report.",
+      );
+      const raw = await crashLog(
+        await this.appleApi(project, controller.signal),
+        item,
+      );
+      const number =
+        item.buildNumber ?? /^build (.+)$/.exec(item.appVersion ?? "")?.[1];
+      const jobs = new Set(
+        this.store
+          .list<Job>("jobs")
+          .filter(
+            (j) =>
+              j.projectId === projectId &&
+              j.platform === "ios" &&
+              !!number &&
+              j.buildNumber === number,
+          )
+          .map((j) => j.id),
+      );
+      const roots = this.store
+        .list<Artifact>("artifacts")
+        .filter((a) => a.kind === "dsym" && jobs.has(a.jobId))
+        .map((a) => a.path);
+      return await symbolicateCrash(raw, roots, {
+        developerDirectory: toolEnvironment(project.settings).DEVELOPER_DIR,
+        signal: controller.signal,
+      });
+    } finally {
+      if (this.crashReads.get(key) === controller) this.crashReads.delete(key);
+    }
+  }
   private guardOf(project: Project) {
     return project.settings.rolloutGuard ?? DEFAULT_GUARD;
   }
@@ -2053,6 +2124,297 @@ export class Engine extends EventEmitter {
       "This release is no longer in the store snapshot. Refresh the submitted releases list.",
     );
     return { project: this.store.get<Project>("projects", projectId), release };
+  }
+  private storeActions: StoreActions;
+  async readPurchaseTesting(projectId: string) {
+    const project = this.store.get<Project>("projects", projectId),
+      catalog = await loadMonetization(monetizationFile(project).path);
+    return {
+      config: project.settings.releaseChecks?.purchaseTesting,
+      policy: project.settings.releaseChecks,
+      products: [
+        ...catalog.apple.inAppPurchases.map((p) => ({
+          id: p.productId,
+          name: p.referenceName,
+          subscription: false,
+        })),
+        ...catalog.apple.subscriptionGroups.flatMap((g) =>
+          g.subscriptions.map((p) => ({
+            id: p.productId,
+            name: p.referenceName,
+            subscription: true,
+          })),
+        ),
+      ],
+      googleProducts: [
+        ...catalog.google.products.map((p) => p.productId),
+        ...catalog.google.subscriptions.map((p) => p.productId),
+      ],
+    };
+  }
+  async savePurchaseTesting(
+    projectId: string,
+    config: PurchaseTesting,
+    destination: { deviceType: string; runtime?: string },
+  ) {
+    const project = this.store.get<Project>("projects", projectId),
+      parsed = purchaseTestingSchema.parse(config);
+    purchasePlan(
+      await loadMonetization(monetizationFile(project).path),
+      parsed,
+    );
+    const previous = project.settings.releaseChecks;
+    const policy = releaseChecksSchema.parse({
+      ...previous,
+      runner: previous?.enabled ? previous.runner : "purchase",
+      enabled: true,
+      required: true,
+      purchaseTesting: parsed,
+      destinations: previous?.destinations.length
+        ? previous.destinations
+        : [destination],
+    });
+    this.saveSettings(projectId, {
+      ...project.settings,
+      releaseChecks: policy,
+    });
+  }
+  async exportPurchaseConfiguration(projectId: string) {
+    const project = this.store.get<Project>("projects", projectId),
+      catalog = await loadMonetization(monetizationFile(project).path),
+      folder = join(this.store.root, "purchase-tests", projectId);
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    const path = join(folder, "LocalBuildDesk.storekit");
+    await writeFile(
+      path,
+      JSON.stringify(storeKitConfiguration(catalog), null, 2),
+      { mode: 0o600 },
+    );
+    return path;
+  }
+  saveAndroidPurchaseTesting(projectId: string, command: string[]) {
+    const p = this.store.get<Project>("projects", projectId),
+      previous = p.settings.releaseChecks;
+    const policy = releaseChecksSchema.parse({
+      ...previous,
+      enabled: true,
+      required: true,
+      runner: previous?.enabled ? previous.runner : "command",
+      command: previous?.command ?? command,
+      androidBillingCommand: command,
+    });
+    this.saveSettings(projectId, { ...p.settings, releaseChecks: policy });
+  }
+  private storeActionBinding(projectId: string) {
+    const p = this.store.get<Project>("projects", projectId);
+    return JSON.stringify([
+      p.bundleId,
+      p.packageName,
+      p.settings.appleConnectionId,
+      p.settings.googleConnectionId,
+      this.store
+        .credentialSummaries()
+        .filter((c) =>
+          [
+            p.settings.appleConnectionId,
+            p.settings.googleConnectionId,
+          ].includes(c.id),
+        ),
+    ]);
+  }
+  async readTesters(projectId: string, provider: "apple" | "google") {
+    const project = this.store.get<Project>("projects", projectId);
+    if (provider === "apple") {
+      const api = await this.appleApi(project),
+        app = await api.app(project.bundleId!);
+      return {
+        provider,
+        apple: await appleTesters(api, app.id),
+        operations: this.storeActions.receipts(projectId),
+      };
+    }
+    const { api, locked } = await this.playApi(project);
+    return {
+      provider,
+      google: await locked(() => playTesters(api, project.packageName!)),
+      operations: this.storeActions.receipts(projectId),
+    };
+  }
+  async reconcileTesterAction(projectId: string, receiptId: string) {
+    const receipt = this.storeActions
+        .receipts(projectId)
+        .find((r) => r.id === receiptId),
+      p = this.store.get<Project>("projects", projectId),
+      recovery = receipt?.recovery;
+    invariant(
+      recovery?.kind === "testers",
+      "TESTER_RECEIPT",
+      "Choose a tester operation receipt.",
+    );
+    if (recovery.provider === "apple") {
+      const api = await this.appleApi(p),
+        app = await api.app(p.bundleId!);
+      invariant(
+        app.id === recovery.appId && p.bundleId === recovery.bundleId,
+        "TESTER_APP",
+        "This receipt belongs to a different app.",
+      );
+      return this.storeActions.reconcile(projectId, receiptId, () =>
+        appleTesterSatisfied(api, app.id, recovery),
+      );
+    }
+    invariant(
+      p.packageName === recovery.packageName,
+      "TESTER_APP",
+      "This receipt belongs to a different app.",
+    );
+    const { api, locked } = await this.playApi(p);
+    return this.storeActions.reconcile(projectId, receiptId, async () => {
+      const view = await locked(() => playTesters(api, p.packageName!));
+      const t = view.tracks.find((t) => t.track === recovery.track);
+      return (
+        !!t &&
+        !t.error &&
+        actionHash([...t.googleGroups].map((s) => s.toLowerCase()).sort()) ===
+          recovery.desiredHash
+      );
+    });
+  }
+  acknowledgeStoreAction(projectId: string, receiptId: string, attested: true) {
+    invariant(
+      attested === true,
+      "STORE_ATTEST",
+      "Review the outcome in the store first.",
+    );
+    return this.storeActions.acknowledge(projectId, receiptId);
+  }
+  async prepareTesterAction(projectId: string, input: TesterAction) {
+    const action = testerActionSchema.parse(input);
+    return this.storeActions.prepare(
+      projectId,
+      () => this.storeActionBinding(projectId),
+      async () => {
+        const project = this.store.get<Project>("projects", projectId);
+        if (action.kind === "playGroups") {
+          const { api, locked } = await this.playApi(project);
+          return planPlayTesters(api, project.packageName!, action, locked);
+        }
+        const api = await this.appleApi(project),
+          app = await api.app(project.bundleId!);
+        return planAppleTesters(api, app.id, project.bundleId!, action);
+      },
+    );
+  }
+  storeConsoleTarget(
+    projectId: string,
+    section: "publishing" | "testers" | "license" | "prelaunch",
+    emails: string[] = [],
+    track?: string,
+    versionCode?: string,
+  ) {
+    const p = this.store.get<Project>("projects", projectId);
+    invariant(
+      p.packageName,
+      "PLAY_APP",
+      "Choose a project with an Android package.",
+    );
+    return {
+      kind: "console" as const,
+      dashboard: this.playReleaseConsole(p),
+      packageName: p.packageName,
+      versionCode,
+      section,
+      emails,
+      track,
+    };
+  }
+  async readPublishing(projectId: string, releaseId: string) {
+    const { project, release } = await this.promotionRelease(
+      projectId,
+      releaseId,
+    );
+    invariant(
+      release.channel === "appstore",
+      "PUBLISH_CHANNEL",
+      "Choose an App Store version.",
+    );
+    const api = await this.appleApi(project),
+      app = await api.app(project.bundleId!);
+    const state = await publishingState(api, app.id, release.resourceId);
+    return {
+      ...state,
+      builds: await publishBuilds(api, app.id, state.version),
+      receipts: this.storeActions
+        .receipts(projectId)
+        .filter(
+          (r) => r.scope === `apple-publish:${app.id}:${release.resourceId}`,
+        ),
+    };
+  }
+  async preparePublishing(
+    projectId: string,
+    releaseId: string,
+    action: PublishAction,
+  ) {
+    return this.storeActions.prepare(
+      projectId,
+      () => this.storeActionBinding(projectId),
+      async () => {
+        const { project, release } = await this.promotionRelease(
+          projectId,
+          releaseId,
+        );
+        invariant(
+          release.channel === "appstore",
+          "PUBLISH_CHANNEL",
+          "Choose an App Store version.",
+        );
+        const api = await this.appleApi(project),
+          app = await api.app(project.bundleId!);
+        return planPublishing(
+          api,
+          app.id,
+          project.bundleId!,
+          release.resourceId,
+          action,
+        );
+      },
+    );
+  }
+  async applyStoreAction(projectId: string, token: string) {
+    try {
+      return await this.storeActions.apply(projectId, token);
+    } finally {
+      this.invalidateStoreReads(projectId);
+      this.changed();
+    }
+  }
+  async reconcilePublishing(projectId: string, receiptId: string) {
+    const receipt = this.storeActions
+        .receipts(projectId)
+        .find((r) => r.id === receiptId),
+      p = this.store.get<Project>("projects", projectId);
+    invariant(
+      receipt?.recovery?.kind === "publish" &&
+        receipt.recovery.bundleId === p.bundleId,
+      "PUBLISH_RECEIPT",
+      "This change belongs to a different app identity.",
+    );
+    const api = await this.appleApi(p),
+      app = await api.app(p.bundleId!);
+    invariant(
+      receipt.recovery.appId === app.id,
+      "PUBLISH_RECEIPT",
+      "The connected App Store app changed.",
+    );
+    return this.storeActions.reconcile(projectId, receiptId, () =>
+      publishingSatisfied(
+        api,
+        app.id,
+        String(receipt.recovery!.versionId),
+        receipt.recovery!.action,
+      ),
+    );
   }
   private async playApi(project: Project, signal?: AbortSignal) {
     const credential = await this.vault.get(
@@ -2492,6 +2854,26 @@ export class Engine extends EventEmitter {
     public vault: Vault,
   ) {
     super();
+    this.storeActions = new StoreActions(
+      store,
+      (operationId, label, completed, total, startedAt) =>
+        this.emit("event", {
+          type: "operation-progress",
+          operationId,
+          progress: {
+            kind: "work",
+            label,
+            startedAt,
+            updatedAt: now(),
+            percent:
+              total > 1 ? Math.floor((completed / total) * 100) : undefined,
+            detail:
+              total > 1
+                ? `${completed} of ${total} testers processed`
+                : "Waiting for store confirmation…",
+          },
+        } satisfies DeskEvent),
+    );
   }
   /** App Store Connect's web session (desktop app only), for App Review messages. */
   private appleWeb?: AppleWebSession;
@@ -3401,6 +3783,15 @@ export class Engine extends EventEmitter {
             {
               rollout,
               log,
+              symbols: this.store
+                .list<Artifact>("artifacts")
+                .filter(
+                  (a) =>
+                    a.jobId === artifact.jobId &&
+                    a.bundleId === artifact.bundleId &&
+                    a.buildNumber === artifact.buildNumber &&
+                    ["mapping", "native-symbols"].includes(a.kind),
+                ),
               releaseNotes: project.settings.playReleaseNotes?.trim()
                 ? [
                     {
@@ -4388,6 +4779,10 @@ export class Engine extends EventEmitter {
     });
   }
   async shutdown() {
+    this.closing = true;
+    for (const controller of this.crashReads.values()) controller.abort();
+    await this.storeActions.wait();
+    this.storeActions.clear();
     this.closing = true;
     for (const controller of this.logReads.values()) controller.abort();
     if (this.pollTimer) clearInterval(this.pollTimer);

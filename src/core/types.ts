@@ -194,7 +194,15 @@ export interface Artifact {
   id: string;
   jobId: string;
   platform: Platform;
-  kind: "ipa" | "aab" | "apk" | "app" | "archive" | "dsym";
+  kind:
+    | "ipa"
+    | "aab"
+    | "apk"
+    | "app"
+    | "archive"
+    | "dsym"
+    | "mapping"
+    | "native-symbols";
   path: string;
   sha256: string;
   size: number;
@@ -478,6 +486,78 @@ export interface DeskEvent {
   update?: UpdateStatus;
 }
 export interface DesktopAPI {
+  saveAndroidPurchaseTesting(
+    projectId: string,
+    command: string[],
+  ): Promise<void>;
+  readPurchaseTesting(projectId: string): Promise<{
+    config?: import("./purchase-test-schema").PurchaseTesting;
+    policy?: import("./release-check-schema").ReleaseCheckPolicy;
+    products: { id: string; name: string; subscription: boolean }[];
+    googleProducts: string[];
+  }>;
+  savePurchaseTesting(
+    projectId: string,
+    config: import("./purchase-test-schema").PurchaseTesting,
+    destination: { deviceType: string; runtime?: string },
+  ): Promise<void>;
+  exportPurchaseConfiguration(projectId: string): Promise<string>;
+  readableCrash(
+    projectId: string,
+    itemId: string,
+  ): Promise<import("./crash-symbols").ReadableCrash>;
+  cancelReadableCrash(projectId: string, itemId: string): Promise<void>;
+  readTesters(
+    projectId: string,
+    provider: "apple" | "google",
+  ): Promise<{
+    provider: "apple" | "google";
+    apple?: import("./testers").AppleTesterView;
+    google?: import("./testers").PlayTesterView;
+    operations: import("./store-actions").StoreActionReceipt[];
+  }>;
+  reconcileTesterAction(
+    projectId: string,
+    receiptId: string,
+  ): Promise<import("./store-actions").StoreActionReceipt>;
+  acknowledgeStoreAction(
+    projectId: string,
+    receiptId: string,
+    attested: true,
+  ): Promise<import("./store-actions").StoreActionReceipt>;
+  prepareTesterAction(
+    projectId: string,
+    action: import("./testers").TesterAction,
+  ): Promise<import("./store-actions").StoreActionPreview>;
+  openStoreConsole(
+    projectId: string,
+    section: "publishing" | "testers" | "license" | "prelaunch",
+    emails?: string[],
+    track?: string,
+    versionCode?: string,
+  ): Promise<void>;
+  readPublishing(
+    projectId: string,
+    releaseId: string,
+  ): Promise<
+    import("./publishing").PublishingState & {
+      builds: { id: string; number: string; uploadedAt: string }[];
+      receipts: import("./store-actions").StoreActionReceipt[];
+    }
+  >;
+  preparePublishing(
+    projectId: string,
+    releaseId: string,
+    action: import("./publishing").PublishAction,
+  ): Promise<import("./store-actions").StoreActionPreview>;
+  applyStoreAction(
+    projectId: string,
+    token: string,
+  ): Promise<{ message: string; receiptId: string }>;
+  reconcilePublishing(
+    projectId: string,
+    receiptId: string,
+  ): Promise<import("./store-actions").StoreActionReceipt>;
   mobileStatus(): Promise<MonitorStatus>;
   configureMobileMonitor(
     config: MonitorConfig,

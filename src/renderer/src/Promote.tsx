@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Publishing } from "./Publishing";
 import { ArrowUpRight, Pause, Play, RefreshCw } from "lucide-react";
 import type {
   Project,
@@ -69,7 +70,12 @@ export function Promote({
   };
 
   if (release.channel === "appstore")
-    return <AppStorePhased project={project} release={release} />;
+    return (
+      <>
+        <Publishing project={project} releaseId={release.id} />
+        <AppStorePhased project={project} release={release} />
+      </>
+    );
   return (
     <section className="promote-panel">
       <div className="promote-head">
@@ -90,6 +96,43 @@ export function Promote({
       <p className="muted">
         Uses the build already in the store; nothing is uploaded again.
       </p>
+      {release.channel === "play" && (
+        <div className="tester-group">
+          <p className="muted">
+            Google review and managed publishing are separate from track status.
+            Finish those steps in the app-owned Console window. Pre-launch
+            reports may be unavailable; no automatic pass is inferred.
+          </p>
+          <div className="row-actions">
+            <button
+              className="button"
+              onClick={() =>
+                void api
+                  .openStoreConsole(project.id, "publishing")
+                  .catch((e) => setError(e.message))
+              }
+            >
+              Review pending Play changes
+            </button>
+            <button
+              className="button"
+              onClick={() =>
+                void api
+                  .openStoreConsole(
+                    project.id,
+                    "prelaunch",
+                    [],
+                    release.track,
+                    release.buildNumbers[0],
+                  )
+                  .catch((e) => setError(e.message))
+              }
+            >
+              Review Google pre-launch report
+            </button>
+          </div>
+        </div>
+      )}
       {!options && !error && (
         <p className="muted">Reading tracks and groups…</p>
       )}

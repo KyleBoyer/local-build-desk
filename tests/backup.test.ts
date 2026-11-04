@@ -298,8 +298,20 @@ it("round-trips check policies, validation receipts and uncertain release journa
     const av = new Vault(a, encryption("A:")),
       bv = new Vault(b, encryption("B:"));
     const releaseChecks = releaseChecksSchema.parse({
-      runner: "command",
-      command: ["npm", "test"],
+      runner: "purchase",
+      destinations: [
+        {
+          deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+          runtime: "com.apple.CoreSimulator.SimRuntime.iOS-27-2",
+        },
+      ],
+      purchaseTesting: {
+        productId: "com.example.unlock",
+        scenarios: ["purchase"],
+        buyIdentifier: "buy",
+        unlockedIdentifier: "unlocked",
+        lockedIdentifier: "locked",
+      },
     });
     a.putProject({
       id: "project",
@@ -357,6 +369,25 @@ it("round-trips check policies, validation receipts and uncertain release journa
         },
       },
     ]);
+    a.setPreference("store-actions", [
+      {
+        id: "bdfed68a-166f-42da-95cf-cce761c68b9e",
+        projectId: "project",
+        scope: "apple-testers:app",
+        title: "Invite testers",
+        state: "running",
+        updatedAt: "now",
+        fingerprint: "e".repeat(64),
+        completed: 1,
+        total: 2,
+        recovery: {
+          kind: "testers",
+          provider: "apple",
+          appId: "app",
+          emailHashes: ["f".repeat(64)],
+        },
+      },
+    ]);
     const payload = await decryptBackup(
       await encryptBackup(
         await captureBackup(a, av),
@@ -373,6 +404,13 @@ it("round-trips check policies, validation receipts and uncertain release journa
     );
     const project = b.list<Project>("projects")[0]!;
     expect(project.settings.releaseChecks).toEqual(releaseChecks);
+    expect(b.preference<any[]>("store-actions", [])[0]).toMatchObject({
+      projectId: project.id,
+      state: "uncertain",
+      completed: 1,
+      total: 2,
+      recovery: { emailHashes: ["f".repeat(64)] },
+    });
     const restored = b.get<Job>("jobs", "test-job");
     expect(restored).toMatchObject({
       kind: "test",
@@ -389,6 +427,7 @@ it("round-trips check policies, validation receipts and uncertain release journa
     });
     // Backups predating the journal field remain readable and restorable.
     delete payload.releaseJournals;
+    delete payload.storeActions;
     await expect(
       encryptBackup(payload, "legacy receipt backup passphrase"),
     ).resolves.toBeInstanceOf(Buffer);

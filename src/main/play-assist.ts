@@ -5,6 +5,7 @@ import type { GooglePromo } from "../core/monetization";
 // step per call so the desktop side can wait for Play's Angular UI between them.
 
 export type PageTask =
+  | { step: "fill-testers"; emails: string[] }
   | { step: "find-link"; patterns: string[] }
   | { step: "open-form"; patterns: string[] }
   | {
@@ -42,7 +43,9 @@ export function playAssist(task: PageTask): {
   }
   if (task.step === "open-form") {
     const button = Array.from(
-      document.querySelectorAll("button, a[role=button], [role=button]"),
+      document.querySelectorAll(
+        "button, a[role=button], [role=button], [role=tab]",
+      ),
     ).find(
       (b) =>
         matches(text(b), task.patterns) && !(b as HTMLButtonElement).disabled,
@@ -78,7 +81,10 @@ export function playAssist(task: PageTask): {
   // their inputs. Values are set the way Angular notices.
   const filled: string[] = [],
     missing: string[] = [];
-  const setValue = (input: HTMLInputElement, value: string) => {
+  const setValue = (
+    input: HTMLInputElement | HTMLTextAreaElement,
+    value: string,
+  ) => {
     const proto =
       input instanceof HTMLTextAreaElement
         ? HTMLTextAreaElement.prototype
@@ -110,6 +116,52 @@ export function playAssist(task: PageTask): {
       ),
     ) as HTMLInputElement | undefined;
   };
+  if (task.step === "fill-testers") {
+    const patterns = [
+      "^email addresses",
+      "^add email addresses",
+      "^(?:add )?license testers",
+      "^testers.*email",
+    ];
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        "input:not([type=password]):not([type=hidden]), textarea",
+      ),
+    ).filter((input) => {
+      if (!input.getClientRects().length) return false;
+      if (
+        matches(
+          input.getAttribute("aria-label") ??
+            input.getAttribute("placeholder") ??
+            "",
+          patterns,
+        )
+      )
+        return true;
+      if (
+        Array.from(input.labels ?? []).some((label) =>
+          matches(text(label), patterns),
+        )
+      )
+        return true;
+      const row = input.closest("console-form-row, [class*=form-row]");
+      return (
+        !!row &&
+        row.querySelectorAll("input,textarea").length === 1 &&
+        matches(text(row), patterns)
+      );
+    });
+    const input = candidates.length === 1 ? candidates[0] : undefined;
+    if (!input || input.disabled || input.readOnly)
+      return { done: false, missing: ["Email address editor"] };
+    // Never overwrite an existing list silently: append and let the person
+    // inspect the exact addresses before Console's final Save.
+    const kept = input.value.split(/[\s,;]+/).filter(Boolean);
+    setValue(input, [...new Set([...kept, ...task.emails])].join(", "));
+    const name = fieldFor(["^list name$"]);
+    if (name && !name.value) setValue(name, "Local Build Desk");
+    return { done: true, filled: ["Email addresses"] };
+  }
   const set = (name: string, patterns: string[], value: string) => {
     const input = fieldFor(patterns);
     if (!input) return void missing.push(name);

@@ -21,6 +21,7 @@ import {
   checkpointSchema,
 } from "./release-check-schema";
 import { releaseJournalSchema } from "./release-journal";
+import { storeActionReceiptSchema } from "./store-actions";
 import { settingsSchema } from "./settings-schema";
 import { Store, appDirectoryKey } from "./database";
 import { Vault } from "./vault";
@@ -270,7 +271,16 @@ const artifactSchema = z
     id,
     jobId: id,
     platform: z.enum(["ios", "android"]),
-    kind: z.enum(["ipa", "aab", "apk", "app", "archive", "dsym"]),
+    kind: z.enum([
+      "ipa",
+      "aab",
+      "apk",
+      "app",
+      "archive",
+      "dsym",
+      "mapping",
+      "native-symbols",
+    ]),
     path: text.refine(isAbsolute),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     size: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -315,6 +325,7 @@ const payloadSchema = z
     jobs: z.array(jobSchema).max(100000),
     artifacts: z.array(artifactSchema).max(200000),
     releaseJournals: z.array(releaseJournalSchema).max(10000).optional(),
+    storeActions: z.array(storeActionReceiptSchema).max(10000).optional(),
     notificationsEnabled: z.boolean(),
   })
   .strict();
@@ -466,6 +477,7 @@ export async function captureBackup(
     jobs: jobs!,
     artifacts: artifacts!,
     releaseJournals: store.preference("release-journals", []),
+    storeActions: store.preference("store-actions", []),
     notificationsEnabled: store.preference("notificationsEnabled", true),
   });
 }
@@ -627,6 +639,18 @@ export async function restorePayload(
           state: journal.state === "running" ? "interrupted" : journal.state,
         });
     store.setPreference("release-journals", journals);
+    const operations = store.preference<
+      z.infer<typeof storeActionReceiptSchema>[]
+    >("store-actions", []);
+    const operationIds = new Set(operations.map((o) => o.id));
+    for (const o of payload.storeActions ?? [])
+      if (!operationIds.has(o.id))
+        operations.push({
+          ...o,
+          projectId: projectIds.get(o.projectId) ?? o.projectId,
+          state: o.state === "running" ? "uncertain" : o.state,
+        });
+    store.setPreference("store-actions", operations);
     for (const row of prepared) vault.writePrepared(row);
     for (const project of projects) store.putProject(project);
     for (const row of payload.versionClaims)
