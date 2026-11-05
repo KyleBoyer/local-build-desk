@@ -556,6 +556,51 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
       .filter({ hasText: "Build 4" })
       .click();
     await expect(phone.getByAltText("phoneScreenshots 1")).toBeVisible();
+    await app.evaluate(() => {
+      const engine = (globalThis as any).__mobileEngine;
+      const project = engine.store.get("projects", "project");
+      engine.store.putProject({
+        ...project,
+        id: "other-project",
+        name: "Second app",
+        path: project.path + "-other",
+      });
+      engine.emit("event", { type: "state" });
+    });
+    await expect(
+      phone
+        .getByLabel("Store project")
+        .locator("option[value='other-project']"),
+    ).toHaveCount(1);
+    // Switching projects while viewing images must not use an old project's handles with the new ID.
+    const wrongImages: string[] = [],
+      previousImages = await phone
+        .locator(".m-image img")
+        .evaluateAll((images: HTMLImageElement[]) =>
+          images.map((image) => new URL(image.src).pathname),
+        );
+    const watchImage = (req: import("@playwright/test").Request) => {
+      const path = new URL(req.url()).pathname;
+      if (
+        previousImages.some(
+          (previous) =>
+            path ===
+            previous.replace("/projects/project/", "/projects/other-project/"),
+        )
+      )
+        wrongImages.push(path);
+    };
+    phone.on("request", watchImage);
+    await phone.getByLabel("Store project").selectOption("other-project");
+    await expect(phone.locator(".m-store-list>button")).not.toHaveCount(0);
+    await phone
+      .locator(".m-store-list>button")
+      .filter({ hasText: "Build 4" })
+      .click();
+    await expect(phone.getByAltText("phoneScreenshots 1")).toBeVisible();
+    expect(wrongImages).toEqual([]);
+    phone.off("request", watchImage);
+
     const config = await desktop.evaluate(
       async () => (await window.desk.mobileStatus()).config,
     );

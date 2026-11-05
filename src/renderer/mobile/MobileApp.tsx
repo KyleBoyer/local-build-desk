@@ -1572,7 +1572,7 @@ function ImageTile({
         {error ? (
           <span>
             <ImageIcon size={22} />
-            Preview unavailable
+            Preview unavailable. Refresh release details to reload it.
           </span>
         ) : (
           <img
@@ -1744,7 +1744,18 @@ function Releases({
         <select
           aria-label="Store project"
           value={project}
-          onChange={(event) => setProject(event.target.value)}
+          onChange={(event) => {
+            // Clear the selection in the same render as the project change.
+            // A later effect is too late: old image handles must never be requested under the new project.
+            sequence.current++;
+            overviewSequence.current++;
+            setSelected(undefined);
+            setDetail(undefined);
+            setSnapshot(undefined);
+            setError("");
+            setBusy(true);
+            setProject(event.target.value);
+          }}
         >
           {projects.map((p) => (
             <option key={p.id} value={p.id}>
