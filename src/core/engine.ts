@@ -869,6 +869,7 @@ export class Engine extends EventEmitter {
     return JSON.stringify([
       projectId,
       this.storeReleaseIdentity(project),
+      "store-reads-v2",
       kind,
       kind === "metadata"
         ? this.store.preference("store-read-revision:" + projectId, 0)
@@ -942,7 +943,8 @@ export class Engine extends EventEmitter {
     const result = await this.storeReads.read(
       namespace + ":detail:" + JSON.stringify([release, locale ?? ""]),
       {
-        ttl: 15 * 60 * 1000,
+        ttl: (detail: StoreReleaseDetail) =>
+          detail.issues?.length ? 30000 : 15 * 60 * 1000,
         retention: 7 * 86400000,
         force,
         load: async () => {
@@ -1051,7 +1053,10 @@ export class Engine extends EventEmitter {
             connected: google,
             note: google
               ? "Track/rollout state is available through the API. Google review state is not exposed by the Publishing API; check Play Console for review progress."
-              : "Connect a Google Play service account and inspect this app's package identity.",
+              : project.platforms?.length &&
+                  !project.platforms.includes("android")
+                ? "This project currently targets iOS. Google Play is not configured."
+                : "On your Mac, connect a Google Play service account in Guided setup or Connections and inspect this app's package identity.",
           },
         },
       };
@@ -1236,6 +1241,7 @@ export class Engine extends EventEmitter {
         if (review) detail.review = review;
         detail.listings = result.listings;
         detail.groups = result.groups;
+        detail.issues = result.issues;
         detail.notes = result.notes;
         sources.push(...result.images);
         detail.imageLocale =

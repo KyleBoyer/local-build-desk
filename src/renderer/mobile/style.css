@@ -1487,3 +1487,34 @@ button svg {
 .m-control-receipt span {
   color: #9aa6b4;
 }
+
+.m-read-notice {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #7e653a;
+  border-left: 3px solid #e9b669;
+  border-radius: 10px;
+  background: #e9b66908;
+  overflow-wrap: anywhere;
+}
+.m-read-notice strong {
+  color: #f2cc8d;
+  font-size: 14px;
+}
+.m-read-notice p {
+  line-height: 1.6;
+  font-size: 13px;
+  margin: 9px 0;
+}
+.m-read-notice summary {
+  cursor: pointer;
+  color: #a3aeb8;
+  font-size: 12px;
+  padding: 8px 0;
+}
+.m-read-notice pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.5;
+}

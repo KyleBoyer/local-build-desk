@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDetailNavigation } from "./useDetailNavigation";
+import { StoreReadNotice } from "../StoreReadNotice";
 import { AppReview } from "./AppReview";
 import { Promote } from "./Promote";
 import {
@@ -630,6 +631,9 @@ export function SubmittedReleases({
             )}
             {detail && (
               <>
+                {detail.issues?.map((issue, i) => (
+                  <StoreReadNotice key={i} issue={issue} />
+                ))}
                 {detail.notes.map((note, i) => (
                   <p key={i} className="store-detail-note muted">
                     {note}

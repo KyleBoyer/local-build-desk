@@ -39,6 +39,7 @@ import {
   reviewThreadIsRejection,
   reviewThreadTitle,
 } from "../../core/app-review-labels";
+import { StoreReadNotice } from "../StoreReadNotice";
 import { JobControls, ReleaseControls } from "./Controls";
 import { request, safeId } from "./api";
 import { useClock, useMonitor } from "./hooks";
@@ -1683,7 +1684,12 @@ function Releases({
       overviewSequence.current++;
     };
   }, [project]);
-  const show = async (id: string, locale?: string, quiet = false) => {
+  const show = async (
+    id: string,
+    locale?: string,
+    quiet = false,
+    force = false,
+  ) => {
     const token = ++sequence.current;
     setSelected(id);
     if (!quiet) {
@@ -1693,7 +1699,7 @@ function Releases({
     setError("");
     try {
       const result = await request<StoreReleaseDetail>(
-        `projects/${safeId(project)}/releases/${safeId(id)}${locale ? `?locale=${encodeURIComponent(locale)}` : ""}`,
+        `projects/${safeId(project)}/releases/${safeId(id)}?${new URLSearchParams({ ...(locale ? { locale } : {}), ...(force ? { refresh: "1" } : {}) })}`,
       );
       if (token === sequence.current) setDetail(result);
     } catch (error) {
@@ -1767,21 +1773,37 @@ function Releases({
         ))}
       </div>
       {source?.note && <p className="m-store-note">{source.note}</p>}
-      {source?.error && <p className="m-error">{source.error}</p>}
+      {source?.error && (
+        <StoreReadNotice
+          mobile
+          error={source.error}
+          provider={channel === "play" ? "google" : "apple"}
+          area="Store connection"
+        />
+      )}
       {snapshot?.cache?.refreshError && (
-        <p className="m-error" role="alert">
-          Showing saved data. Refresh failed: {snapshot.cache.refreshError}
-        </p>
+        <StoreReadNotice
+          mobile
+          error={snapshot.cache.refreshError}
+          provider={channel === "play" ? "google" : "apple"}
+          area="Saved store data could not refresh"
+        />
       )}
       {detail?.cache?.refreshError && (
-        <p className="m-error" role="alert">
-          Showing saved details. Refresh failed: {detail.cache.refreshError}
-        </p>
+        <StoreReadNotice
+          mobile
+          error={detail.cache.refreshError}
+          provider={channel === "play" ? "google" : "apple"}
+          area="Saved release details could not refresh"
+        />
       )}
       {error && (
-        <p className="m-error" role="alert">
-          {error}
-        </p>
+        <StoreReadNotice
+          mobile
+          error={error}
+          provider={channel === "play" ? "google" : "apple"}
+          area="Release details"
+        />
       )}
       {busy && (
         <p className="m-muted" role="status">
@@ -1858,8 +1880,10 @@ function Releases({
               <h3>App Review</h3>
               {!detail.review.signedIn ? (
                 <p className="m-muted">
-                  Sign in to App Store Connect in Local Build Desk on your Mac
-                  (open this release there) to see App Review's messages here.
+                  Sign in again to App Store Connect in Local Build Desk on your
+                  Mac (open this release there) to see App Review's messages
+                  here. The website sign-in is separate from the API key used
+                  for builds and versions.
                 </p>
               ) : detail.review.error ? (
                 <p className="m-muted">{detail.review.error}</p>
@@ -1921,11 +1945,20 @@ function Releases({
           )}
           {detail && (
             <>
-              <div className="m-store-note">
-                {detail.notes.map((note, i) => (
-                  <p key={i}>{note}</p>
-                ))}
-              </div>
+              {detail.issues?.map((issue, i) => (
+                <StoreReadNotice mobile key={i} issue={issue} />
+              ))}
+              {!!detail.notes.length && (
+                <div
+                  className="m-store-note"
+                  aria-label="About these store records"
+                >
+                  <span className="m-eyebrow">ABOUT THESE RECORDS</span>
+                  {detail.notes.map((note, i) => (
+                    <p key={i}>{note}</p>
+                  ))}
+                </div>
+              )}
               {detail.groups.length > 0 && (
                 <p className="m-muted">Groups: {detail.groups.join(", ")}</p>
               )}
@@ -1977,7 +2010,13 @@ function Releases({
                     )}
                   </section>
                 ))}
-              <Section title="Listing assets & captures" />
+              <Section
+                title={
+                  channel === "testflight"
+                    ? "Local test captures"
+                    : "Listing assets & captures"
+                }
+              />
               <div className="m-image-grid">
                 {detail.images.map((image) => (
                   <ImageTile
@@ -1995,7 +2034,11 @@ function Releases({
                 ))}
               </div>
               {!detail.images.length && (
-                <p className="m-empty">No screenshot previews available.</p>
+                <p className="m-empty">
+                  {channel === "testflight"
+                    ? "No local test captures are available for this build."
+                    : "No screenshot previews available for this version."}
+                </p>
               )}
             </>
           )}
@@ -2045,6 +2088,15 @@ function Releases({
               : ""}{" "}
           Refresh to check for changes.
         </p>
+      )}
+      {snapshot && selected && (
+        <button
+          className="m-button m-wide"
+          disabled={busy}
+          onClick={() => void show(selected, detail?.imageLocale, false, true)}
+        >
+          <RefreshCw size={14} /> Refresh release details
+        </button>
       )}
       {snapshot && !selected && (
         <button

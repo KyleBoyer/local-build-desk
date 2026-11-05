@@ -496,6 +496,58 @@ test("pairs a phone viewport with the real desktop, streams progress/logs and sh
     await expect(
       phone.getByText("Try the new TestFlight action."),
     ).toBeVisible();
+    await expect(
+      phone.getByText("Groups: Internal testers (internal)", { exact: true }),
+    ).toBeVisible();
+    await expect(phone.getByRole("alert")).toHaveCount(0);
+    await expect(
+      phone.getByRole("heading", { name: "Local test captures", exact: true }),
+    ).toBeVisible();
+    await app.evaluate(() => {
+      (globalThis as any).__storeHistoryGroupError =
+        "Apple 401: authentication credentials are invalid";
+    });
+    await phone
+      .getByRole("button", { name: "Refresh release details", exact: true })
+      .click();
+    const notice = phone.getByRole("alert");
+    await expect(notice).toContainText("Testing groups: connection needed");
+    await expect(notice).toContainText("Connections → Apple");
+    await expect(notice).toContainText("API key");
+    await expect(
+      phone.getByText("Try the new TestFlight action."),
+    ).toBeVisible();
+    await expect(
+      notice.getByText("Apple 401: authentication credentials are invalid", {
+        exact: true,
+      }),
+    ).not.toBeVisible();
+    await notice.getByText("Technical details", { exact: true }).click();
+    await expect(notice).toContainText("Apple 401:");
+    await app.evaluate(() => {
+      (globalThis as any).__storeHistoryGroupError =
+        "Apple 403: permission denied";
+    });
+    await phone
+      .getByRole("button", { name: "Refresh release details", exact: true })
+      .click();
+    await expect(notice).toContainText("Testing groups: permission needed");
+    await expect(notice).toContainText("not an expired website sign-in");
+    await app.evaluate(() => {
+      (globalThis as any).__storeHistoryGroupError = undefined;
+    });
+    await phone
+      .getByRole("button", { name: "Refresh release details", exact: true })
+      .click();
+    await expect(phone.getByRole("alert")).toHaveCount(0);
+    await expect(
+      phone.getByText("Groups: Internal testers (internal)"),
+    ).toBeVisible();
+    await phone.screenshot({
+      path: "test-results/mobile-testflight-groups.png",
+      fullPage: true,
+    });
+
     await phone
       .getByRole("button", { name: "Google Play", exact: true })
       .click();

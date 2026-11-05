@@ -155,7 +155,13 @@ AppleAPI.prototype.request = async function (path, method = "GET", body) {
         },
       ],
     };
-  if (path.includes("betaGroups?"))
+  if (/^\/builds\/[^/]+\/betaGroups/.test(path))
+    throw Error(
+      "Apple 403: The relationship betaGroups does not allow GET_RELATED",
+    );
+  if (path.startsWith("/betaGroups?filter[builds]=")) {
+    if (fixture.__storeHistoryGroupError)
+      throw Error(fixture.__storeHistoryGroupError);
     return {
       data: [
         {
@@ -164,6 +170,7 @@ AppleAPI.prototype.request = async function (path, method = "GET", body) {
         },
       ],
     };
+  }
   throw Error("Unexpected Apple fixture endpoint " + path);
 };
 GoogleAPI.prototype.request = async function (path, method = "GET", body) {

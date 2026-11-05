@@ -311,7 +311,16 @@ it("does not invent store screenshots for TestFlight builds", async () => {
   expect(result.images).toEqual([]);
   expect(result.groups).toEqual(["Internal (internal)"]);
   expect(result.listings[0]?.whatsNew).toBe("Try the new action");
-  expect(result.notes.join(" ")).toContain("no store screenshots attached");
+  expect(result.notes.join(" ")).toContain("no store listing screenshots");
+  expect(request).toHaveBeenCalledWith(
+    "/betaGroups?filter[builds]=build&fields[betaGroups]=name,isInternalGroup&limit=200",
+  );
+  expect(
+    request.mock.calls.some(([path]) =>
+      /\/builds\/[^/]+\/betaGroups/.test(path),
+    ),
+  ).toBe(false);
+  expect(result.issues).toEqual([]);
 });
 it("reads Google tracks and current listing images in a disposable edit without writing or committing", async () => {
   const api = new GoogleAPI(google);
@@ -599,4 +608,54 @@ it("binds store images and release selection to the imported project's current c
     store.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("paginates the supported build-filtered beta groups collection and keeps partial data on permission failure", async () => {
+  const paths: string[] = [];
+  const request = vi.fn(async (path: string): Promise<any> => {
+    paths.push(path);
+    if (path.includes("betaBuildLocalizations"))
+      return {
+        data: [{ attributes: { locale: "en-US", whatsNew: "Test folding" } }],
+      };
+    if (path.startsWith("/betaGroups?") && !path.includes("cursor="))
+      return {
+        data: [{ attributes: { name: "Internal", isInternalGroup: true } }],
+        links: {
+          next: "https://api.appstoreconnect.apple.com/v1/betaGroups?filter[builds]=selected&cursor=next",
+        },
+      };
+    if (path.includes("cursor=next"))
+      return {
+        data: [{ attributes: { name: "External", isInternalGroup: false } }],
+      };
+    throw Error("Unsupported request " + path);
+  });
+  const release = {
+    channel: "testflight",
+    resourceId: "selected",
+  } as StoreRelease;
+  const result = await appleReleaseDetail(
+    { request } as unknown as AppleAPI,
+    release,
+  );
+  expect(result.groups).toEqual(["Internal (internal)", "External (external)"]);
+  expect(paths).toHaveLength(3);
+  request.mockImplementation(async (path) => {
+    if (path.includes("betaBuildLocalizations"))
+      return {
+        data: [{ attributes: { locale: "en-US", whatsNew: "Test folding" } }],
+      };
+    throw Error("Apple 403: permission denied");
+  });
+  const partial = await appleReleaseDetail(
+    { request } as unknown as AppleAPI,
+    release,
+  );
+  expect(partial.listings[0].whatsNew).toBe("Test folding");
+  expect(partial.notes.join(" ")).not.toContain("403");
+  expect(partial.issues[0]).toMatchObject({
+    area: "Testing groups",
+    kind: "permission",
+  });
 });

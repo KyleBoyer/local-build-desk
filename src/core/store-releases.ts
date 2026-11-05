@@ -1,8 +1,10 @@
+import { storeReadProblem } from "./store-read-problems";
 import type { AppleAPI } from "./stores";
 import type {
   StoreRelease,
   StoreImageSource,
   StoreListingText,
+  StoreReadProblem,
 } from "./store-release-types";
 import { invariant } from "./errors";
 const related = (row: any, key: string, included: any[]) =>
@@ -146,7 +148,8 @@ export async function appleReleaseDetail(
   const images: StoreImageSource[] = [],
     listings: StoreListingText[] = [],
     groups: string[] = [],
-    notes: string[] = [];
+    notes: string[] = [],
+    issues: StoreReadProblem[] = [];
   if (release.channel === "testflight") {
     const results = await Promise.allSettled([
       appleList(
@@ -155,7 +158,7 @@ export async function appleReleaseDetail(
       ),
       appleList(
         api,
-        `/builds/${encodeURIComponent(release.resourceId)}/betaGroups?limit=200`,
+        `/betaGroups?filter[builds]=${encodeURIComponent(release.resourceId)}&fields[betaGroups]=name,isInternalGroup&limit=200`,
       ),
     ]);
     if (results[0].status === "fulfilled")
@@ -165,10 +168,7 @@ export async function appleReleaseDetail(
           whatsNew: row.attributes.whatsNew,
         });
     else
-      notes.push(
-        "What to Test could not be read: " +
-          String(results[0].reason?.message ?? results[0].reason),
-      );
+      issues.push(storeReadProblem(results[0].reason, "apple", "What to Test"));
     if (results[1].status === "fulfilled")
       groups.push(
         ...results[1].value.map(
@@ -177,12 +177,11 @@ export async function appleReleaseDetail(
         ),
       );
     else
-      notes.push(
-        "Testing groups could not be read: " +
-          String(results[1].reason?.message ?? results[1].reason),
+      issues.push(
+        storeReadProblem(results[1].reason, "apple", "Testing groups"),
       );
     notes.push(
-      "TestFlight builds have no store screenshots attached. App Store listing screenshots belong to a version; local capture evidence, when available below, belongs to this exact build.",
+      "TestFlight has no store listing screenshots. Any captures below come from local tests of this exact build. App Store screenshots are shown on the App review tab.",
     );
   } else {
     const locales = await appleList(
@@ -225,13 +224,17 @@ export async function appleReleaseDetail(
             });
         }
       } catch (error) {
-        notes.push(
-          `${locale.attributes.locale} screenshots could not be read: ${(error as Error).message}`,
+        issues.push(
+          storeReadProblem(
+            error,
+            "apple",
+            `${locale.attributes.locale} screenshots`,
+          ),
         );
       }
     }
   }
-  return { listings, images, groups, notes };
+  return { listings, images, groups, notes, issues };
 }
 
 /** The image URL comes from a store API, but is still validated before fetching.

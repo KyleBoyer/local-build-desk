@@ -89,6 +89,13 @@ export interface AppReviewInfo {
   threads: AppReviewThread[];
   error?: string;
 }
+export interface StoreReadProblem {
+  area: string;
+  kind: "credentials" | "permission" | "temporary" | "request";
+  message: string;
+  action: string;
+  diagnostic?: string;
+}
 export interface StoreReleaseDetail {
   releaseId: string;
   /** App Store versions only. */
@@ -99,6 +106,7 @@ export interface StoreReleaseDetail {
   images: StoreImage[];
   groups: string[];
   notes: string[];
+  issues?: StoreReadProblem[];
   imageLocale?: string;
 }
 /** Main-process-only image locations. Renderer receives expiring opaque handles. */
