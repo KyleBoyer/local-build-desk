@@ -24,6 +24,7 @@ export async function request<T>(
         ? AbortSignal.any([options.signal, controller.signal])
         : controller.signal,
       headers: {
+        ...(options.method === "POST" ? { "X-LBD-Action": "1" } : {}),
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...options.headers,
       },

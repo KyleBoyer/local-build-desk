@@ -41,6 +41,7 @@ const names = [
   "mobileStatus",
   "configureMobileMonitor",
   "mobilePairing",
+  "setMobilePermissions",
   "revokeMobileDevice",
   "copyMobileLink",
   "storeReleases",

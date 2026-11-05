@@ -594,3 +594,227 @@ test("a background monitor opens the desktop on a second launch and survives clo
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("mobile controls require desktop grants and preview the exact approved release before writing", async () => {
+  await build({
+    entryPoints: ["tests/harness/mobile-controls.ts"],
+    outfile: "out/tests/mobile-controls.cjs",
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    target: "node24",
+    external: ["electron"],
+    packages: "external",
+  });
+  const root = await mkdtemp(join(tmpdir(), "desk-mobile-controls-")),
+    data = join(root, "data"),
+    source = join(root, "source");
+  await mkdir(source);
+  const store = new Store(data),
+    now = new Date().toISOString();
+  store.putProject({
+    id: "project",
+    name: "Crease",
+    path: source,
+    bundleId: "com.example.fixture",
+    version: "1.0",
+    profiles: ["production"],
+    createdAt: now,
+    platforms: ["ios"],
+    settings: { appleConnectionId: "apple-fixture" },
+  });
+  store.close();
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    LOCAL_BUILD_DESK_DATA_DIR: data,
+    LOCAL_BUILD_DESK_TEST_UI: "hidden",
+    LOCAL_BUILD_DESK_DISABLE_UPDATES: "true",
+  };
+  delete env.ELECTRON_RUN_AS_NODE;
+  const app = await electron.launch({
+    args: [resolve("out/tests/mobile-controls.cjs")],
+    env: env as Record<string, string>,
+  });
+  try {
+    const desktop = await app.firstWindow();
+    await desktop
+      .getByRole("button", { name: "Preferences", exact: true })
+      .click();
+    const prefs = desktop.getByRole("region", { name: "Mobile monitoring" });
+    const port = await freePort();
+    await desktop.evaluate(
+      async (port) =>
+        window.desk.configureMobileMonitor({
+          enabled: true,
+          host: "127.0.0.1",
+          port,
+          tls: "self-signed",
+        }),
+      port,
+    );
+    const pairing = await desktop.evaluate(() => window.desk.mobilePairing());
+    await app.evaluate(({ BrowserWindow, session }, url) => {
+      // Only this isolated test session trusts its generated loopback certificate.
+      session.defaultSession.setCertificateVerifyProc((request, callback) =>
+        callback(request.hostname === "127.0.0.1" ? 0 : -3),
+      );
+      const window = new BrowserWindow({
+        width: 390,
+        height: 844,
+        show: false,
+        webPreferences: {
+          sandbox: true,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+      });
+      void window.loadURL(url);
+    }, pairing.url);
+    await expect.poll(() => app.windows().length).toBe(2);
+    const phone = app.windows().find((p) => p !== desktop)!;
+    await phone.setViewportSize({ width: 390, height: 844 });
+    const errors: string[] = [];
+    phone.on("pageerror", (e) => errors.push(e.message));
+    await expect(
+      phone.getByRole("navigation", { name: "Mobile navigation" }),
+    ).toBeVisible();
+    await phone.getByRole("button", { name: "Releases", exact: true }).click();
+    await phone.locator(".m-store-list > button").first().click();
+    await expect(
+      phone.getByText("Enable this phone’s controls", { exact: false }),
+    ).toBeVisible();
+    expect(
+      await app.evaluate(() => (globalThis as any).__storeHistoryWrites),
+    ).toEqual([]);
+    await prefs
+      .getByLabel("Release approved Apple versions to the public App Store")
+      .check();
+    // Returning focus refreshes this device's permissions immediately.
+    await phone.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await phone
+      .getByRole("button", { name: "Review release to App Store", exact: true })
+      .click();
+    const dialog = phone.getByRole("dialog", {
+      name: "Release approved version",
+    });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("com.example.fixture");
+    await expect(dialog).toContainText("version 1.0, build 3");
+    expect(
+      await app.evaluate(() => (globalThis as any).__storeHistoryWrites),
+    ).toEqual([]);
+    await phone.screenshot({
+      path: "test-results/mobile-release-confirm.png",
+      fullPage: true,
+    });
+    expect(
+      await phone.evaluate(
+        () =>
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth,
+      ),
+    ).toBe(0);
+    // Dismissing a preview must never send a write.
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(
+      await app.evaluate(() => (globalThis as any).__storeHistoryWrites),
+    ).toEqual([]);
+    await phone
+      .getByRole("button", { name: "Review release to App Store", exact: true })
+      .click();
+    await phone
+      .getByRole("dialog")
+      .getByRole("button", { name: "Release to public App Store", exact: true })
+      .click();
+    await expect
+      .poll(
+        async () =>
+          (await app.evaluate(() => (globalThis as any).__storeHistoryWrites))
+            .length,
+      )
+      .toBe(1);
+    await expect(phone.locator(".m-store-detail")).toContainText(
+      "pending apple release",
+    );
+    const writes = await app.evaluate(
+      () => (globalThis as any).__storeHistoryWrites,
+    );
+    expect(writes[0].body.data.relationships.appStoreVersion.data.id).toBe(
+      "version",
+    );
+    await phone.screenshot({
+      path: "test-results/mobile-release-requested.png",
+      fullPage: true,
+    });
+    // The lighter queue action uses the actual engine and desktop IPC grants.
+    await app.evaluate(() => {
+      const engine = (globalThis as any).__mobileEngine;
+      engine.store.putJob({
+        id: "queued",
+        projectId: "project",
+        projectName: "Crease",
+        platform: "ios",
+        profile: "production",
+        kind: "build",
+        status: "queued",
+        stage: "queue",
+        createdAt: new Date().toISOString(),
+        checkpoints: [],
+        buildNumber: "12",
+        version: "1.0",
+      });
+      engine.emit("event", { type: "state" });
+    });
+    await prefs.getByLabel("Cancel queued jobs & check upload status").check();
+    await expect(
+      prefs.getByLabel("Cancel queued jobs & check upload status"),
+    ).toBeChecked();
+    await prefs
+      .getByLabel("Release approved Apple versions to the public App Store")
+      .uncheck();
+    await expect(
+      prefs.getByLabel(
+        "Release approved Apple versions to the public App Store",
+      ),
+    ).not.toBeChecked();
+    await phone.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(
+      phone.getByRole("button", { name: "Check release status", exact: true }),
+    ).toHaveCount(0);
+    await phone.getByRole("button", { name: "Now", exact: true }).click();
+    await phone.locator(".m-job").first().click();
+    await phone
+      .getByRole("button", { name: "Cancel queued job", exact: true })
+      .click();
+    await phone
+      .getByRole("dialog")
+      .getByRole("button", { name: "Cancel queued job", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () =>
+            (globalThis as any).__mobileEngine.store.get("jobs", "queued")
+              .status,
+        ),
+      )
+      .toBe("cancelled");
+    expect(
+      await app.evaluate(
+        () =>
+          (globalThis as any).__mobileEngine.store.get("jobs", "queued")
+            .buildNumber,
+      ),
+    ).toBe("12");
+    expect(errors).toEqual([]);
+    await desktop.evaluate(async () =>
+      window.desk.configureMobileMonitor({
+        ...(await window.desk.mobileStatus()).config,
+        enabled: false,
+      }),
+    );
+  } finally {
+    await app.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

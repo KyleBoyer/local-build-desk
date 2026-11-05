@@ -1,4 +1,7 @@
-import { monitorConfigSchema } from "../mobile/config";
+import {
+  monitorConfigSchema,
+  monitorPermissionsSchema,
+} from "../mobile/config";
 import { z } from "zod";
 import { publishActionSchema } from "../core/publishing";
 import { testerActionSchema } from "../core/testers";
@@ -197,6 +200,7 @@ export const methods = {
     monitorConfigSchema,
     z.object({ certificatePath: text, keyPath: text }).strict().optional(),
   ]),
+  setMobilePermissions: z.tuple([identifier, monitorPermissionsSchema]),
   mobilePairing: z.tuple([]),
   revokeMobileDevice: z.tuple([identifier.optional()]),
   copyMobileLink: z.tuple([]),

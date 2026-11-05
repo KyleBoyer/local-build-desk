@@ -717,6 +717,8 @@ function registerIPC() {
             ok: true,
             value: await mobile.configure(values[0], values[1]),
           };
+        if (method === "setMobilePermissions")
+          return { ok: true, value: mobile.permissions(values[0], values[1]) };
         if (method === "mobilePairing")
           return { ok: true, value: await mobile.pairing() };
         if (method === "revokeMobileDevice")

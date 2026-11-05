@@ -94,3 +94,10 @@ export function writeMonitorConfig(root: string, value: MonitorConfig) {
   renameSync(temp, join(root, "mobile-monitor.json"));
   return config;
 }
+
+export const monitorPermissionsSchema = z
+  .object({
+    manageQueue: z.boolean(),
+    releaseApple: z.boolean(),
+  })
+  .strict();

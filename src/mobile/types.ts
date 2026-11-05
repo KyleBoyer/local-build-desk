@@ -16,12 +16,22 @@ export interface MonitorConfig {
   port: number;
   publicOrigin?: string;
 }
+export interface MonitorPermissions {
+  manageQueue: boolean;
+  releaseApple: boolean;
+}
+export interface MonitorSession {
+  device: { id: string; name: string; permissions: MonitorPermissions };
+  writesAvailable: boolean;
+}
 export interface MonitorDevice {
   id: string;
   name: string;
   createdAt: string;
   lastSeenAt: string;
   expiresAt: string;
+  permissions?: MonitorPermissions;
+  permissionRevision?: string;
 }
 export interface MonitorStatus {
   config: MonitorConfig;

@@ -39,6 +39,7 @@ import {
   reviewThreadIsRejection,
   reviewThreadTitle,
 } from "../../core/app-review-labels";
+import { JobControls, ReleaseControls } from "./Controls";
 import { request, safeId } from "./api";
 import { useClock, useMonitor } from "./hooks";
 const human = (s: string) =>
@@ -865,6 +866,15 @@ function JobDetail({
             )}
           </div>
           {active(job) && <Progress job={job} now={now} />}
+          <JobControls
+            key={job.id}
+            job={job}
+            onChanged={() => {
+              void request<MonitorJob>(`jobs/${safeId(job.id)}`)
+                .then(setJob)
+                .catch((e) => setError(e.message));
+            }}
+          />
           <div className="m-detail-tabs">
             {(["overview", "logs", "tests", "artifacts"] as const).map(
               (name) => (
@@ -1834,6 +1844,15 @@ function Releases({
               <ArrowUpRight size={15} />
             </a>
           </section>
+          {release.channel === "appstore" && (
+            <ReleaseControls
+              key={`${project}:${release.id}`}
+              project={project}
+              release={release.id}
+              pending={release.status === "PENDING_DEVELOPER_RELEASE"}
+              onChanged={() => void refresh(true, true)}
+            />
+          )}
           {detail?.review && (
             <section className="m-app-review" aria-label="App Review">
               <h3>App Review</h3>

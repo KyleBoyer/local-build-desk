@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer as createHTTPSServer } from "node:https";
 import type { TLSSocket } from "node:tls";
 import type { Encryption } from "../core/vault";
@@ -23,10 +23,16 @@ import {
   readMonitorConfig,
   writeMonitorConfig,
   privateIPv4,
+  monitorPermissionsSchema,
 } from "./config";
 import { MonitorAuth } from "./auth";
 import { monitorSnapshot, monitorJob, monitorLogs, monitorText } from "./data";
-import type { MonitorConfig, MonitorStatus, MonitorPairing } from "./types";
+import type {
+  MonitorConfig,
+  MonitorStatus,
+  MonitorPairing,
+  MonitorPermissions,
+} from "./types";
 const cookieName = "lbd_monitor";
 const pairs = z
   .object({
@@ -57,6 +63,18 @@ export class MobileMonitor extends EventEmitter {
   >();
   private requests = new Map<ServerResponse, string>();
   private rate = new Map<string, { count: number; until: number }>();
+  // Mobile handles never expose or accept a desktop StoreActions token.
+  private previews = new Map<
+    string,
+    {
+      device: string;
+      revision?: string;
+      project: string;
+      release: string;
+      token: string;
+      expires: number;
+    }
+  >();
   private stateTimer?: ReturnType<typeof setTimeout>;
   private logTimer?: ReturnType<typeof setTimeout>;
   private dirtyLogs = new Set<string>();
@@ -184,6 +202,7 @@ export class MobileMonitor extends EventEmitter {
     return this.status();
   }
   async stop() {
+    this.previews.clear();
     const server = this.server;
     this.server = undefined;
     this.auth.clearPairing();
@@ -222,6 +241,8 @@ export class MobileMonitor extends EventEmitter {
     };
   }
   revoke(id?: string) {
+    for (const [key, preview] of this.previews)
+      if (!id || preview.device === id) this.previews.delete(key);
     this.auth.revoke(id);
     for (const [res, stream] of this.streams)
       if (!id || stream.device === id) {
@@ -230,6 +251,13 @@ export class MobileMonitor extends EventEmitter {
       }
     for (const [res, device] of this.requests)
       if (!id || device === id) res.destroy();
+    this.changed();
+    return this.status();
+  }
+  permissions(id: string, permissions: MonitorPermissions) {
+    this.auth.permissions(id, monitorPermissionsSchema.parse(permissions));
+    for (const [key, preview] of this.previews)
+      if (preview.device === id) this.previews.delete(key);
     this.changed();
     return this.status();
   }
@@ -312,7 +340,7 @@ export class MobileMonitor extends EventEmitter {
         req.headers["sec-fetch-site"] === "cross-site"
       )
         return this.json(res, 403, {
-          error: "Use this monitor's own page to pair or sign out.",
+          error: "Use this monitor's own page for this action.",
         });
     }
     if (path === "/api/pair" && req.method === "POST") {
@@ -367,15 +395,198 @@ export class MobileMonitor extends EventEmitter {
         this.revoke(device.id);
         return;
       }
+      this.requests.set(res, device.id);
+      res.once("close", () => this.requests.delete(res));
+      const activeServer = this.server;
+      const writesAvailable = origin.secure;
+      if (req.method === "POST" && path !== "/api/logout") {
+        const jobAction = path.match(
+          /^\/api\/jobs\/([A-Za-z0-9_-]{1,128})\/(cancel-queued|reconcile)$/,
+        );
+        const releaseAction = path.match(
+          /^\/api\/projects\/([^/]+)\/releases\/([^/]+)\/(release-preview|release-confirm|release-reconcile)$/,
+        );
+        if (!jobAction && !releaseAction)
+          return this.json(res, 405, {
+            error: "This action is not available from mobile.",
+          });
+        if (!writesAvailable)
+          return this.json(res, 403, {
+            error:
+              "Mobile controls require HTTPS. Enable HTTPS or configure an HTTPS reverse proxy on the Mac.",
+          });
+        if (req.headers["x-lbd-action"] !== "1")
+          return this.json(res, 403, {
+            error: "Open this action in the mobile dashboard.",
+          });
+        const permission = jobAction ? "manageQueue" : "releaseApple";
+        const authorized = () => {
+          const current = this.auth.session(this.token(req));
+          return (
+            this.server === activeServer &&
+            !!activeServer &&
+            current?.permissionRevision === device.permissionRevision &&
+            current?.permissions?.[permission]
+          );
+        };
+        if (!authorized())
+          return this.json(res, 403, {
+            error:
+              "Enable this device's controls in Preferences → Mobile monitoring on the Mac.",
+          });
+        if (!this.allowed(`write:${device.id}`, 20))
+          return this.json(res, 429, {
+            error: "Too many actions. Try again in a minute.",
+          });
+        let input: unknown;
+        try {
+          input = await this.body(req);
+        } catch {
+          return this.json(res, 400, { error: "Send a valid JSON action." });
+        }
+        try {
+          if (!authorized())
+            return this.json(res, 403, {
+              error: "Device permission changed. Reload the dashboard.",
+            });
+          if (jobAction) {
+            z.object({}).strict().parse(input);
+            const job = this.engine
+              .state()
+              .jobs.find((j) => j.id === jobAction[1]);
+            if (!job) return this.json(res, 404, { error: "Build not found." });
+            if (!authorized())
+              return this.json(res, 403, {
+                error: "Device permission changed. Reload the dashboard.",
+              });
+            if (jobAction[2] === "cancel-queued") {
+              // Check and cancel synchronously: a queued job must never become an active cancellation.
+              if (job.status !== "queued")
+                return this.json(res, 409, {
+                  error:
+                    "This job is no longer queued. Running builds cannot be cancelled from mobile.",
+                });
+              this.engine.cancel(job.id);
+              return this.json(res, 200, {
+                message:
+                  "Queued job cancelled. Its build number stays reserved.",
+              });
+            }
+            if (
+              job.status === "running" ||
+              !job.submission ||
+              !["processing", "uncertain"].includes(job.submission.state)
+            )
+              return this.json(res, 409, {
+                error:
+                  "Only completed uploads awaiting a store result can be checked.",
+              });
+            await this.engine.reconcile(job.id);
+            return this.json(res, 200, {
+              message:
+                "Store processing status refreshed. No upload was repeated.",
+            });
+          }
+          const project = decodeURIComponent(releaseAction![1]!),
+            release = decodeURIComponent(releaseAction![2]!);
+          if (!this.engine.state().projects.some((p) => p.id === project))
+            return this.json(res, 404, { error: "Project not found." });
+          const action = releaseAction![3];
+          if (action === "release-preview") {
+            z.object({}).strict().parse(input);
+            for (const [key, value] of this.previews)
+              if (value.expires <= Date.now() || value.device === device.id)
+                this.previews.delete(key);
+            const preview = await this.engine.preparePublishing(
+              project,
+              release,
+              { kind: "release" },
+            );
+            if (!authorized())
+              return this.json(res, 403, {
+                error: "Device permission changed. Prepare a new preview.",
+              });
+            const handle = randomUUID();
+            this.previews.set(handle, {
+              device: device.id,
+              revision: device.permissionRevision,
+              project,
+              release,
+              token: preview.token,
+              expires: Date.parse(preview.expiresAt),
+            });
+            return this.json(res, 200, { ...preview, token: handle });
+          }
+          if (action === "release-confirm") {
+            const { token } = z
+              .object({ token: z.string().uuid() })
+              .strict()
+              .parse(input);
+            const preview = this.previews.get(token);
+            if (
+              !preview ||
+              preview.device !== device.id ||
+              preview.project !== project ||
+              preview.release !== release ||
+              preview.revision !== device.permissionRevision ||
+              preview.expires <= Date.now()
+            )
+              return this.json(res, 409, {
+                error:
+                  "Preview expired, was used, or belongs to another selection. Check release status, then prepare a new preview.",
+              });
+            this.previews.delete(token);
+            if (!authorized())
+              return this.json(res, 403, {
+                error: "Device permission changed.",
+              });
+            return this.json(
+              res,
+              200,
+              await this.engine.applyStoreAction(project, preview.token),
+            );
+          }
+          const { receiptId } = z
+            .object({ receiptId: z.string().uuid() })
+            .strict()
+            .parse(input);
+          const state = await this.engine.readPublishing(project, release);
+          if (!authorized())
+            return this.json(res, 403, { error: "Device permission changed." });
+          if (!state.receipts.some((r) => r.id === receiptId))
+            return this.json(res, 404, { error: "Release receipt not found." });
+          const receipt = await this.engine.reconcilePublishing(
+            project,
+            receiptId,
+          );
+          return this.json(res, 200, {
+            message: `Release request: ${receipt.state}. No release request was repeated.`,
+          });
+        } catch (error) {
+          return this.json(res, error instanceof z.ZodError ? 400 : 409, {
+            error:
+              this.cleanError(error) +
+              (releaseAction
+                ? " Check release status before trying again; an unanswered release is never automatically repeated."
+                : ""),
+          });
+        }
+      }
       if (req.method !== "GET")
         return this.json(res, 405, {
           error: "The mobile monitor is read-only.",
         });
-      this.requests.set(res, device.id);
-      res.once("close", () => this.requests.delete(res));
       if (path === "/api/session")
         return this.json(res, 200, {
-          device: { id: device.id, name: device.name },
+          device: {
+            id: device.id,
+            name: device.name,
+            permissions: device.permissions ?? {
+              manageQueue: false,
+              releaseApple: false,
+            },
+          },
+          writesAvailable,
           version: this.version,
         });
       if (path === "/api/state")
@@ -496,6 +707,23 @@ export class MobileMonitor extends EventEmitter {
             ]),
           ]),
         );
+      }
+      const publishing = path.match(
+        /^\/api\/projects\/([^/]+)\/releases\/([^/]+)\/release-status$/,
+      );
+      if (publishing) {
+        const state = await this.engine.readPublishing(
+          decodeURIComponent(publishing[1]!),
+          decodeURIComponent(publishing[2]!),
+        );
+        return this.json(res, 200, {
+          receipts: state.receipts.map(({ id, title, state, updatedAt }) => ({
+            id,
+            title,
+            state,
+            updatedAt,
+          })),
+        });
       }
       const releases = path.match(
         /^\/api\/projects\/([^/]+)\/releases(?:\/([^/]+))?$/,

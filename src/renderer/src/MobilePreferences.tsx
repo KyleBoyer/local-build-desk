@@ -12,6 +12,7 @@ import type {
   MonitorConfig,
   MonitorStatus,
   MonitorPairing,
+  MonitorPermissions,
 } from "../../mobile/types";
 const api = window.desk;
 export function MobilePreferences() {
@@ -86,6 +87,26 @@ export function MobilePreferences() {
     setStatus(result);
     setConfig(result.config);
     if (result.running && enabled) setPair(await api.mobilePairing());
+  };
+  const permissions = (id: string, value: MonitorPermissions) => {
+    // Keep a controlled checkbox responsive while IPC persists the grant.
+    setStatus(
+      (previous) =>
+        previous && {
+          ...previous,
+          devices: previous.devices.map((device) =>
+            device.id === id ? { ...device, permissions: value } : device,
+          ),
+        },
+    );
+    void perform(async () => {
+      try {
+        setStatus(await api.setMobilePermissions(id, value));
+      } catch (error) {
+        setStatus(await api.mobileStatus());
+        throw error;
+      }
+    });
   };
   const remaining = pair
     ? Math.max(0, Math.ceil((Date.parse(pair.expiresAt) - now) / 1000))
@@ -363,8 +384,8 @@ export function MobilePreferences() {
       </div>
       {!status?.devices.length ? (
         <p className="muted">
-          No devices paired yet. Pairing gives access to this Mac's monitoring
-          data; build and signing controls stay in the desktop app.
+          New devices start read-only. Enable selected controls below after
+          pairing.
         </p>
       ) : (
         <div className="monitor-device-list">
@@ -375,6 +396,40 @@ export function MobilePreferences() {
                 <span>
                   Last seen {new Date(device.lastSeenAt).toLocaleString()}
                 </span>
+                <label>
+                  <input
+                    type="checkbox"
+                    disabled={busy}
+                    checked={device.permissions?.manageQueue ?? false}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      permissions(device.id, {
+                        manageQueue: checked,
+                        releaseApple: device.permissions?.releaseApple ?? false,
+                      });
+                    }}
+                  />
+                  Cancel queued jobs & check upload status
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    disabled={busy}
+                    checked={device.permissions?.releaseApple ?? false}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      permissions(device.id, {
+                        manageQueue: device.permissions?.manageQueue ?? false,
+                        releaseApple: checked,
+                      });
+                    }}
+                  />
+                  Release approved Apple versions to the public App Store
+                </label>
+                <small className="muted">
+                  Controls require HTTPS. Store releases always show a
+                  confirmation preview.
+                </small>
               </div>
               <button
                 className="button"

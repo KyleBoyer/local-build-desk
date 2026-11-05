@@ -563,6 +563,10 @@ export interface DesktopAPI {
     config: MonitorConfig,
     files?: CertificateFiles,
   ): Promise<MonitorStatus>;
+  setMobilePermissions(
+    id: string,
+    permissions: import("../mobile/types").MonitorPermissions,
+  ): Promise<MonitorStatus>;
   mobilePairing(): Promise<MonitorPairing>;
   revokeMobileDevice(id?: string): Promise<MonitorStatus>;
   copyMobileLink(): Promise<void>;

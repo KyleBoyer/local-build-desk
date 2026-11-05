@@ -5,7 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { Store } from "../core/database";
-import type { MonitorDevice } from "./types";
+import type { MonitorDevice, MonitorPermissions } from "./types";
 interface Device extends MonitorDevice {
   hash: string;
 }
@@ -84,6 +84,14 @@ export class MonitorAuth {
       this.save(records);
     }
     return device;
+  }
+  permissions(id: string, permissions: MonitorPermissions) {
+    const records = this.records(),
+      device = records.find((d) => d.id === id);
+    if (!device) throw Error("Paired device not found.");
+    device.permissions = permissions;
+    device.permissionRevision = randomUUID();
+    this.save(records);
   }
   revoke(id?: string) {
     this.save(id ? this.records().filter((d) => d.id !== id) : []);
