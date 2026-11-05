@@ -150,7 +150,7 @@ test("shows remote review/TestFlight/Play releases and their correct assets in b
       history.getByText("Beta App Review", { exact: true }),
     ).toBeVisible();
     await expect(
-      history.getByText(/TestFlight builds have no store screenshots attached/),
+      history.getByText(/TestFlight has no store listing screenshots/),
     ).toBeVisible();
     await expect(history.getByAltText("review-home.png")).toHaveCount(0);
     await history.getByRole("tab", { name: /Google Play/ }).click();
