@@ -3,6 +3,20 @@ import { EventEmitter } from "node:events";
 import type { Job } from "../src/core/types";
 
 const native = vi.hoisted(() => ({ trays: [] as any[], copied: vi.fn() }));
+const clocks = vi.hoisted(
+  () =>
+    [] as {
+      update: ReturnType<typeof vi.fn>;
+      dispose: ReturnType<typeof vi.fn>;
+    }[],
+);
+vi.mock("../src/main/menu-clock", () => ({
+  createMenuClock: () => {
+    const clock = { update: vi.fn(), dispose: vi.fn() };
+    clocks.push(clock);
+    return clock;
+  },
+}));
 vi.mock("electron", () => {
   const build = (items: any[]): any => ({
     items: items.map((item) => ({
@@ -66,6 +80,7 @@ const job = (change: Partial<Job> = {}): Job => ({
 afterEach(() => {
   vi.useRealTimers();
   native.trays.length = 0;
+  clocks.length = 0;
   vi.clearAllMocks();
 });
 
@@ -146,9 +161,34 @@ it("updates native menu items in place, routes desktop/log actions, and removes 
     expect(tray.menu).toBe(menu);
     expect(tray.replacements).toBe(1);
     expect(menu.items[2].label).toContain("Upload · 2m 01s");
+    expect(clocks[0].update.mock.calls.at(-1)?.[0]).toEqual(
+      expect.arrayContaining([
+        {
+          path: [2],
+          prefix: "Fixture · iOS · Upload · ",
+          since: Date.parse(jobs[0].stageStartedAt!),
+        },
+        {
+          path: [2, 1],
+          prefix: "Upload · ",
+          since: Date.parse(jobs[0].stageStartedAt!),
+        },
+        {
+          path: [2, 2],
+          prefix: "Elapsed: ",
+          since: Date.parse(jobs[0].startedAt!),
+        },
+        {
+          path: [3, 2],
+          prefix: "Waiting: ",
+          since: Date.parse(jobs[1].startedAt ?? jobs[1].createdAt),
+        },
+      ]),
+    );
     jobs = [];
     events.emit("event", { type: "state" });
     expect(tray.destroyed).toBe(true);
+    expect(clocks[0].dispose).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
     jobs = [job()];
     events.emit("event", { type: "state" });
@@ -158,6 +198,24 @@ it("updates native menu items in place, routes desktop/log actions, and removes 
   }
   expect(events.listenerCount("event")).toBe(0);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("keeps seconds visible past an hour and clocks Apple processing from upload completion", () => {
+  const now = Date.parse("2026-10-28T13:00:21Z");
+  expect(jobTrayProgress(job(), now)).toBe("Compile · 1h 0m 01s");
+  expect(
+    jobTrayProgress(
+      job({
+        status: "needs-attention",
+        submission: {
+          state: "processing",
+          destination: "TestFlight",
+          uploadedAt: "2026-10-28T12:59:20Z",
+        },
+      }),
+      now,
+    ),
+  ).toBe("Apple processing · 1m 01s");
 });
 
 it("offers CLI commands without opening a GUI and never copies errors or raw tool output into the menu", () => {

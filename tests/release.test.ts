@@ -75,6 +75,8 @@ it("release config fails closed without credentials and requires hardened signin
     ],
   });
   expect(config.dmg.sign).toBe(true);
+  expect(config.files).toContain("out/native/**/*");
+  expect(config.asarUnpack).toContain("out/native/*.node");
   // Targets named on the command line would replace the ARM64 targets.
   expect(require("../package.json").scripts["release:mac"]).toMatch(
     /--mac --publish never$/,

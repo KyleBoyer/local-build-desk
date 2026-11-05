@@ -74,8 +74,26 @@ function verifyApp(path) {
     "-archs",
     join(path, "Contents", "MacOS", info.CFBundleExecutable),
   ]).trim();
-  if (actual !== "arm64")
-    throw new Error("App is not an ARM64 build.");
+  if (actual !== "arm64") throw new Error("App is not an ARM64 build.");
+  const menuClock = join(
+    path,
+    "Contents",
+    "Resources",
+    "app.asar.unpacked",
+    "out",
+    "native",
+    "menu-clock.node",
+  );
+  run("codesign", ["--verify", "--strict", menuClock]);
+  if (
+    run("lipo", ["-archs", menuClock]).trim() !== "arm64" ||
+    !run("codesign", ["--display", "--verbose=4", menuClock]).includes(
+      `TeamIdentifier=${team}`,
+    )
+  )
+    throw new Error(
+      "The native menu clock is missing or has the wrong architecture/signing team.",
+    );
   // stapler validate looks the app's ticket up online and fails
   // repeatedly from hosted runners. A stapled bundle carries its ticket in
   // Contents/CodeResources, and Gatekeeper reports whether it accepts it.

@@ -6,6 +6,8 @@ An Electron / React / TypeScript app that builds Expo, Capacitor, and native iOS
 
 Requires macOS, Git, and Node.js 24 or newer (`.nvmrc` selects Node 24). Install native build tools for your project's requirements through Guided setup or Toolchain. You do not need the original developer's machine, app project, Codex installation, accounts, signing identities, or file paths.
 
+Building the desktop app from source also requires Apple’s command line developer tools for its small native menu-clock bridge. Packaged releases include the compiled bridge.
+
 ```sh
 npm ci
 npm run dev

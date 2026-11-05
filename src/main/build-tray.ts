@@ -10,6 +10,11 @@ import type { EventEmitter } from "node:events";
 import type { DeskEvent, Job } from "../core/types";
 import { elapsedLabel, stageGuidance } from "../core/progress";
 import { icon, retinaIcon } from "./build-tray-icon";
+import {
+  createMenuClock,
+  type MenuClock,
+  type MenuClockRow,
+} from "./menu-clock";
 
 // Keep the monitor independent of windows: the same owner runs desktop and CLI jobs.
 export function monitoredJobs(jobs: Job[]) {
@@ -33,7 +38,12 @@ function short(value: string, length = 64) {
 }
 function elapsed(since: string | undefined, now: number) {
   const started = Date.parse(since ?? "");
-  return Number.isFinite(started) ? elapsedLabel(now - started) : undefined;
+  if (!Number.isFinite(started)) return undefined;
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  return (
+    elapsedLabel(now - started) +
+    (seconds >= 3600 ? ` ${String(seconds % 60).padStart(2, "0")}s` : "")
+  );
 }
 function bytes(value: number) {
   return value >= 1024 ** 3
@@ -42,10 +52,11 @@ function bytes(value: number) {
       ? `${(value / 1024 ** 2).toFixed(1)} MB`
       : `${Math.round(value / 1024)} KB`;
 }
-export function jobTrayProgress(job: Job, now = Date.now()) {
-  if (job.status === "queued") return "Queued · waiting for a compiler";
+function progressClock(job: Job): { label: string; since?: string } {
+  if (job.status === "queued")
+    return { label: "Queued · waiting for a compiler" };
   if (job.submission?.state === "processing")
-    return `Apple processing${elapsed(job.submission.uploadedAt, now) ? " · " + elapsed(job.submission.uploadedAt, now) : ""}`;
+    return { label: "Apple processing", since: job.submission.uploadedAt };
   const work = job.progress;
   const percent =
     work?.percent ??
@@ -59,19 +70,23 @@ export function jobTrayProgress(job: Job, now = Date.now()) {
     percent <= 100;
   const stage = job.stage[0].toUpperCase() + job.stage.slice(1);
   const label = work?.label ? `${stage}: ${short(work.label)}` : stage;
-  const time = elapsed(
-    work?.startedAt ?? job.stageStartedAt ?? job.startedAt,
-    now,
-  );
-  return [label, validPercent ? `${Math.floor(percent)}%` : undefined, time]
-    .filter(Boolean)
-    .join(" · ");
+  return {
+    label: [label, validPercent ? `${Math.floor(percent)}%` : undefined]
+      .filter(Boolean)
+      .join(" · "),
+    since: work?.startedAt ?? job.stageStartedAt ?? job.startedAt,
+  };
+}
+export function jobTrayProgress(job: Job, now = Date.now()) {
+  const { label, since } = progressClock(job);
+  return [label, elapsed(since, now)].filter(Boolean).join(" · ");
 }
 
 export class BuildTray {
   private tray?: Tray;
   private timer?: ReturnType<typeof setInterval>;
   private menu?: Menu;
+  private clock?: MenuClock;
   private structure = "";
   private lastTitle?: string;
   private lastTooltip?: string;
@@ -235,10 +250,51 @@ export class BuildTray {
     if (this.menu && structure === this.structure)
       this.updateMenu(this.menu, template);
     else {
+      // A new tree must never be painted using the previous tree's indices.
+      this.clock?.dispose();
       this.structure = structure;
       this.menu = Menu.buildFromTemplate(template);
       this.tray.setContextMenu(this.menu);
+      this.clock = createMenuClock();
     }
+    const rows: MenuClockRow[] = [];
+    const rowsByPath = new Map<string, MenuClockRow>();
+    const collect = (
+      items: MenuItemConstructorOptions[],
+      path: number[] = [],
+    ) => {
+      items.forEach((item, index) => {
+        const at = [...path, index];
+        if (item.label !== undefined) {
+          const row = { path: at, prefix: item.label.slice(0, 1024) };
+          rows.push(row);
+          rowsByPath.set(at.join(":"), row);
+        }
+        if (Array.isArray(item.submenu)) collect(item.submenu, at);
+      });
+    };
+    collect(template);
+    for (const [index, job] of jobs.entries()) {
+      const progress = progressClock(job);
+      const clock = (path: number[], prefix: string, since?: string) => {
+        const start = Date.parse(since ?? "");
+        if (!Number.isFinite(start)) return;
+        const row = rowsByPath.get(path.join(":"));
+        if (row) Object.assign(row, { prefix, since: start });
+      };
+      clock(
+        [index + 2],
+        `${short(job.projectName, 32)} · ${job.platform === "ios" ? "iOS" : "Android"} · ${progress.label} · `,
+        progress.since,
+      );
+      clock([index + 2, 1], `${progress.label} · `, progress.since);
+      clock(
+        [index + 2, 2],
+        `${job.status === "queued" ? "Waiting" : "Elapsed"}: `,
+        job.startedAt ?? job.createdAt,
+      );
+    }
+    this.clock?.update(rows);
     const title = jobs.length ? String(jobs.length) : "";
     if (title !== this.lastTitle) {
       this.tray.setTitle(title, { fontType: "monospacedDigit" });
@@ -267,6 +323,8 @@ export class BuildTray {
   private clear() {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.clock?.dispose();
+    this.clock = undefined;
     this.tray?.destroy();
     this.tray = undefined;
     this.menu = undefined;
