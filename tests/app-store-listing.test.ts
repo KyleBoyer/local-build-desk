@@ -54,6 +54,8 @@ function apple(
     state?: string;
     versionState?: string;
     iapVersions?: { id: string; state: string }[];
+    /** The app is on sale, so its only app info is locked until a new version exists. */
+    liveAppInfo?: boolean;
   } = {},
 ) {
   const writes: { method: string; path: string; body?: any }[] = [];
@@ -65,10 +67,15 @@ function apple(
     },
   }));
   let uploaded: any[] = [];
+  let versionCreated = false;
   const request = vi.fn(
     async (path: string, method = "GET", body?: any): Promise<any> => {
       if (method !== "GET") {
         writes.push({ method, path, body });
+        if (path === "/appInfoLocalizations/liveLoc")
+          throw new Error("Apple 409: The field can not be modified.");
+        if (path === "/appStoreVersions" && method === "POST")
+          versionCreated = true;
         if (path === "/appScreenshots" && method === "POST")
           return {
             data: {
@@ -102,15 +109,27 @@ function apple(
           return { data: { id: "submission" } };
         return { data: { id: "created", attributes: {} } };
       }
-      const route = path.split("?")[0];
+      // A version made during apply reads like the fixture's draft.
+      const route = path
+        .split("?")[0]
+        .replace("/appStoreVersions/created/", "/appStoreVersions/version/");
       if (route === "/apps") return { data: [{ id: "app", attributes: {} }] };
-      if (route === "/apps/app/appInfos")
+      if (route === "/apps/app/appInfos") {
+        const live = {
+          id: "live",
+          attributes: { appStoreState: "READY_FOR_SALE" },
+        };
+        const editable = {
+          id: "info",
+          attributes: { appStoreState: "PREPARE_FOR_SUBMISSION" },
+        };
+        if (!options.liveAppInfo) return { data: [editable] };
+        return { data: versionCreated ? [live, editable] : [live] };
+      }
+      if (route === "/appInfos/live/appInfoLocalizations")
         return {
           data: [
-            {
-              id: "info",
-              attributes: { appStoreState: "PREPARE_FOR_SUBMISSION" },
-            },
+            { id: "liveLoc", attributes: { locale: "en-US", name: "Fixture" } },
           ],
         };
       if (route === "/appInfos/info/appInfoLocalizations")
@@ -808,6 +827,43 @@ it("plans a new version against the live one Apple copies it from", async () => 
     plan.blockers.filter((b) => !/support URL|privacy|Content rights/.test(b)),
   ).toEqual([]);
   expect(writes).toEqual([]);
+});
+
+it("writes app info to the one a new version opens, not the locked live one", async () => {
+  const a = png("a.png", 1320, 2868, 1);
+  const b = png("b.png", 1320, 2868, 2);
+  // 1.0 is on sale; Apple opens an editable app info only once 1.1 exists.
+  const { api, writes } = apple({
+    screenshots: [a, b],
+    contact: true,
+    versionState: "READY_FOR_SALE",
+    liveAppInfo: true,
+  });
+  const loaded = await loadListing(
+    listing({
+      subtitle: "New subtitle",
+      description: "Old",
+      keywords: undefined,
+      supportUrl: undefined,
+      privacyPolicyUrl: undefined,
+      contentRights: undefined,
+    }),
+  );
+  const plan = await listingPlan(api, "com.example.app", "1.1", loaded);
+  expect(plan.changes.map((c) => `${c.scope}.${c.field}`)).toContain(
+    "app.subtitle",
+  );
+  await applyListing(api, plan, loaded, {
+    wait: async () => undefined,
+  });
+  const calls = writes.map((w) => `${w.method} ${w.path}`);
+  expect(calls).not.toContain("PATCH /appInfoLocalizations/liveLoc");
+  expect(calls.indexOf("POST /appStoreVersions")).toBeGreaterThanOrEqual(0);
+  expect(calls.indexOf("POST /appStoreVersions")).toBeLessThan(
+    calls.indexOf("PATCH /appInfoLocalizations/infoLoc"),
+  );
+  const patch = writes.find((w) => w.path === "/appInfoLocalizations/infoLoc")!;
+  expect(patch.body.data.attributes).toEqual({ subtitle: "New subtitle" });
 });
 
 it("after a rejection, adds the purchase's new version, not the rejected one", async () => {

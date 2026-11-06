@@ -356,6 +356,27 @@ function newestVersion(versions: any[]) {
     )[0];
 }
 
+/** The app info to edit: the one still editable, as there's a live one too once released. */
+async function readAppInfo(api: AppleAPI, appId: string, locale: string) {
+  const infos = await all(api, `/apps/${appId}/appInfos?limit=10`);
+  const info =
+    infos.find((i) =>
+      EDITABLE.includes(i.attributes.appStoreState ?? i.attributes.state),
+    ) ??
+    infos.find(
+      (i) =>
+        !["READY_FOR_SALE", "READY_FOR_DISTRIBUTION"].includes(
+          i.attributes.appStoreState ?? i.attributes.state,
+        ),
+    ) ??
+    infos[0];
+  invariant(info, "APPLE_APP_INFO", "Apple returned no app info for this app.");
+  const localization = (
+    await all(api, `/appInfos/${info.id}/appInfoLocalizations?limit=50`)
+  ).find((l) => l.attributes.locale === locale);
+  return { info, localization };
+}
+
 /** Reads App Store Connect and works out what applying `listing` would do. */
 export async function listingPlan(
   api: AppleAPI,
@@ -391,23 +412,11 @@ export async function listingPlan(
     }
   };
 
-  // App info: the one still editable (there's a live one too once released).
-  const infos = await all(api, `/apps/${app.id}/appInfos?limit=10`);
-  const info =
-    infos.find((i) =>
-      EDITABLE.includes(i.attributes.appStoreState ?? i.attributes.state),
-    ) ??
-    infos.find(
-      (i) =>
-        !["READY_FOR_SALE", "READY_FOR_DISTRIBUTION"].includes(
-          i.attributes.appStoreState ?? i.attributes.state,
-        ),
-    ) ??
-    infos[0];
-  invariant(info, "APPLE_APP_INFO", "Apple returned no app info for this app.");
-  const infoLocalization = (
-    await all(api, `/appInfos/${info.id}/appInfoLocalizations?limit=50`)
-  ).find((l) => l.attributes.locale === locale);
+  const { info, localization: infoLocalization } = await readAppInfo(
+    api,
+    app.id,
+    locale,
+  );
   diff("app", infoLocalization?.attributes, {
     name: listing.name,
     subtitle: listing.subtitle,
@@ -954,7 +963,6 @@ export async function applyListing(
         .map((c) => [c.field, c.after]),
     );
 
-  // App info.
   const appFields = pick("app");
   const {
     contentRightsDeclaration,
@@ -963,46 +971,6 @@ export async function applyListing(
     secondaryCategory,
     ...infoFields
   } = appFields;
-  if (Object.keys(infoFields).length) {
-    if (plan.appInfoLocalizationId)
-      await api.request(
-        `/appInfoLocalizations/${plan.appInfoLocalizationId}`,
-        "PATCH",
-        {
-          data: {
-            type: "appInfoLocalizations",
-            id: plan.appInfoLocalizationId,
-            attributes: infoFields,
-          },
-        },
-      );
-    else
-      await api.request("/appInfoLocalizations", "POST", {
-        data: {
-          type: "appInfoLocalizations",
-          attributes: { ...infoFields, locale: plan.locale },
-          relationships: {
-            appInfo: { data: { type: "appInfos", id: plan.appInfoId } },
-          },
-        },
-      });
-    log(`App info: ${Object.keys(infoFields).join(", ")}`);
-  }
-  if (Object.keys(plan.categories).length) {
-    await api.request(`/appInfos/${plan.appInfoId}`, "PATCH", {
-      data: {
-        type: "appInfos",
-        id: plan.appInfoId,
-        relationships: Object.fromEntries(
-          Object.entries(plan.categories).map(([key, id]) => [
-            key,
-            { data: { type: "appCategories", id } },
-          ]),
-        ),
-      },
-    });
-    log(`Categories: ${Object.values(plan.categories).join(", ")}`);
-  }
   if (plan.contentRights) {
     await api.request(`/apps/${plan.appId}`, "PATCH", {
       data: {
@@ -1084,6 +1052,61 @@ export async function applyListing(
       );
       log("Phased release: off");
     }
+  }
+  // App info. Apple only opens an editable one once a new version exists, so
+  // a plan made before that points at the live one, which it refuses to change.
+  let { appInfoId, appInfoLocalizationId } = plan;
+  if (
+    !plan.versionId &&
+    (Object.keys(infoFields).length || Object.keys(plan.categories).length)
+  ) {
+    const { info, localization } = await readAppInfo(
+      api,
+      plan.appId,
+      plan.locale,
+    );
+    appInfoId = info.id;
+    appInfoLocalizationId = localization?.id;
+  }
+  if (Object.keys(infoFields).length) {
+    if (appInfoLocalizationId)
+      await api.request(
+        `/appInfoLocalizations/${appInfoLocalizationId}`,
+        "PATCH",
+        {
+          data: {
+            type: "appInfoLocalizations",
+            id: appInfoLocalizationId,
+            attributes: infoFields,
+          },
+        },
+      );
+    else
+      await api.request("/appInfoLocalizations", "POST", {
+        data: {
+          type: "appInfoLocalizations",
+          attributes: { ...infoFields, locale: plan.locale },
+          relationships: {
+            appInfo: { data: { type: "appInfos", id: appInfoId } },
+          },
+        },
+      });
+    log(`App info: ${Object.keys(infoFields).join(", ")}`);
+  }
+  if (Object.keys(plan.categories).length) {
+    await api.request(`/appInfos/${appInfoId}`, "PATCH", {
+      data: {
+        type: "appInfos",
+        id: appInfoId,
+        relationships: Object.fromEntries(
+          Object.entries(plan.categories).map(([key, id]) => [
+            key,
+            { data: { type: "appCategories", id } },
+          ]),
+        ),
+      },
+    });
+    log(`Categories: ${Object.values(plan.categories).join(", ")}`);
   }
   let localizationId = plan.versionLocalizationId;
   if (!localizationId) {
